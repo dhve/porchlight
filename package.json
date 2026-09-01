@@ -1,0 +1,20 @@
+{
+  "name": "porchlight",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A friendly, community-driven website checkup. Point it at a site you own or are permitted to test and get back a plain-language health report.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "enable-browser": "npm install playwright && npx playwright install chromium"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0",
+    "express": "^4.21.2"
+  }
+}

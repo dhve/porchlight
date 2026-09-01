@@ -1,0 +1,20 @@
+# dependencies
+node_modules/
+
+# secrets - never commit real keys
+.env
+.env.local
+*.local
+
+# logs
+npm-debug.log*
+*.log
+
+# os / editor
+.DS_Store
+.vscode/
+.idea/
+
+# playwright browsers (installed on demand)
+playwright-report/
+test-results/
