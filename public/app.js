@@ -24,27 +24,6 @@ const MOON = '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>';
 const ICON_SPIN = '<svg class="spin" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 12a9 9 0 1 1-6.2-8.6" stroke-linecap="round"/></svg>';
 const ICON_CHECK = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>';
 
-/* ---------------- theme ---------------- */
-function currentTheme() {
-  const s = document.documentElement.getAttribute("data-theme");
-  if (s) return s;
-  return window.matchMedia("(prefers-color-scheme:dark)").matches ? "dark" : "light";
-}
-function applyTheme(t) {
-  document.documentElement.setAttribute("data-theme", t);
-  $("#themeIcon").innerHTML = t === "dark" ? MOON : SUN;
-}
-function toggleTheme() {
-  const next = currentTheme() === "dark" ? "light" : "dark";
-  applyTheme(next);
-  try { localStorage.setItem("pl-theme", next); } catch {}
-}
-(function initTheme() {
-  let saved = null;
-  try { saved = localStorage.getItem("pl-theme"); } catch {}
-  if (saved) applyTheme(saved);
-  else $("#themeIcon").innerHTML = currentTheme() === "dark" ? MOON : SUN;
-})();
 
 /* ---------------- navigation ---------------- */
 function go(name) {
@@ -337,7 +316,6 @@ $("#backBtn").addEventListener("click", () => go("home"));
 $("#viewReportBtn").addEventListener("click", () => go("report"));
 $("#sampleNav").addEventListener("click", loadSample);
 $("#sampleBtn").addEventListener("click", loadSample);
-$("#themeBtn").addEventListener("click", toggleTheme);
 $("#techBtn").addEventListener("click", () => {
   const p = $("#techPanel");
   p.classList.toggle("show");
@@ -509,4 +487,78 @@ async function submitHelper(e) {
     $("#urlInput").value = q.replace(/^https?:\/\//i, "");
     history.replaceState(null, "", location.pathname);
   }
+})();
+
+/* ---------------- ambient palm leaves (sutras were written on palm leaves) ---------------- */
+(function leaves() {
+  const canvas = $("#leaves");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const COLORS = ["rgba(30,140,99,0.16)", "rgba(36,160,115,0.13)", "rgba(217,166,43,0.15)", "rgba(154,107,11,0.10)"];
+  let W = 0, H = 0, dpr = 1, items = [], raf = 0, t = 0;
+
+  function size() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    canvas.style.width = W + "px"; canvas.style.height = H + "px";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  function make(fresh) {
+    const s = 16 + Math.random() * 26;
+    return {
+      x: fresh ? -60 : Math.random() * W,
+      y: Math.random() * H,
+      s,
+      vx: 0.12 + Math.random() * 0.22,
+      vy: 0.03 + Math.random() * 0.06,
+      amp: 10 + Math.random() * 18,
+      ph: Math.random() * Math.PI * 2,
+      fq: 0.004 + Math.random() * 0.004,
+      rot: Math.random() * Math.PI * 2,
+      spin: (Math.random() - 0.5) * 0.006,
+      c: COLORS[Math.floor(Math.random() * COLORS.length)],
+    };
+  }
+  function leaf(l) {
+    ctx.save();
+    ctx.translate(l.x, l.y + Math.sin(t * l.fq + l.ph) * l.amp);
+    ctx.rotate(l.rot + Math.sin(t * l.fq * 0.6 + l.ph) * 0.25);
+    const s = l.s;
+    ctx.beginPath();
+    ctx.moveTo(0, -s);                                   // tip
+    ctx.bezierCurveTo(s * 0.9, -s * 0.55, s * 0.75, s * 0.55, 0, s * 0.95);   // right edge
+    ctx.bezierCurveTo(-s * 0.75, s * 0.55, -s * 0.9, -s * 0.55, 0, -s);       // left edge
+    ctx.closePath();
+    ctx.fillStyle = l.c;
+    ctx.fill();
+    ctx.beginPath();                                     // midrib
+    ctx.moveTo(0, -s * 0.85); ctx.lineTo(0, s * 0.8);
+    ctx.strokeStyle = "rgba(255,255,255,0.35)"; ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.restore();
+  }
+  function frame() {
+    t += 1;
+    ctx.clearRect(0, 0, W, H);
+    for (const l of items) {
+      l.x += l.vx; l.y += l.vy; l.rot += l.spin;
+      if (l.x > W + 60 || l.y > H + 60) Object.assign(l, make(true), { y: Math.random() * H * 0.9 });
+      leaf(l);
+    }
+    raf = requestAnimationFrame(frame);
+  }
+  function start() {
+    size();
+    const count = Math.max(8, Math.min(16, Math.round(W / 110)));
+    items = Array.from({ length: count }, () => make(false));
+    if (REDUCED) { ctx.clearRect(0, 0, W, H); items.forEach(leaf); return; } // static, no motion
+    cancelAnimationFrame(raf);
+    frame();
+  }
+  window.addEventListener("resize", () => { size(); });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) cancelAnimationFrame(raf); else if (!REDUCED) frame();
+  });
+  start();
 })();
