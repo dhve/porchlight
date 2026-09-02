@@ -1,14 +1,14 @@
 // recon.js
-// Step 1: look around. Fetch the homepage once, read the headers, and work out
-// what the site is built with. The parsed HTML is shared with later checks so
-// we only download the homepage a single time.
+// Step 1: look around, then walk a few rooms. Fetch the homepage, fingerprint
+// the stack, and crawl a bounded set of internal pages so later checks have a
+// real surface to work with (forms, scripts, cookies, extra pages).
 //
-// Deterministic. No model involved.
+// Everything gathered here is shared on `facts` so the deeper checks do not
+// re-download anything. Deterministic. No model involved.
 
 import * as cheerio from "cheerio";
+import { config } from "../safety.js";
 
-// Rough "current major version" map, used only to say a platform *looks* old.
-// Kept intentionally conservative and honest in the wording.
 const LATEST_MAJOR = { wordpress: 6, joomla: 5, drupal: 10 };
 
 export async function runRecon(ctx) {
@@ -20,7 +20,6 @@ export async function runRecon(ctx) {
   try {
     res = await client.get(url.href);
   } catch (err) {
-    // If we can't even load the homepage, there is nothing else to check.
     return {
       facts: { reachable: false },
       findings: [
@@ -65,13 +64,25 @@ export async function runRecon(ctx) {
     cms: null,
     technologies: [],
     plugins: [],
+    // filled by the crawl:
+    pages: [{ url: finalUrl.href, status: res.status, html, $, headers: res.headers, contentType: res.contentType }],
+    scripts: [],
+    forms: [],
+    setCookies: [],
+    robots: null,
+    sitemapUrls: [],
   };
 
   detectStack(facts, $, html);
+  collectFrom(facts, $, finalUrl, res.headers);
+
+  // ---- robots.txt + sitemap.xml (discovery + disclosure source) ----
+  await fetchRobots(ctx, facts);
+
+  // ---- crawl a few same-origin pages ----
+  await crawl(ctx, facts);
 
   // ---- findings derived from recon itself ----
-
-  // No HTTPS at all.
   if (url.protocol === "http:" && finalUrl.protocol === "http:") {
     findings.push({
       id: "no-https",
@@ -91,7 +102,6 @@ export async function runRecon(ctx) {
     passes.push("Your site loads over a secure (https) connection.");
   }
 
-  // Outdated platform (heuristic, worded carefully).
   if (facts.cms && facts.cms.version) {
     const major = parseInt(String(facts.cms.version).split(".")[0], 10);
     const latest = LATEST_MAJOR[facts.cms.name];
@@ -114,7 +124,7 @@ export async function runRecon(ctx) {
             facts.generator ? `generator tag: ${facts.generator}` : `inferred from page source`,
             `Current major version is around ${latest}.x`,
           ],
-          note: "Version read from the page, not confirmed against a live vulnerability database in this build.",
+          note: "Version read from the page.",
         },
       });
     } else {
@@ -122,28 +132,96 @@ export async function runRecon(ctx) {
     }
   }
 
-  // Server announcing its exact version.
-  if (facts.server && /\d+\.\d+/.test(facts.server)) {
-    findings.push({
-      id: "server-version-disclosure",
-      category: "info-leak",
-      severity: "watch",
-      title: "Your server announces its exact version",
-      meaning:
-        "Your website tells every visitor the precise software and version it runs. That's a handy shopping list for anyone looking for a known weakness.",
-      fix: ["Ask your web person to hide the version number in the server's response headers."],
-      who: "Your web person or hosting provider.",
-      evidence: { lines: [`Server: ${facts.server}`, facts.poweredBy ? `X-Powered-By: ${facts.poweredBy}` : ""].filter(Boolean), note: "Read from response headers." },
-    });
-  }
-
   return { facts, findings, passes };
+}
+
+function collectFrom(facts, $, pageUrl, headers) {
+  const origin = facts.baseOrigin;
+  // scripts (for the vulnerable-library and SRI checks)
+  $("script[src]").each((_, el) => {
+    const src = $(el).attr("src") || "";
+    let abs;
+    try { abs = new URL(src, pageUrl).href; } catch { return; }
+    if (!facts.scripts.some((s) => s.src === abs)) {
+      facts.scripts.push({ src: abs, integrity: $(el).attr("integrity") || null, crossorigin: $(el).attr("crossorigin") || null, external: safeOrigin(abs) !== origin });
+    }
+  });
+  // forms (for the form-security check)
+  $("form").each((_, el) => {
+    const $f = $(el);
+    const action = $f.attr("action") || "";
+    let actionAbs = pageUrl;
+    try { actionAbs = new URL(action || pageUrl, pageUrl).href; } catch {}
+    const inputs = $f.find("input,select,textarea");
+    const hasPassword = $f.find('input[type="password"]').length > 0;
+    const hasFile = $f.find('input[type="file"]').length > 0;
+    const hasCsrf = inputs.toArray().some((i) => /csrf|token|nonce|authenticity|_token|__requestverification/i.test(($(i).attr("name") || "") + " " + ($(i).attr("id") || "")));
+    facts.forms.push({
+      page: pageUrl,
+      action: actionAbs,
+      method: ($f.attr("method") || "get").toLowerCase(),
+      hasPassword,
+      hasFile,
+      hasCsrf,
+      insecureAction: /^http:\/\//i.test(actionAbs),
+      pwAutocompleteOn: hasPassword && $f.find('input[type="password"][autocomplete="on"]').length > 0,
+    });
+  });
+  // cookies
+  const sc = headers.get("set-cookie");
+  if (sc) facts.setCookies.push({ page: pageUrl, raw: sc });
+}
+
+function safeOrigin(u) { try { return new URL(u).origin; } catch { return null; } }
+
+async function fetchRobots(ctx, facts) {
+  try {
+    const res = await ctx.client.get(facts.baseOrigin + "/robots.txt");
+    if (res.status === 200 && /text\/plain/i.test(res.contentType || "")) {
+      const body = await res.text(20000);
+      if (!/<html/i.test(body)) {
+        facts.robots = body.slice(0, 8000);
+        const sm = [...body.matchAll(/^\s*sitemap:\s*(\S+)/gim)].map((m) => m[1]);
+        facts.sitemapUrls = sm.slice(0, 3);
+      }
+    }
+  } catch {}
+}
+
+async function crawl(ctx, facts) {
+  const origin = facts.baseOrigin;
+  const $ = facts.$;
+  const queue = [];
+  const seen = new Set([facts.finalUrl.href]);
+
+  $("a[href]").each((_, el) => {
+    const href = $(el).attr("href") || "";
+    let abs;
+    try { abs = new URL(href, facts.finalUrl); } catch { return; }
+    if (abs.origin !== origin) return;
+    abs.hash = "";
+    if (/\.(pdf|jpg|jpeg|png|gif|svg|webp|zip|mp4|css|js|ico|woff2?)$/i.test(abs.pathname)) return;
+    if (seen.has(abs.href)) return;
+    seen.add(abs.href);
+    queue.push(abs.href);
+  });
+
+  const targets = queue.slice(0, config.maxCrawlPages);
+  for (const href of targets) {
+    let res;
+    try { res = await ctx.client.get(href); } catch { continue; }
+    let html = "";
+    if (/text\/html/i.test(res.contentType || "")) {
+      try { html = await res.text(); } catch { html = ""; }
+    }
+    const $page = cheerio.load(html || "");
+    facts.pages.push({ url: res.finalUrl || href, status: res.status, html, $: $page, headers: res.headers, contentType: res.contentType });
+    if (html) collectFrom(facts, $page, new URL(res.finalUrl || href), res.headers);
+  }
 }
 
 function detectStack(facts, $, html) {
   const tech = new Set();
-
-  // WordPress and friends via generator tag.
   if (facts.generator) {
     const m = facts.generator.match(/^(WordPress|Joomla|Drupal)\s*([\d.]+)?/i);
     if (m) {
@@ -153,14 +231,10 @@ function detectStack(facts, $, html) {
       tech.add(facts.generator.split(" ")[0]);
     }
   }
-
-  // WordPress path signals even when the generator tag is hidden.
   if (!facts.cms && /\/wp-(content|includes)\//.test(html)) {
     facts.cms = { name: "wordpress", version: null };
     tech.add("WordPress");
   }
-
-  // Plugin + theme versions from asset query strings (?ver=x.y).
   const seen = new Set();
   $("link[href],script[src]").each((_, el) => {
     const src = $(el).attr("href") || $(el).attr("src") || "";
@@ -172,15 +246,9 @@ function detectStack(facts, $, html) {
         facts.plugins.push({ type: pm[1].slice(0, -1), slug: pm[2], version: pm[3] });
       }
     }
-    const jq = src.match(/jquery[.-]?([\d.]+)?(?:\.min)?\.js/i);
-    if (jq && jq[1]) tech.add(`jQuery ${jq[1]}`);
   });
-
-  // A couple of common front-end frameworks, best-effort.
-  if (/react/i.test(html) && /data-reactroot|__next/i.test(html)) tech.add("React");
   if (/\/_next\//.test(html)) tech.add("Next.js");
   if (facts.poweredBy) tech.add(facts.poweredBy);
-
   facts.technologies = [...tech];
 }
 

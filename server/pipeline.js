@@ -20,21 +20,32 @@ import { saveReport } from "./db.js";
 import { runRecon } from "./checks/recon.js";
 import { runTls } from "./checks/tls.js";
 import { runSecurity } from "./checks/security.js";
+import { runCookies } from "./checks/cookies.js";
 import { runExposedFiles } from "./checks/exposedFiles.js";
+import { runLibraries } from "./checks/libraries.js";
+import { runDisclosure } from "./checks/disclosure.js";
+import { runForms } from "./checks/forms.js";
 import { runFlows } from "./checks/flows.js";
 import { runLinks } from "./checks/links.js";
+import { runReflection } from "./checks/reflection.js";
 import { runBrowser } from "./checks/browser.js";
 
 const CHECK_FNS = {
   tls: runTls,
   security: runSecurity,
+  cookies: runCookies,
   exposedFiles: runExposedFiles,
+  libraries: runLibraries,
+  disclosure: runDisclosure,
+  forms: runForms,
   flows: runFlows,
   links: runLinks,
+  reflection: runReflection,
   browser: runBrowser,
 };
-const STEP3 = ["tls", "security", "exposedFiles"];
-const STEP4 = ["flows", "links", "browser"];
+// Step 3 = security posture. Step 4 = functional + input behavior.
+const STEP3 = ["tls", "security", "cookies", "exposedFiles", "libraries", "disclosure"];
+const STEP4 = ["forms", "flows", "links", "reflection", "browser"];
 const MARK = { urgent: "⚠️", serious: "🔧", watch: "👀", good: "✅" };
 
 export async function runCheckup({ url, display }, onEvent = () => {}) {

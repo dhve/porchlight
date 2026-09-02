@@ -1,28 +1,70 @@
 // exposedFiles.js
-// Step 3: try the doors and windows. Check a short, fixed list of well-known
+// Step 3: try the doors and windows. Check a fixed, curated list of well-known
 // sensitive paths that should never be publicly readable.
 //
 // This is detection, not exploitation:
-//  - a small, fixed list (no guessing, no fuzzing)
+//  - a fixed list (no guessing, no fuzzing, no wordlist brute force)
 //  - a plain GET, exactly what a browser would do
-//  - we confirm the file is really exposed, then STOP
+//  - we confirm the file is really exposed by matching its shape, then STOP
 //  - we never store or return the sensitive contents; evidence is redacted
 //
-// It is the digital equivalent of checking whether a back door was left
-// unlocked, not walking in and taking things.
+// Like checking whether a back door was left unlocked, not walking in.
 
+const RX = {
+  env: (t) => /^\s*[A-Z0-9_]+\s*=/m.test(t) && !/<html/i.test(t),
+  sql: (t) => /INSERT INTO|CREATE TABLE|-- MySQL|PostgreSQL database dump|DROP TABLE/i.test(t),
+  archive: (t, ct) => /application\/(zip|x-gzip|x-tar|octet-stream)/i.test(ct || ""),
+  phpcfg: (t) => /DB_PASSWORD|define\s*\(\s*['"]DB_|\$db|password/i.test(t) && !/<html/i.test(t),
+  gitHead: (t) => /^ref:\s/.test(t),
+  gitConfig: (t) => /\[core\]/.test(t),
+  svn: (t) => /dir\n|svn:|\bwc\.db\b/i.test(t),
+  dsstore: (t) => /Bud1/.test(t),
+  phpinfo: (t) => /phpinfo\(\)|<title>phpinfo\(\)|PHP Version/i.test(t),
+  apacheStatus: (t) => /Apache Server Status|Apache Server Information/i.test(t),
+  log: (t) => /\b(error|warning|notice|stack trace|exception|deprecated)\b/i.test(t) && !/<html/i.test(t),
+  htaccess: (t) => /RewriteEngine|Options |Deny from|Require /i.test(t) && !/<html/i.test(t),
+  webconfig: (t) => /<configuration>|<system\.web>/i.test(t),
+  npmrc: (t) => /_authToken|registry=/.test(t),
+  dockerCompose: (t) => /^\s*(services|version)\s*:/m.test(t) && !/<html/i.test(t),
+  aws: (t) => /aws_access_key_id|aws_secret_access_key/i.test(t),
+  ssh: (t) => /-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----/.test(t),
+  json: (t) => /^\s*\{/.test(t) && /"(dependencies|scripts|name)"\s*:/.test(t),
+};
+
+// severity: urgent = secrets/data; serious = source/info; watch = minor leak
 const TARGETS = [
-  { path: "/.env", sev: "urgent", label: "environment / secrets file", looksReal: (t) => /^\s*[A-Z0-9_]+\s*=/m.test(t) && !/<html/i.test(t) },
-  { path: "/.git/HEAD", sev: "urgent", label: "source code history", looksReal: (t) => /^ref:\s/.test(t) },
-  { path: "/.git/config", sev: "urgent", label: "source code history", looksReal: (t) => /\[core\]/.test(t) },
-  { path: "/wp-config.php.bak", sev: "urgent", label: "database password file", looksReal: (t) => /DB_PASSWORD|define\s*\(/.test(t) },
-  { path: "/wp-config.php~", sev: "urgent", label: "database password file", looksReal: (t) => /DB_PASSWORD|define\s*\(/.test(t) },
-  { path: "/backup.sql", sev: "urgent", label: "database backup", looksReal: (t) => /INSERT INTO|CREATE TABLE|-- MySQL/i.test(t) },
-  { path: "/database.sql", sev: "urgent", label: "database backup", looksReal: (t) => /INSERT INTO|CREATE TABLE/i.test(t) },
-  { path: "/dump.sql", sev: "urgent", label: "database backup", looksReal: (t) => /INSERT INTO|CREATE TABLE/i.test(t) },
-  { path: "/.DS_Store", sev: "watch", label: "folder listing file", looksReal: (t) => /Bud1/.test(t) },
-  { path: "/phpinfo.php", sev: "serious", label: "server configuration dump", looksReal: (t) => /phpinfo\(\)|PHP Version/i.test(t) },
-  { path: "/server-status", sev: "serious", label: "live server status page", looksReal: (t) => /Apache Server Status/i.test(t) },
+  { path: "/.env", sev: "urgent", label: "environment / secrets file", ok: RX.env },
+  { path: "/.env.local", sev: "urgent", label: "environment / secrets file", ok: RX.env },
+  { path: "/.env.production", sev: "urgent", label: "environment / secrets file", ok: RX.env },
+  { path: "/.git/HEAD", sev: "urgent", label: "source code repository", ok: RX.gitHead },
+  { path: "/.git/config", sev: "urgent", label: "source code repository", ok: RX.gitConfig },
+  { path: "/.svn/wc.db", sev: "urgent", label: "source code repository", ok: RX.svn },
+  { path: "/wp-config.php.bak", sev: "urgent", label: "database password file", ok: RX.phpcfg },
+  { path: "/wp-config.php~", sev: "urgent", label: "database password file", ok: RX.phpcfg },
+  { path: "/wp-config.php.save", sev: "urgent", label: "database password file", ok: RX.phpcfg },
+  { path: "/config.php.bak", sev: "urgent", label: "config backup", ok: RX.phpcfg },
+  { path: "/backup.sql", sev: "urgent", label: "database backup", ok: RX.sql },
+  { path: "/database.sql", sev: "urgent", label: "database backup", ok: RX.sql },
+  { path: "/dump.sql", sev: "urgent", label: "database backup", ok: RX.sql },
+  { path: "/db.sql", sev: "urgent", label: "database backup", ok: RX.sql },
+  { path: "/backup.zip", sev: "urgent", label: "site backup archive", ok: RX.archive },
+  { path: "/backup.tar.gz", sev: "urgent", label: "site backup archive", ok: RX.archive },
+  { path: "/www.zip", sev: "urgent", label: "site backup archive", ok: RX.archive },
+  { path: "/.aws/credentials", sev: "urgent", label: "cloud credentials", ok: RX.aws },
+  { path: "/.ssh/id_rsa", sev: "urgent", label: "private SSH key", ok: RX.ssh },
+  { path: "/.npmrc", sev: "urgent", label: "package registry token", ok: RX.npmrc },
+  { path: "/docker-compose.yml", sev: "serious", label: "deployment config", ok: RX.dockerCompose },
+  { path: "/phpinfo.php", sev: "serious", label: "server configuration dump", ok: RX.phpinfo },
+  { path: "/info.php", sev: "serious", label: "server configuration dump", ok: RX.phpinfo },
+  { path: "/server-status", sev: "serious", label: "live server status page", ok: RX.apacheStatus },
+  { path: "/server-info", sev: "serious", label: "server information page", ok: RX.apacheStatus },
+  { path: "/web.config", sev: "serious", label: "server config file", ok: RX.webconfig },
+  { path: "/.htaccess", sev: "serious", label: "server rules file", ok: RX.htaccess },
+  { path: "/wp-content/debug.log", sev: "serious", label: "debug log", ok: RX.log },
+  { path: "/debug.log", sev: "serious", label: "debug log", ok: RX.log },
+  { path: "/composer.lock", sev: "watch", label: "dependency list", ok: RX.json },
+  { path: "/package.json", sev: "watch", label: "dependency list", ok: RX.json },
+  { path: "/.DS_Store", sev: "watch", label: "folder listing file", ok: RX.dsstore },
 ];
 
 export async function runExposedFiles(ctx) {
@@ -35,21 +77,11 @@ export async function runExposedFiles(ctx) {
   const hits = [];
   for (const t of TARGETS) {
     let res;
-    try {
-      res = await client.get(origin + t.path);
-    } catch {
-      continue; // network hiccup or budget reached: move on
-    }
+    try { res = await client.get(origin + t.path); } catch { continue; }
     if (res.status !== 200) continue;
-    // Soft-404s often return 200 with an HTML page; require the content to
-    // actually look like the sensitive file before flagging.
     let body = "";
-    try {
-      body = await res.text(4000);
-    } catch {
-      body = "";
-    }
-    if (!t.looksReal(body)) continue;
+    try { body = await res.text(4000); } catch { body = ""; }
+    if (!t.ok(body, res.contentType)) continue;
     hits.push({ ...t, contentType: res.contentType });
   }
 
@@ -58,7 +90,6 @@ export async function runExposedFiles(ctx) {
     return { findings, passes };
   }
 
-  // One finding per exposed file, most sensitive first.
   const order = { urgent: 0, serious: 1, watch: 2 };
   hits.sort((a, b) => order[a.sev] - order[b.sev]);
 
@@ -68,16 +99,14 @@ export async function runExposedFiles(ctx) {
       id: `exposed${h.path.replace(/[^a-z0-9]+/gi, "-")}`,
       category: isData ? "exposed-data" : "info-leak",
       severity: h.sev,
-      title: isData
-        ? "A private file is downloadable by anyone"
-        : "A sensitive server file is publicly visible",
+      title: isData ? "A private file is downloadable by anyone" : "A sensitive file is publicly visible",
       meaning: isData
-        ? `A ${h.label} at ${h.path} is sitting on your website where anyone with the link can open it. Files like this often contain passwords or customer data, exactly the kind of thing that leads to a breach.`
+        ? `A ${h.label} at ${h.path} is sitting on your website where anyone with the link can open it. Files like this often contain passwords, keys, or customer data, exactly what leads to a breach.`
         : `A ${h.label} at ${h.path} is visible to the public. It hands outsiders details about how your site is built, making other attacks easier.`,
       fix: [
         `Ask whoever manages your site to remove or block public access to ${h.path}.`,
-        isData ? "Move backups and secrets out of the public website folder for good." : "Disable that page in your server or app settings.",
-        isData ? "If it was exposed for a while, consider rotating any passwords it contained." : "Double-check no other debug pages are public.",
+        isData ? "Move backups, secrets, and repositories out of the public website folder for good." : "Disable or protect that file in your server settings.",
+        isData ? "Treat any passwords or keys it contained as compromised and rotate them." : "Confirm no other config or debug files are public.",
       ].filter(Boolean),
       who: "Your web person or hosting provider, promptly.",
       evidence: {

@@ -47,15 +47,46 @@ planner and natural-language write-up turn on automatically.
 
 ## What it checks
 
-- Secure connection (https) and certificate validity and expiry
-- Standard security headers, cookie flags, and mixed content
-- Well-known private files left publicly readable (`.env`, `.git`, database
-  backups, `phpinfo`, server status). Detection only: it confirms a file is
-  reachable and stops. It never downloads, stores, or reads the contents.
-- Key customer pages (order, book, menu, contact) load without errors
-- Broken links and broken images
+Porchlight crawls several pages (plus `robots.txt` and `sitemap.xml`) and runs a
+deep, read-only analysis across these areas:
+
+**Encryption and transport**
+- Certificate validity, expiry, key strength, and self-signed certificates
+- Deprecated TLS 1.0 / 1.1 still being accepted
+- HTTPS enforcement (HSTS) and its strength, plus mixed content
+
+**Server and browser hardening**
+- Every standard security header, and the *quality* of the ones present
+  (weak Content-Security-Policy, short HSTS)
+- CORS misconfiguration (wildcard origin, or wildcard combined with credentials)
+- Per-cookie Secure / HttpOnly / SameSite flags, with extra weight on session cookies
+
+**Exposed data and information leaks**
+- ~30 well-known private paths (`.env`, `.git`, database backups, `wp-config`
+  backups, cloud credentials, SSH keys, debug logs, `phpinfo`, and more)
+- Secrets and API keys accidentally left in page source (AWS, Google, Stripe,
+  GitHub, Slack, JWTs, private keys)
+- Published source maps, directory listings, verbose error / stack traces, and
+  sensitive paths leaked through `robots.txt`
+
+**Vulnerable components**
+- Front-end libraries (jQuery, Bootstrap, Angular, Lodash, and others) running
+  versions with known public advisories, the Retire.js approach
+- Outdated CMS (WordPress and friends)
+
+**Application behavior**
+- Password forms that submit insecurely, missing CSRF tokens, password fields
+  set to autocomplete, and external scripts loaded without Subresource Integrity
+- A conservative reflected-input (XSS surface) check that flags where a site
+  echoes input back unescaped, for a developer to review
+- Key customer pages (order, book, contact) that error, plus broken links and images
 - With the optional browser agent: JavaScript errors, load speed on a phone,
   and images that fail to render
+
+**Detection, not exploitation.** Exposed files are confirmed reachable and then
+left alone (never downloaded or stored). The reflected-input check uses a
+harmless marker and never injects anything that executes. No form is ever
+submitted and nothing on the site is changed.
 
 ## Quick start
 

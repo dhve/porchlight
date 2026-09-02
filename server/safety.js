@@ -11,11 +11,13 @@ import dns from "node:dns/promises";
 import net from "node:net";
 
 export const config = {
-  maxLinks: intFromEnv("MAX_LINKS", 20),
+  maxLinks: intFromEnv("MAX_LINKS", 25),
   requestTimeoutMs: intFromEnv("REQUEST_TIMEOUT_MS", 8000),
-  // A hard ceiling on total outbound requests per checkup, so a scan can never
-  // turn into a flood against someone's site.
-  maxRequests: 60,
+  // How many internal pages the crawler visits beyond the homepage.
+  maxCrawlPages: intFromEnv("MAX_CRAWL_PAGES", 8),
+  // A hard ceiling on total outbound requests per checkup, so a deep scan can
+  // never turn into a flood against someone's site.
+  maxRequests: intFromEnv("MAX_REQUESTS", 200),
 };
 
 function intFromEnv(name, fallback) {

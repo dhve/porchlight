@@ -10,11 +10,16 @@ import { chatJSON, llmEnabled } from "./llm.js";
 // The catalog of checks the orchestrator is allowed to schedule. Keys must
 // match the ids the pipeline knows how to run.
 export const CHECK_CATALOG = [
-  { id: "tls", desc: "Certificate validity and the padlock." },
-  { id: "security", desc: "Security headers, cookie flags, mixed content." },
-  { id: "exposedFiles", desc: "Well-known private files left publicly readable." },
+  { id: "tls", desc: "Certificate validity, key strength, self-signed, deprecated TLS 1.0/1.1." },
+  { id: "security", desc: "Security headers, CSP quality, CORS misconfig, mixed content." },
+  { id: "cookies", desc: "Per-cookie Secure / HttpOnly / SameSite flags." },
+  { id: "exposedFiles", desc: "Well-known private files (.env, .git, backups, configs) left readable." },
+  { id: "libraries", desc: "Front-end libraries running known-vulnerable versions." },
+  { id: "disclosure", desc: "Secrets in source, source maps, directory listing, verbose errors, robots leaks." },
+  { id: "forms", desc: "Insecure password forms, missing CSRF token, missing SRI on external scripts." },
   { id: "flows", desc: "Key customer pages (order, book, contact) load without errors." },
   { id: "links", desc: "Broken links and images." },
+  { id: "reflection", desc: "Conservative reflected-input (XSS surface) check, detection only." },
   { id: "browser", desc: "Headless-browser pass: JS errors, load speed, render issues." },
 ];
 
