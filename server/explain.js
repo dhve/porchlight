@@ -97,6 +97,10 @@ const BY_ID = {
     why: "If the third-party host serving that script is compromised or hijacked, the altered script runs on your page with full access to it. An integrity hash makes the browser refuse any file that has changed.",
     confirm: "View the page source and find the script tags listed; they have no integrity attribute.",
   },
+  "failed-resources": {
+    why: "Each line is a file the homepage asked for and the status the server answered with. 404 means the file is not at that address any more. 403 means the server refused the request, usually a permissions or security rule. 406 (Not Acceptable) means the server would not send the file in a format the browser asked for, which is almost always a misconfigured server rule or a security plugin blocking the request. Whatever that file provided is missing for every visitor.",
+    confirm: "Open the page, press F12 (Cmd-Option-I on a Mac), open the Network tab, reload, and look for rows in red; or paste one of the listed addresses into the browser.",
+  },
   "console-errors": {
     why: "A browser error means a script on the page failed while running. Errors like 'x is not a function' or 'undefined' usually mean a library did not load or two scripts conflict, and whatever that script controls (a menu, a slider, a form) can silently stop working.",
     confirm: "Open the page, press F12 (or Cmd-Option-I on a Mac), and read the Console tab.",

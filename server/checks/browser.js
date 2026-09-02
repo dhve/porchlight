@@ -32,10 +32,23 @@ export async function runBrowser(ctx) {
     });
     const page = await context.newPage();
 
-    const consoleErrors = [];
-    page.on("pageerror", (err) => consoleErrors.push(String(err.message).slice(0, 160)));
+    const consoleErrors = []; // real JavaScript errors, with where they came from
+    const failed = new Map();  // url -> { status, reason }
+    page.on("pageerror", (err) => consoleErrors.push(String(err.message).slice(0, 200)));
     page.on("console", (msg) => {
-      if (msg.type() === "error") consoleErrors.push(msg.text().slice(0, 160));
+      if (msg.type() !== "error") return;
+      const text = msg.text();
+      if (/^Failed to load resource/i.test(text)) return; // captured below with its URL
+      const loc = msg.location && msg.location();
+      const where = loc && loc.url ? ` (at ${loc.url}${loc.lineNumber ? ":" + loc.lineNumber : ""})` : "";
+      consoleErrors.push((text.slice(0, 160) + where).slice(0, 260));
+    });
+    page.on("response", (res) => {
+      const st = res.status();
+      if (st >= 400 && !failed.has(res.url())) failed.set(res.url(), { status: st, reason: statusText(st) });
+    });
+    page.on("requestfailed", (req) => {
+      if (!failed.has(req.url())) failed.set(req.url(), { status: 0, reason: (req.failure() && req.failure().errorText) || "did not load" });
     });
 
     const start = Date.now();
@@ -49,17 +62,42 @@ export async function runBrowser(ctx) {
     await browser.close();
     browser = null;
 
+    const failedList = [...failed.entries()]
+      .filter(([u]) => !/\/favicon\.ico$/i.test(u))
+      .map(([url, f]) => ({ url, ...f }));
+    if (failedList.length) {
+      const shown = failedList.slice(0, 6);
+      findings.push({
+        id: "failed-resources",
+        category: "quality",
+        severity: "watch",
+        title: `${failedList.length} file${failedList.length > 1 ? "s" : ""} on your homepage fail${failedList.length > 1 ? "" : "s"} to load`,
+        meaning:
+          "When the homepage loads, it asks for these files and the server refuses or cannot find them. Whatever each file provides (a script, image, font, or stylesheet) is simply missing for visitors. The exact address and status of each one is under the technical proof.",
+        fix: [
+          "Open each address listed. A 404 means the file was moved or deleted: fix the link or restore the file.",
+          "A 403 or 406 means the server is refusing that request, usually a security rule, hotlink protection, or a wrong file type setting on the server.",
+          "Remove any reference the page no longer needs.",
+        ],
+        who: "Your web person.",
+        evidence: {
+          lines: shown.map((f) => `${f.status ? f.status + " " + f.reason : f.reason}  ${f.url.slice(0, 140)}`),
+          note: `${failedList.length} request(s) failed while loading the homepage in a headless browser.`,
+        },
+      });
+    }
+
     if (consoleErrors.length) {
       findings.push({
         id: "console-errors",
         category: "quality",
         severity: "watch",
-        title: "Your website is throwing errors in visitors' browsers",
+        title: "Your website's code is reporting errors in visitors' browsers",
         meaning:
-          "As the page loaded, its own code reported errors. Visitors won't see the messages, but errors like these are often why a button or form quietly stops working.",
-        fix: ["Show your web person these errors; they point straight to the broken script."],
+          "As the page loaded, its own scripts reported errors (each one is listed with the file and line it came from). Visitors do not see the messages, but errors like these are often why a menu, form, or button quietly stops working.",
+        fix: ["Show your web person the errors under the technical proof; each names the script and line that failed."],
         who: "Your web person.",
-        evidence: { lines: [...new Set(consoleErrors)].slice(0, 4), note: `${consoleErrors.length} browser error(s) seen while loading the homepage.` },
+        evidence: { lines: [...new Set(consoleErrors)].slice(0, 5), note: `${consoleErrors.length} JavaScript error(s) seen while loading the homepage.` },
       });
     }
 
@@ -96,4 +134,9 @@ export async function runBrowser(ctx) {
     if (browser) await browser.close().catch(() => {});
     return { findings, passes, skipped: true, reason: `Browser pass failed: ${String(err.message).slice(0, 120)}` };
   }
+}
+
+function statusText(code) {
+  const map = { 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed", 406: "Not Acceptable", 408: "Request Timeout", 410: "Gone", 429: "Too Many Requests", 500: "Internal Server Error", 502: "Bad Gateway", 503: "Service Unavailable", 504: "Gateway Timeout" };
+  return map[code] || (code >= 500 ? "Server Error" : "Error");
 }
