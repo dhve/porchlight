@@ -34,7 +34,11 @@ export async function runBrowser(ctx) {
 
     const consoleErrors = []; // real JavaScript errors, with where they came from
     const failed = new Map();  // url -> { status, reason }
-    page.on("pageerror", (err) => consoleErrors.push(String(err.message).slice(0, 200)));
+    page.on("pageerror", (err) => {
+      const frame = (String(err.stack || "").split("\n").find((l) => /\(?https?:\/\/[^)]+:\d+:\d+\)?/.test(l)) || "").trim();
+      const where = frame ? ` (at ${frame.replace(/^at\s+/, "").slice(0, 120)})` : "";
+      consoleErrors.push((String(err.message).slice(0, 160) + where).slice(0, 260));
+    });
     page.on("console", (msg) => {
       if (msg.type() !== "error") return;
       const text = msg.text();
