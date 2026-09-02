@@ -23,10 +23,55 @@ const { runCheckup } = await import("./pipeline.js");
 const { llmEnabled, modelName } = await import("./llm.js");
 const { initDb, dbEnabled, getReport, listReports, saveNomination, addHelper, listHelpers } = await import("./db.js");
 const { setupRouter } = await import("./setup.js");
+const { reportsForHost } = await import("./db.js");
+const { authRouter, attachUser, csrfGuard } = await import("./auth.js");
+const { oauthRouter } = await import("./oauth.js");
+const { verifyRouter } = await import("./verify.js");
+const { bulletinRouter } = await import("./bulletin.js");
+const { consume } = await import("./ratelimit.js");
+const { mailStatus } = await import("./mail.js");
 
 const app = express();
+app.set("trust proxy", 1);
 app.use(express.json({ limit: "16kb" }));
 app.use(setupRouter(ROOT));
+app.use(attachUser);
+app.use(["/api", "/auth"], csrfGuard);
+app.use(authRouter);
+app.use(oauthRouter);
+app.use(verifyRouter);
+app.use(bulletinRouter);
+
+const REQUIRE_ACCOUNT = process.env.REQUIRE_ACCOUNT === "1";
+const normHost = (h) => String(h || "").toLowerCase().replace(/^www\./, "");
+
+app.get("/api/config", (_req, res) => {
+  res.json({
+    requireAccount: REQUIRE_ACCOUNT,
+    providers: { google: Boolean(process.env.GOOGLE_CLIENT_ID), github: Boolean(process.env.GITHUB_CLIENT_ID) },
+    mail: { configured: mailStatus().configured },
+  });
+});
+
+/** Account + rate + per-host cooldown gate for running a checkup. Returns an error object or null. */
+async function checkupGate(req, host) {
+  if (REQUIRE_ACCOUNT) {
+    if (!req.user) return { status: 401, error: "Please sign in to run a checkup." };
+    if (!req.user.emailVerified) return { status: 403, error: "Please confirm your email first.", code: "unverified" };
+    const r = consume("checkups", req.user.id, 20, 24 * 60 * 60_000);
+    if (!r.ok) return { status: 429, error: "You've reached today's limit of 20 checkups. Try again tomorrow." };
+  } else {
+    const r = consume("checkups-ip", req.ip || "x", 30, 60 * 60_000);
+    if (!r.ok) return { status: 429, error: "Too many checkups from this connection. Please wait a bit." };
+  }
+  try {
+    const latest = (await reportsForHost(host, 1))[0];
+    if (latest && Date.now() - new Date(latest.created_at).getTime() < 10 * 60_000) {
+      return { status: 429, error: "This site was checked less than 10 minutes ago. Here is the latest report.", latestReportId: latest.id };
+    }
+  } catch {}
+  return null;
+}
 app.use(express.static(path.join(ROOT, "public"), {
   // Always revalidate the app shell so visitors never see a stale copy after a deploy.
   setHeaders: (res, filePath) => {
@@ -58,6 +103,9 @@ app.get("/api/checkup/stream", async (req, res) => {
     send("error", { message: target.error });
     return res.end();
   }
+  const gate = await checkupGate(req, target.display);
+  if (gate) { send("error", { message: gate.error, code: gate.code, latestReportId: gate.latestReportId }); return res.end(); }
+  target.userId = req.user ? req.user.id : null;
 
   let closed = false;
   req.on("close", () => { closed = true; });
@@ -77,6 +125,9 @@ app.get("/api/checkup/stream", async (req, res) => {
 app.post("/api/checkup", async (req, res) => {
   const target = await prepare(req.body?.url, req.body?.consent);
   if (!target.ok) return res.status(400).json({ error: target.error });
+  const gate = await checkupGate(req, target.display);
+  if (gate) return res.status(gate.status).json({ error: gate.error, code: gate.code, latestReportId: gate.latestReportId });
+  target.userId = req.user ? req.user.id : null;
   try {
     const report = await runCheckup(target, () => {});
     res.json(report);
@@ -87,9 +138,25 @@ app.post("/api/checkup", async (req, res) => {
 });
 
 // ---- saved reports (when a database is configured) ----
-app.get("/api/reports", async (_req, res) => {
+app.get("/api/checks", async (req, res) => {
+  const host = normHost(req.query.host);
+  if (!host) return res.status(400).json({ error: "Missing host." });
   try {
-    res.json({ db: dbEnabled(), reports: await listReports(20) });
+    const rows = await reportsForHost(host, 10);
+    res.json({ host, count: rows.length, reports: rows.map((r) => ({ id: r.id, grade: r.grade, score: r.score, scannedAt: r.created_at, by: { name: r.by_name || null } })) });
+  } catch (err) {
+    console.error("checks:", err);
+    res.status(500).json({ error: "Could not look up that site." });
+  }
+});
+
+app.get("/api/reports", async (req, res) => {
+  try {
+    const opts = {};
+    if (req.query.host) opts.host = normHost(req.query.host);
+    if (req.query.mine === "1") { if (!req.user) return res.status(401).json({ error: "Please sign in." }); opts.userId = req.user.id; }
+    const rows = await listReports(parseInt(req.query.limit, 10) || 20, opts);
+    res.json({ db: dbEnabled(), reports: rows.map((r) => ({ id: r.id, target: r.target, grade: r.grade, score: r.score, created_at: r.created_at, by: { name: r.by_name || null } })) });
   } catch (err) {
     console.error("list reports:", err);
     res.status(500).json({ error: "Could not list reports." });
@@ -110,6 +177,7 @@ app.get("/api/reports/:id", async (req, res) => {
 
 // Share links render the app, which then fetches the saved report by id.
 app.get("/r/:id", (_req, res) => res.sendFile(path.join(ROOT, "public", "index.html")));
+app.get(["/login", "/signup", "/forgot", "/reset", "/account", "/bulletin", "/b/:id", "/verify/:id", "/auth-error"], (_req, res) => res.sendFile(path.join(ROOT, "public", "index.html")));
 app.get("/privacy", (_req, res) => res.sendFile(path.join(ROOT, "public", "privacy.html")));
 app.get("/terms", (_req, res) => res.sendFile(path.join(ROOT, "public", "terms.html")));
 

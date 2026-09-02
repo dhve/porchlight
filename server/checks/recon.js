@@ -71,6 +71,7 @@ export async function runRecon(ctx) {
     setCookies: [],
     robots: null,
     sitemapUrls: [],
+    contact: { emails: [], pages: [] },
   };
 
   detectStack(facts, $, html);
@@ -166,6 +167,19 @@ function collectFrom(facts, $, pageUrl, headers) {
       insecureAction: /^http:\/\//i.test(actionAbs),
       pwAutocompleteOn: hasPassword && $f.find('input[type="password"][autocomplete="on"]').length > 0,
     });
+  });
+  // contact hints (public emails and contact-like pages) for the community bulletin
+  $("a[href]").each((_, el) => {
+    const href = ($(el).attr("href") || "").trim();
+    const text = ($(el).text() || "").trim();
+    if (/^mailto:/i.test(href)) {
+      const em = href.replace(/^mailto:/i, "").split("?")[0].trim().toLowerCase();
+      if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em) && !facts.contact.emails.includes(em) && facts.contact.emails.length < 5) facts.contact.emails.push(em);
+      return;
+    }
+    if (/contact|get in touch|reach us|about us/i.test(text + " " + href)) {
+      try { const abs = new URL(href, pageUrl); if (abs.origin === origin && !facts.contact.pages.includes(abs.href) && facts.contact.pages.length < 5) facts.contact.pages.push(abs.href); } catch {}
+    }
   });
   // cookies
   const sc = headers.get("set-cookie");

@@ -214,6 +214,7 @@ function renderReport(r) {
     html += reassureBanner(false);
   }
   $("#findingsRoot").innerHTML = html;
+  try { if (window.Sutros) Sutros.onReportRendered(r); } catch (e) { console.error(e); }
 }
 
 function chip(cls, n, label) {
@@ -352,7 +353,9 @@ $("#checkForm").addEventListener("submit", (e) => {
     return;
   }
   err.classList.remove("show");
-  startLive(url);
+  if (window.Sutros && Sutros.config && Sutros.config.requireAccount && !Sutros.requireLogin("/?url=" + encodeURIComponent(url))) return;
+  const host = displayHost(url);
+  Promise.resolve(window.Sutros ? Sutros.beforeCheckup(host) : true).then((ok) => { if (ok) startLive(url); });
 });
 
 $("#shareCopy").addEventListener("click", async () => {
@@ -392,7 +395,7 @@ async function nominate() {
   try {
     const res = await fetch("/api/nominate", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-Requested-With": "fetch" },
       body: JSON.stringify({ url }),
     });
     const data = await res.json();
@@ -476,7 +479,7 @@ async function submitHelper(e) {
   try {
     const res = await fetch("/api/helpers", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-Requested-With": "fetch" },
       body: JSON.stringify(payload),
     });
     const data = await res.json();

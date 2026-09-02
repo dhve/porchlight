@@ -15,7 +15,8 @@ import { modelName, llmEnabled } from "./llm.js";
 import { planCheckup } from "./orchestrator.js";
 import { writeReport } from "./reporter.js";
 import { scoreReport } from "./scoring.js";
-import { saveReport } from "./db.js";
+import { saveReport, newId } from "./db.js";
+import { signReport } from "./verify.js";
 import { explain } from "./explain.js";
 
 import { runRecon } from "./checks/recon.js";
@@ -51,7 +52,7 @@ const STEP3 = ["tls", "security", "cookies", "exposedFiles", "libraries", "discl
 const STEP4 = ["forms", "flows", "links", "reflection", "modernization", "browser"];
 const MARK = { urgent: "⚠️", serious: "🔧", watch: "👀", good: "✅" };
 
-export async function runCheckup({ url, display }, onEvent = () => {}) {
+export async function runCheckup({ url, display, userId = null }, onEvent = () => {}) {
   const client = createClient();
   const ctx = { url, client };
   const findings = [];
@@ -75,7 +76,7 @@ export async function runCheckup({ url, display }, onEvent = () => {}) {
 
   if (!recon.facts.reachable) {
     for (const key of ["plan", "probe", "customer"]) onEvent("step", { key, status: "done", detail: "skipped" });
-    return finish({ url, display, findings, passes, plan: { focus: "Site was unreachable.", llm: false }, checksRun, browserInfo, onEvent });
+    return finish({ url, display, userId, findings, passes, plan: { focus: "Site was unreachable.", llm: false }, checksRun, browserInfo, onEvent });
   }
 
   // ---- Step 2: plan (orchestrator) ----
@@ -93,7 +94,7 @@ export async function runCheckup({ url, display }, onEvent = () => {}) {
   await runStep(onEvent, "customer", order.filter((id) => STEP4.includes(id)), ctx, findings, passes, checksRun, browserInfo);
 
   // ---- Step 5: report ----
-  return finish({ url, display, facts: recon.facts, findings, passes, plan, checksRun, browserInfo, onEvent });
+  return finish({ url, display, userId, facts: recon.facts, findings, passes, plan, checksRun, browserInfo, onEvent });
 }
 
 async function runStep(onEvent, key, ids, ctx, findings, passes, checksRun, browserInfo) {
@@ -110,7 +111,7 @@ async function runStep(onEvent, key, ids, ctx, findings, passes, checksRun, brow
   onEvent("step", { key, status: "done" });
 }
 
-async function finish({ url, display, facts, findings, passes, plan, checksRun, browserInfo, onEvent }) {
+async function finish({ url, display, userId = null, facts, findings, passes, plan, checksRun, browserInfo, onEvent }) {
   onEvent("step", { key: "report", status: "start" });
 
   // De-duplicate by id, then sort most severe first.
@@ -163,10 +164,13 @@ async function finish({ url, display, facts, findings, passes, plan, checksRun, 
     },
   };
 
-  // Persist when a database is configured; a DB hiccup must never sink a checkup.
+  // Identity, ownership, contact hints, and the signed attestation, then persist.
+  report.id = newId();
+  report.userId = userId || null;
+  report.contact = (facts && facts.contact) || { emails: [], pages: [] };
+  try { const att = signReport(report); if (att) report.attestation = att; } catch (err) { console.error("could not sign report:", err.message); }
   try {
-    const id = await saveReport(report);
-    if (id) report.id = id;
+    await saveReport(report); // a DB hiccup must never sink a checkup
   } catch (err) {
     console.error("could not save report:", err.message);
   }

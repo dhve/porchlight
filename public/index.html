@@ -28,6 +28,7 @@
     <button class="navlink hide-sm" data-nav="how">How it works</button>
     <button class="navlink hide-sm" data-nav="community">Community</button>
     <button class="navlink" id="sampleNav">See a sample</button>
+    <span id="authSlot"></span>
   </div>
 </div>
 
@@ -53,6 +54,7 @@
             <span><b>Anyone can check any site.</b> Sutros only reads what a visitor's browser can already see, never changes anything, and every checkup is public.</span>
           </div>
           <p class="err" id="formErr">Please enter a website address.</p>
+          <div id="dedupSlot"></div>
           <button class="btn btn-primary btn-lg" type="submit" id="startBtn">
             <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
             Give my website a free checkup
@@ -122,6 +124,8 @@
       </div>
     </div>
   </section>
+
+  <section class="band alt" id="recentChecks" hidden></section>
 
   <section class="band" id="community">
     <div class="wrap">
@@ -224,6 +228,7 @@
 
       <div class="scorecard" id="scorecard"></div>
       <div class="findings" id="findingsRoot"></div>
+      <div id="reportExtras"></div>
 
       <div class="report-foot">
         <div class="rf-txt">
@@ -273,6 +278,8 @@
   </section>
 </div>
 
+<div id="screens-extra"></div>
+
 <footer>
   <div class="wrap">
     <span class="brand">SUTROS</span>
@@ -280,6 +287,9 @@
   </div>
 </footer>
 
+<script src="/core.js"></script>
 <script src="/app.js"></script>
+<script src="/auth-ui.js"></script>
+<script src="/community-ui.js"></script>
 </body>
 </html>
