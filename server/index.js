@@ -22,9 +22,11 @@ const { normalizeUrl, resolveTarget } = await import("./safety.js");
 const { runCheckup } = await import("./pipeline.js");
 const { llmEnabled, modelName } = await import("./llm.js");
 const { initDb, dbEnabled, getReport, listReports, saveNomination, addHelper, listHelpers } = await import("./db.js");
+const { setupRouter } = await import("./setup.js");
 
 const app = express();
 app.use(express.json({ limit: "16kb" }));
+app.use(setupRouter(ROOT));
 app.use(express.static(path.join(ROOT, "public"), {
   // Always revalidate the app shell so visitors never see a stale copy after a deploy.
   setHeaders: (res, filePath) => {
