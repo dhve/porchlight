@@ -122,6 +122,26 @@ the safety guards before any request is made.
 - `GET /api/reports` lists recent saved reports (needs a database).
 - `GET /api/reports/:id` returns one saved report; `/r/:id` is its share link.
 
+## Deploying to a VPS
+
+`deploy/` holds a re-runnable install for an Ubuntu box (used for the live
+instance on a DigitalOcean droplet). It installs Node 22, Postgres, Chromium for
+the browser agent, creates a locked-down `porchlight` system user, writes the
+`.env`, and registers a systemd service on port 3300.
+
+```bash
+# from your machine, with SSH access to the server as root
+./deploy/run-deploy.sh
+```
+
+The runner copies only the `OPENAI_*` lines from your local `.env` over SSH (the
+key is never printed), then runs `deploy/deploy-porchlight.sh` on the server. To
+redeploy after a code change:
+
+```bash
+ssh root@<server> "git -C /opt/porchlight pull && systemctl restart porchlight"
+```
+
 ## Safety and responsible use
 
 Porchlight is meant for websites you own or have explicit permission to test.
