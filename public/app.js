@@ -345,10 +345,9 @@ $("#helperForm").addEventListener("submit", submitHelper);
 $("#checkForm").addEventListener("submit", (e) => {
   e.preventDefault();
   const url = $("#urlInput").value.trim();
-  const consent = $("#consent").checked;
   const err = $("#formErr");
-  if (!url || !consent) {
-    err.textContent = "Please enter a website and confirm you have permission.";
+  if (!url) {
+    err.textContent = "Please enter a website address.";
     err.classList.add("show");
     return;
   }

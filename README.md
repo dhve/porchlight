@@ -175,10 +175,10 @@ ssh root@<server> "cd /opt/porchlight && sudo -u porchlight git pull && systemct
 
 ## Safety and responsible use
 
-Sutros is meant for websites you own or have explicit permission to test.
+Anyone can check any public website: the checks only read what a visitor's browser can already see, and every checkup is public.
 
-- **Consent required.** Every checkup requires confirming ownership or
-  permission. There is no way to run one without it.
+- **Public by design.** Every checkup is public, and reports never include the
+  contents of exposed files or secret values.
 - **Read-only.** It makes ordinary GET requests and one read-only TLS handshake.
   It does not submit forms, complete purchases, or change anything on the site.
 - **Detection, not exploitation.** When it finds an exposed file it confirms the

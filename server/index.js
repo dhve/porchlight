@@ -110,6 +110,8 @@ app.get("/api/reports/:id", async (req, res) => {
 
 // Share links render the app, which then fetches the saved report by id.
 app.get("/r/:id", (_req, res) => res.sendFile(path.join(ROOT, "public", "index.html")));
+app.get("/privacy", (_req, res) => res.sendFile(path.join(ROOT, "public", "privacy.html")));
+app.get("/terms", (_req, res) => res.sendFile(path.join(ROOT, "public", "terms.html")));
 
 // ---- nominate a local business (records it, returns a shareable invite) ----
 app.post("/api/nominate", async (req, res) => {
@@ -170,10 +172,7 @@ app.listen(PORT, () => {
 
 /** Validate consent + URL + scope. Returns {ok, url, display} or {ok:false, error}. */
 async function prepare(rawUrl, consent) {
-  const consented = consent === true || consent === "true" || consent === "1" || consent === 1;
-  if (!consented) {
-    return { ok: false, error: "Please confirm you own this website or have permission to check it." };
-  }
+  void consent; // accepted for compatibility; checkups are public and read-only, no ownership claim is required
   const norm = normalizeUrl(rawUrl);
   if (!norm.ok) return norm;
   const scope = await resolveTarget(norm.url);

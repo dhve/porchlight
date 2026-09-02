@@ -49,11 +49,10 @@
               <input id="urlInput" type="text" placeholder="yourwebsite.com" autocomplete="off" spellcheck="false">
             </div>
           </div>
-          <label class="consent" for="consent">
-            <input type="checkbox" id="consent">
-            <span>I <b>own this website</b> or have permission to check it. Sutros only looks, never changes or breaks anything.</span>
-          </label>
-          <p class="err" id="formErr">Please enter a website and confirm you have permission.</p>
+          <div class="consent">
+            <span><b>Anyone can check any site.</b> Sutros only reads what a visitor's browser can already see, never changes anything, and every checkup is public.</span>
+          </div>
+          <p class="err" id="formErr">Please enter a website address.</p>
           <button class="btn btn-primary btn-lg" type="submit" id="startBtn">
             <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
             Give my website a free checkup
@@ -65,6 +64,7 @@
           <span><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg> Free for local businesses</span>
           <span><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Look-only, never destructive</span>
           <span><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="10"/></svg> Takes about a minute</span>
+          <span><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20a15 15 0 0 1 0-20"/></svg> Every checkup is public</span>
         </div>
       </div>
     </div>
@@ -276,7 +276,7 @@
 <footer>
   <div class="wrap">
     <span class="brand">SUTROS</span>
-    <p class="disc">Sutros only checks websites you own or are permitted to test, looks without changing anything, and detects issues rather than exploiting them. Sample report uses fictional data.</p>
+    <p class="disc">Sutros only reads what any visitor can see, never changes anything, and detects issues rather than exploiting them. Every checkup is public. Sample report uses fictional data. <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></p>
   </div>
 </footer>
 
