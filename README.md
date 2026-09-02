@@ -170,7 +170,7 @@ key is never printed), then runs `deploy/deploy-porchlight.sh` on the server. To
 redeploy after a code change:
 
 ```bash
-ssh root@<server> "git -C /opt/porchlight pull && systemctl restart porchlight"
+ssh root@<server> "cd /opt/porchlight && sudo -u porchlight git pull && systemctl restart porchlight"
 ```
 
 ## Safety and responsible use
