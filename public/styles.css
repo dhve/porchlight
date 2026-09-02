@@ -214,6 +214,10 @@ section.band.alt{background:var(--ground-2);}
 .engine-badge{margin-left:auto; display:inline-flex; align-items:center; gap:8px; font-size:12.5px; font-weight:600; color:var(--ink-faint); border:1px solid var(--border); border-radius:100px; padding:6px 13px;}
 .engine-badge .pip{width:7px; height:7px; border-radius:50%; background:var(--good);}
 .engine-badge.off .pip{background:var(--ink-faint);}
+.share-box{display:none; align-items:center; gap:9px; font-size:13px; font-weight:600; color:var(--ink-soft); border:1px solid var(--border); border-radius:100px; padding:5px 6px 5px 13px; background:var(--surface); max-width:100%;}
+.share-box.show{display:inline-flex;}
+.share-box code{font-family:"JetBrains Mono",monospace; font-size:12px; color:var(--ink); font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:34ch;}
+.share-box button{border:0; background:var(--brand); color:var(--brand-ink); font-weight:700; font-size:12px; padding:6px 11px; border-radius:100px; cursor:pointer;}
 
 .scorecard{background:var(--surface); border:1px solid var(--border); border-radius:22px; padding:34px; display:grid; grid-template-columns:auto 1fr; gap:34px; align-items:center; box-shadow:0 20px 50px -30px rgb(var(--shadow)/.4); position:relative; overflow:hidden;}
 .scorecard .sc-glow{position:absolute; top:-80px; left:-40px; width:280px; height:280px; background:radial-gradient(circle,color-mix(in srgb,var(--glow) 34%,transparent),transparent 68%); filter:blur(10px); opacity:.5; pointer-events:none;}

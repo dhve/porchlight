@@ -21,13 +21,14 @@ loadEnv(path.join(ROOT, ".env"));
 const { normalizeUrl, resolveTarget } = await import("./safety.js");
 const { runCheckup } = await import("./pipeline.js");
 const { llmEnabled, modelName } = await import("./llm.js");
+const { initDb, dbEnabled, getReport, listReports } = await import("./db.js");
 
 const app = express();
 app.use(express.json({ limit: "16kb" }));
 app.use(express.static(path.join(ROOT, "public")));
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, llm: llmEnabled(), model: llmEnabled() ? modelName() : null });
+  res.json({ ok: true, llm: llmEnabled(), model: llmEnabled() ? modelName() : null, db: dbEnabled() });
 });
 
 // ---- streaming checkup (Server-Sent Events) ----
@@ -78,10 +79,40 @@ app.post("/api/checkup", async (req, res) => {
   }
 });
 
+// ---- saved reports (when a database is configured) ----
+app.get("/api/reports", async (_req, res) => {
+  try {
+    res.json({ db: dbEnabled(), reports: await listReports(20) });
+  } catch (err) {
+    console.error("list reports:", err);
+    res.status(500).json({ error: "Could not list reports." });
+  }
+});
+
+app.get("/api/reports/:id", async (req, res) => {
+  if (!/^[A-Za-z0-9_-]{6,20}$/.test(req.params.id)) return res.status(400).json({ error: "Bad report id." });
+  try {
+    const report = await getReport(req.params.id);
+    if (!report) return res.status(404).json({ error: "We couldn't find that report." });
+    res.json(report);
+  } catch (err) {
+    console.error("get report:", err);
+    res.status(500).json({ error: "Could not load that report." });
+  }
+});
+
+// Share links render the app, which then fetches the saved report by id.
+app.get("/r/:id", (_req, res) => res.sendFile(path.join(ROOT, "public", "index.html")));
+
 const PORT = parseInt(process.env.PORT || "3000", 10);
+const dbOn = await initDb().catch((err) => {
+  console.error("  database: " + err.message);
+  return false;
+});
 app.listen(PORT, () => {
   console.log(`\n  Porchlight is on at http://localhost:${PORT}`);
-  console.log(`  LLM: ${llmEnabled() ? "enabled (" + modelName() + ")" : "off - using rule-based fallback (add OPENAI_API_KEY to .env to enable)"}\n`);
+  console.log(`  LLM: ${llmEnabled() ? "enabled (" + modelName() + ")" : "off - using rule-based fallback (add OPENAI_API_KEY to .env to enable)"}`);
+  console.log(`  DB:  ${dbOn ? "connected - reports are saved" : "off - set DATABASE_URL in .env to save reports"}\n`);
 });
 
 // ---- helpers ----

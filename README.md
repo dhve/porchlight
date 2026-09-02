@@ -86,6 +86,17 @@ Never paste your key into a chat or commit it to git. Instead:
 `.env` is listed in `.gitignore`, so the key stays on your machine and is never
 pushed.
 
+### Saving reports with Postgres (optional)
+
+Set `DATABASE_URL` in `.env` and Porchlight saves every checkup, gives each
+report a shareable link like `/r/abc123xyz0`, and lists recent reports at
+`/api/reports`. The table is created automatically on first start. Without a
+database everything still works, reports just are not kept.
+
+```
+DATABASE_URL=postgres://porchlight:password@localhost:5432/porchlight
+```
+
 ### Turning on the browser agent (optional)
 
 The deeper "acts like a customer" pass uses Playwright, which is heavy, so it is
@@ -107,7 +118,9 @@ the safety guards before any request is made.
   final report as Server-Sent Events (this is what the UI uses).
 - `POST /api/checkup` with JSON `{ "url": "<site>", "consent": true }` runs the
   same checkup and returns the report as one JSON response.
-- `GET /api/health` reports whether the LLM is configured.
+- `GET /api/health` reports whether the LLM and database are configured.
+- `GET /api/reports` lists recent saved reports (needs a database).
+- `GET /api/reports/:id` returns one saved report; `/r/:id` is its share link.
 
 ## Safety and responsible use
 
@@ -134,6 +147,7 @@ server/
   orchestrator.js       LLM planner (rule-based fallback)
   reporter.js           LLM report writer (template fallback)
   scoring.js            Deterministic A to F grade
+  db.js                 Optional Postgres persistence and share links
   pipeline.js           Runs the whole checkup, emits progress
   lib/http.js           Polite HTTP client with a request budget
   checks/               recon, tls, security, exposedFiles, flows, links, browser
@@ -146,7 +160,7 @@ public/
 ## Roadmap
 
 - Confirm detected versions against a live vulnerability database
-- Save reports and re-scan on a schedule, with a "verified healthy" badge
+- Re-scan saved sites on a schedule, with a "verified healthy" badge
 - The community layer: nominate a local business, match with vetted helpers
 - Email a report as a shareable PDF
 

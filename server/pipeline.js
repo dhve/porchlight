@@ -15,6 +15,7 @@ import { modelName, llmEnabled } from "./llm.js";
 import { planCheckup } from "./orchestrator.js";
 import { writeReport } from "./reporter.js";
 import { scoreReport } from "./scoring.js";
+import { saveReport } from "./db.js";
 
 import { runRecon } from "./checks/recon.js";
 import { runTls } from "./checks/tls.js";
@@ -139,6 +140,14 @@ async function finish({ url, display, facts, findings, passes, plan, checksRun, 
       browser: browserInfo,
     },
   };
+
+  // Persist when a database is configured; a DB hiccup must never sink a checkup.
+  try {
+    const id = await saveReport(report);
+    if (id) report.id = id;
+  } catch (err) {
+    console.error("could not save report:", err.message);
+  }
 
   onEvent("report", report);
   onEvent("done", {});

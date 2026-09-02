@@ -46,7 +46,7 @@ export async function writeReport({ target, facts, findings, passes, grade, grad
         "Respond as JSON: {\"summary\": string, \"findings\": [{\"id\": string, \"title\": string, \"meaning\": string, \"fix\": [string], \"who\": string}], \"passes\": [string]}.",
       user: JSON.stringify(payload),
       temperature: 0.5,
-      maxTokens: 1800,
+      maxTokens: 8000,
     });
 
     const byId = new Map((out.findings || []).map((f) => [f.id, f]));
@@ -68,7 +68,8 @@ export async function writeReport({ target, facts, findings, passes, grade, grad
       passes: Array.isArray(out.passes) && out.passes.length ? out.passes.map(String) : passes,
       llm: true,
     };
-  } catch {
+  } catch (err) {
+    console.error("reporter: falling back to template write-up:", err.message);
     return { ...base, llm: false };
   }
 }

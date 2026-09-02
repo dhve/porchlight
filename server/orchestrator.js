@@ -40,7 +40,7 @@ export async function planCheckup(facts) {
         "Valid ids are exactly: " + ALL_IDS.join(", ") + ". Keep 'focus' to one short sentence a shop owner would understand.",
       user: `Initial scan summary:\n${summary}`,
       temperature: 0.3,
-      maxTokens: 500,
+      maxTokens: 2500,
     });
 
     const checks = Array.isArray(out.checks)
@@ -51,7 +51,8 @@ export async function planCheckup(facts) {
     for (const id of ALL_IDS) if (!chosen.has(id)) checks.push({ id, reason: "Included for completeness." });
 
     return { focus: String(out.focus || fallback.focus).slice(0, 200), checks, llm: true };
-  } catch {
+  } catch (err) {
+    console.error("orchestrator: falling back to rule-based plan:", err.message);
     return fallback; // any LLM trouble -> just run everything
   }
 }

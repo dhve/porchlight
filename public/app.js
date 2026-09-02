@@ -51,6 +51,7 @@ function go(name) {
   $$(".screen").forEach((s) => s.classList.remove("is-active"));
   $("#screen-" + name).classList.add("is-active");
   window.scrollTo({ top: 0, behavior: REDUCED ? "auto" : "smooth" });
+  if (name === "home" && location.pathname !== "/") history.replaceState(null, "", "/");
   if (name === "report") applyRing();
 }
 function scrollToId(id) {
@@ -132,6 +133,7 @@ function startLive(url) {
     gotReport = true;
     currentReport = JSON.parse(e.data);
     renderReport(currentReport);
+    if (currentReport.id) history.replaceState(null, "", "/r/" + currentReport.id);
     $("#runCta").classList.add("show");
   });
   es.addEventListener("error", (e) => {
@@ -197,6 +199,17 @@ function renderReport(r) {
   badge.title = r.engine
     ? `planner: ${r.engine.orchestrator}; writer: ${r.engine.reporter}; checks: ${(r.engine.checksRun || []).join(", ")}`
     : "";
+
+  // share link (only when the report was saved to the database)
+  const share = $("#shareBox");
+  if (r.id) {
+    const link = `${location.origin}/r/${r.id}`;
+    $("#shareLink").textContent = link;
+    share.dataset.link = link;
+    share.classList.add("show");
+  } else {
+    share.classList.remove("show");
+  }
 
   // findings grouped by urgency
   const fixFirst = r.findings.filter((f) => f.severity === "urgent" || f.severity === "serious");
@@ -323,3 +336,27 @@ $("#checkForm").addEventListener("submit", (e) => {
   err.classList.remove("show");
   startLive(url);
 });
+
+$("#shareCopy").addEventListener("click", async () => {
+  const link = $("#shareBox").dataset.link || "";
+  try {
+    await navigator.clipboard.writeText(link);
+    $("#shareCopy").textContent = "Copied";
+    setTimeout(() => { $("#shareCopy").textContent = "Copy"; }, 1500);
+  } catch {
+    prompt("Copy this link:", link);
+  }
+});
+
+// Deep link: /r/<id> opens a saved report.
+(function loadFromPath() {
+  const m = location.pathname.match(/^\/r\/([A-Za-z0-9_-]{6,20})$/);
+  if (!m) return;
+  fetch(`/api/reports/${m[1]}`)
+    .then((res) => (res.ok ? res.json() : Promise.reject(new Error("not found"))))
+    .then((report) => { currentReport = report; renderReport(report); go("report"); })
+    .catch(() => {
+      $("#formErr").textContent = "We couldn't find that saved report. It may have been removed.";
+      $("#formErr").classList.add("show");
+    });
+})();
