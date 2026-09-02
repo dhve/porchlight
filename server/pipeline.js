@@ -16,6 +16,7 @@ import { planCheckup } from "./orchestrator.js";
 import { writeReport } from "./reporter.js";
 import { scoreReport } from "./scoring.js";
 import { saveReport } from "./db.js";
+import { explain } from "./explain.js";
 
 import { runRecon } from "./checks/recon.js";
 import { runTls } from "./checks/tls.js";
@@ -117,6 +118,14 @@ async function finish({ url, display, facts, findings, passes, plan, checksRun, 
   const unique = findings.filter((f) => (seen.has(f.id) ? false : seen.add(f.id)));
   const rank = { urgent: 0, serious: 1, watch: 2, good: 3 };
   unique.sort((a, b) => (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9));
+
+  // Technical proof: every finding gets a mechanism explanation + how to confirm.
+  for (const f of unique) {
+    if (!f.evidence) continue;
+    const e = explain(f);
+    if (!f.evidence.why && e.why) f.evidence.why = e.why;
+    if (!f.evidence.confirm && e.confirm) f.evidence.confirm = e.confirm;
+  }
 
   const { grade, gradeLabel, score, ringPercent, tally } = scoreReport(unique);
   const written = await writeReport({

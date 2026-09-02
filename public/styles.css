@@ -45,8 +45,8 @@ button{font-family:inherit;}
 /* ============ TOP BAR ============ */
 .topbar{position:sticky; top:0; z-index:50; background:color-mix(in srgb,var(--ground) 86%,transparent); backdrop-filter:blur(10px); border-bottom:1px solid var(--border);}
 .topbar .wrap{display:flex; align-items:center; gap:16px; height:64px;}
-.brand{display:flex; align-items:center; gap:11px; font-family:var(--font); font-weight:600; font-size:21px; letter-spacing:-.01em; cursor:pointer; background:none; border:0; color:var(--ink); padding:0;}
-.lamp{width:26px; height:30px; flex:none;}
+.brand{display:flex; align-items:center; gap:10px; font-family:var(--font); font-weight:700; font-size:19px; letter-spacing:.08em; cursor:pointer; background:none; border:0; color:var(--ink); padding:0;}
+.lamp{width:28px; height:28px; flex:none;}
 .spacer{flex:1;}
 .navlink{background:none; border:0; color:var(--ink-soft); font-size:15px; font-weight:600; cursor:pointer; padding:8px 6px; border-radius:8px;}
 .navlink:hover{color:var(--ink);}
@@ -336,3 +336,10 @@ footer .brand{font-size:17px; color:var(--ink-soft);}
 .mn-where li{word-break:break-word;}
 .mn-fix li{margin:3px 0;}
 .mn-who{margin-top:6px; font-size:13px; color:var(--ink-faint); display:flex; align-items:center; gap:6px;}
+
+/* ============ TECHNICAL PROOF DEPTH ============ */
+.proof-why,.proof-confirm{font-size:14px; color:var(--ink-soft); line-height:1.6; margin:0 0 10px; max-width:78ch;}
+.proof-why b,.proof-confirm b{color:var(--ink);}
+.proof-k{font-size:11px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-faint); margin:0 0 6px;}
+.proof-confirm{margin-top:12px;}
+.mn-whytech{font-size:14px; color:var(--ink-soft); line-height:1.55; margin:0 0 4px; max-width:70ch;}

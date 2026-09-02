@@ -22,15 +22,15 @@ export async function runDisclosure(ctx) {
   const origin = facts.baseOrigin;
 
   // ---- secrets in page source (homepage + crawled pages) ----
-  const secretHits = new Map(); // label -> count
+  const secretHits = []; // { label, path, count }
   for (const page of facts.pages || []) {
     if (!page.html) continue;
     for (const p of SECRET_PATTERNS) {
       const matches = page.html.match(p.re);
-      if (matches) secretHits.set(p.label, (secretHits.get(p.label) || 0) + matches.length);
+      if (matches) secretHits.push({ label: p.label, path: page.url.replace(origin, "") || "/", count: matches.length });
     }
   }
-  if (secretHits.size) {
+  if (secretHits.length) {
     findings.push({
       id: "secrets-in-source",
       category: "exposed-data",
@@ -43,7 +43,7 @@ export async function runDisclosure(ctx) {
         "Treat the exposed key as compromised and rotate it (generate a new one, disable the old).",
       ],
       who: "Your web person, promptly.",
-      evidence: { lines: [...secretHits.entries()].map(([label, n]) => `${label}: ${n} match(es) (value redacted)`), note: "Actual secret values were detected but not stored or shown." },
+      evidence: { lines: secretHits.slice(0, 6).map((h) => `${h.path}: ${h.label} (${h.count} match${h.count > 1 ? "es" : ""}, value redacted)`), note: "The key itself was detected in that page's source but is not stored or shown here." },
     });
   }
 
@@ -101,12 +101,30 @@ export async function runDisclosure(ctx) {
     });
   }
 
-  // ---- verbose error / stack traces ----
+  // ---- verbose error / stack traces (real signatures only, quoted) ----
+  // Plain words like "Warning:" or "Notice:" appear in normal content, so a
+  // PHP warning must carry a file path and line number to count.
+  const ERR_PATTERNS = [
+    /Fatal error:[^<\n]{0,160}/i,
+    /(?:Warning|Notice|Deprecated|Parse error):[^<\n]{0,120} in \/[^<\n]{0,80} on line \d+/i,
+    /Stack trace:[^<\n]{0,160}/i,
+    /Traceback \(most recent call last\)[^<]{0,160}/i,
+    /SQLSTATE\[[^<\n]{0,160}/i,
+    /You have an error in your SQL syntax[^<\n]{0,160}/i,
+    /Uncaught (?:Exception|Error)[^<\n]{0,160}/i,
+    /Whoops, looks like something went wrong/i,
+    /\bat [\w.$<>]+ \((?:[\w./-]+):\d+:\d+\)/,
+  ];
   const errHits = [];
-  for (const page of (facts.pages || []).slice(0, 4)) {
+  for (const page of (facts.pages || []).slice(0, 6)) {
     if (!page.html) continue;
-    if (/(Fatal error|Warning: |Notice: |Stack trace:|Traceback \(most recent call last\)|at [\w.$]+\([^)]*:\d+:\d+\)|SQLSTATE\[|You have an error in your SQL syntax|Whoops, looks like something went wrong)/.test(page.html)) {
-      errHits.push(page.url.replace(origin, "") || "/");
+    for (const re of ERR_PATTERNS) {
+      const m = page.html.match(re);
+      if (m) {
+        const snippet = m[0].replace(/\s+/g, " ").trim().slice(0, 160);
+        errHits.push({ path: page.url.replace(origin, "") || "/", snippet });
+        break;
+      }
     }
   }
   if (errHits.length) {
@@ -116,10 +134,13 @@ export async function runDisclosure(ctx) {
       severity: "serious",
       title: "Your site is showing detailed error messages",
       meaning:
-        "Some pages display technical error details (stack traces or database errors). These reveal how your site is built and can hand attackers a map of where to push.",
-      fix: ["Ask your web person to turn off detailed errors in production and show a friendly error page instead."],
+        "Some pages display technical error details (a stack trace or database error). These reveal how your site is built and can hand attackers a map of where to push. The exact text is quoted under the technical proof.",
+      fix: ["Ask your web person to turn off detailed errors in production and show a friendly error page instead. The quoted text points to the file and line that failed."],
       who: "Your web person.",
-      evidence: { lines: errHits.slice(0, 5).map((u) => `error text on ${u}`), note: "Error or stack-trace text found in page content." },
+      evidence: {
+        lines: errHits.slice(0, 5).map((h) => `${h.path}: "${h.snippet}"`),
+        note: "The quoted text is what visitors can see on that page.",
+      },
     });
   }
 

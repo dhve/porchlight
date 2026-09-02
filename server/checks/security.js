@@ -71,25 +71,6 @@ export async function runSecurity(ctx) {
     }
   }
 
-  // ---- HSTS quality (present but weak) ----
-  const hsts = headers.get("strict-transport-security");
-  if (hsts) {
-    const m = hsts.match(/max-age=(\d+)/i);
-    const age = m ? parseInt(m[1], 10) : 0;
-    if (age < 15552000) {
-      findings.push({
-        id: "weak-hsts",
-        category: "tls",
-        severity: "minor",
-        title: "Your https-enforcement window is short",
-        meaning: "Your site tells browsers to stick to the secure version, but only briefly. A longer window (six months or more) protects returning visitors better.",
-        fix: ["Ask your web person to set the HSTS max-age to at least 15552000 (six months), ideally with includeSubDomains."],
-        who: "Your web person.",
-        evidence: { lines: [`Strict-Transport-Security: ${hsts}`], note: "Longer is safer for returning visitors." },
-      });
-    }
-  }
-
   // ---- CORS misconfiguration ----
   try {
     const res = await client.get(facts.baseOrigin + "/"); // cheap re-check with default headers is fine
@@ -121,27 +102,30 @@ export async function runSecurity(ctx) {
     }
   } catch {}
 
-  // ---- mixed content on a secure page (across crawled pages) ----
+  // ---- active mixed content: scripts/styles/frames on an https page that use
+  // an http address. Browsers BLOCK these, so whatever they power breaks.
+  // (Images over http are auto-upgraded by browsers and are not reported.)
   if (facts.isHttps) {
-    const mixed = new Set();
+    const blocked = new Set();
     for (const page of facts.pages) {
       if (!page.html) continue;
-      for (const m of page.html.matchAll(/(?:src|href)=["'](http:\/\/[^"']+)["']/gi)) {
-        if (!/^http:\/\/(localhost|127\.)/.test(m[1])) mixed.add(m[1]);
+      for (const m of page.html.matchAll(/<(?:script|iframe)[^>]+src=["'](http:\/\/[^"']+)["']|<link[^>]+rel=["']stylesheet["'][^>]+href=["'](http:\/\/[^"']+)["']/gi)) {
+        const u = m[1] || m[2];
+        if (u && !/^http:\/\/(localhost|127\.)/.test(u)) blocked.add(u);
       }
     }
-    const unique = [...mixed].slice(0, 6);
+    const unique = [...blocked].slice(0, 6);
     if (unique.length) {
       findings.push({
-        id: "mixed-content",
-        category: "tls",
-        severity: "minor",
-        title: "The padlock can break on some pages",
+        id: "blocked-insecure-script",
+        category: "quality",
+        severity: "watch",
+        title: "Browsers are blocking one of your site's scripts",
         meaning:
-          "Your site is secure, but it loads some images or scripts over an unprotected connection. Browsers may show a 'Not secure' warning on those pages.",
-        fix: ["Update those links to load over https instead of http (usually just changing 'http' to 'https')."],
-        who: "Your web person.",
-        evidence: { lines: unique.map((u) => u.slice(0, 90)), note: "Insecure resources referenced on secure pages." },
+          "Your site itself is secure (https). But one of the scripts or stylesheets it tries to load still uses an old http:// address, and modern browsers refuse to load it. Whatever that file powers may quietly not work.",
+        fix: ["Change that file's address from http:// to https:// (the same file is almost always available over https)."],
+        who: "Your web person; usually a one-word change.",
+        evidence: { lines: unique.map((u) => u.slice(0, 100)), note: "Active content blocked by browsers on a secure page." },
       });
     }
   }

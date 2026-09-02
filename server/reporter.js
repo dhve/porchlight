@@ -44,7 +44,7 @@ export async function writeReport({ target, facts, findings, passes, grade, grad
         "Tone: warm and welcoming, never alarming or dramatic; no analogies or metaphors; state the plain fact of what could go wrong and nudge toward the fix. " +
         "Also write one short 'summary' paragraph (2-3 sentences) describing the site's overall health, " +
         "and lightly tidy the 'passes' list (things that are fine). " +
-        "Respond as JSON: {\"summary\": string, \"findings\": [{\"id\": string, \"title\": string, \"meaning\": string, \"fix\": [string], \"who\": string}], \"passes\": [string]}.",
+        "Respond as JSON: {\"summary\": string, \"findings\": [{\"id\": string, \"title\": string, \"meaning\": string, \"fix\": [string], \"who\": string, \"why\": string, \"confirm\": string}], \"passes\": [string]}.",
       user: JSON.stringify(payload),
       temperature: 0.5,
       maxTokens: 8000,
@@ -60,6 +60,9 @@ export async function writeReport({ target, facts, findings, passes, grade, grad
         meaning: str(r.meaning, f.meaning),
         fix: Array.isArray(r.fix) && r.fix.length ? r.fix.map(String) : f.fix,
         who: str(r.who, f.who),
+        evidence: f.evidence
+          ? { ...f.evidence, why: str(r.why, f.evidence.why), confirm: str(r.confirm, f.evidence.confirm) }
+          : f.evidence,
       };
     });
 

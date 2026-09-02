@@ -25,7 +25,12 @@ const { initDb, dbEnabled, getReport, listReports, saveNomination, addHelper, li
 
 const app = express();
 app.use(express.json({ limit: "16kb" }));
-app.use(express.static(path.join(ROOT, "public")));
+app.use(express.static(path.join(ROOT, "public"), {
+  // Always revalidate the app shell so visitors never see a stale copy after a deploy.
+  setHeaders: (res, filePath) => {
+    if (/\.(html|css|js)$/.test(filePath)) res.setHeader("Cache-Control", "no-cache");
+  },
+}));
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, llm: llmEnabled(), model: llmEnabled() ? modelName() : null, db: dbEnabled() });
