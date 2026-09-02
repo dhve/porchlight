@@ -42,13 +42,15 @@ export async function runTls(ctx) {
     passes.push(`Your security certificate is valid for ${daysLeft} more days.`);
   }
 
-  // ---- key strength ----
-  if (cert.bits && cert.bits < 2048) {
+  // ---- key strength (curve-aware: ECC 256-bit is strong, RSA needs >= 2048) ----
+  const isEcc = Boolean(cert.nistCurve || cert.asn1Curve);
+  const weakKey = cert.bits && (isEcc ? cert.bits < 224 : cert.bits < 2048);
+  if (weakKey) {
     findings.push(mk("weak-cert-key", "serious", "Your certificate uses a weak key",
-      `Your certificate's encryption key is only ${cert.bits} bits. Modern guidance is at least 2048 bits, because weaker keys are easier to break.`,
-      ["Ask your host to reissue the certificate with a 2048-bit (or stronger) key."],
+      `Your certificate's encryption key (${cert.bits} bits${isEcc ? ", elliptic curve" : ", RSA"}) is below modern guidance, which makes it easier to break.`,
+      [isEcc ? "Ask your host to reissue the certificate with a 256-bit (or stronger) elliptic-curve key." : "Ask your host to reissue the certificate with a 2048-bit (or stronger) RSA key."],
       "Your hosting provider.",
-      [`Key size: ${cert.bits} bits`]));
+      [`Key size: ${cert.bits} bits (${isEcc ? "ECC " + (cert.nistCurve || cert.asn1Curve) : "RSA"})`]));
   }
 
   // ---- self-signed ----

@@ -28,7 +28,7 @@ export async function runSecurity(ctx) {
     findings.push({
       id: "missing-security-headers",
       category: "hardening",
-      severity: missing.length >= 4 ? "serious" : "watch",
+      severity: "watch",
       title: "Your site is missing several standard safety headers",
       meaning:
         "Browsers support simple instructions that make a site much harder to abuse (clickjacking, content sniffing, script injection). Yours isn't sending several of them.",
