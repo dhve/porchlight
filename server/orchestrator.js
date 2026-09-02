@@ -20,6 +20,7 @@ export const CHECK_CATALOG = [
   { id: "flows", desc: "Key customer pages (order, book, contact) load without errors." },
   { id: "links", desc: "Broken links and images." },
   { id: "reflection", desc: "Conservative reflected-input (XSS surface) check, detection only." },
+  { id: "modernization", desc: "Dated design and not-mobile-friendly, with specific modernization guidance." },
   { id: "browser", desc: "Headless-browser pass: JS errors, load speed, render issues." },
 ];
 
@@ -38,7 +39,7 @@ export async function planCheckup(facts) {
   try {
     const out = await chatJSON({
       system:
-        "You are the planner for Porchlight, a friendly website-checkup tool for small businesses. " +
+        "You are the planner for Sutros, a friendly website-checkup tool for small businesses. " +
         "Given a summary of what an initial scan found, choose which follow-up checks to run and in what order, " +
         "prioritizing the ones most likely to matter for THIS site. You may include every check. " +
         "Respond as JSON: {\"focus\": string, \"checks\": [{\"id\": string, \"reason\": string}]}. " +

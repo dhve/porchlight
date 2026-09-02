@@ -36,7 +36,7 @@ export async function writeReport({ target, facts, findings, passes, grade, grad
 
     const out = await chatJSON({
       system:
-        "You are the report writer for Porchlight, a website checkup tool for small-business owners who are NOT technical. " +
+        "You are the report writer for Sutros, a website checkup tool for small-business owners who are NOT technical. " +
         "Rewrite the given findings in warm, plain, everyday language. Rules: " +
         "keep each finding's id and severity EXACTLY as given; do not add or remove findings; " +
         "explain impact in terms an owner feels (lost customers, exposed data, scary warnings); " +

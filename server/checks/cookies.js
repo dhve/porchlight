@@ -37,7 +37,7 @@ export async function runCookies(ctx) {
   findings.push({
     id: "insecure-cookies",
     category: "hardening",
-    severity: anySession ? "serious" : "watch",
+    severity: anySession ? "serious" : "minor",
     title: anySession ? "A login cookie is missing key protections" : "Some cookies are missing safety flags",
     meaning: anySession
       ? "A cookie that looks like it keeps people logged in is missing protections that stop it being stolen or sent from other sites. That can lead to account takeover."

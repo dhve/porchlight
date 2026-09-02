@@ -1,5 +1,5 @@
 // safety.js
-// Guardrails that keep Porchlight an authorized, non-destructive tool:
+// Guardrails that keep Sutros an authorized, non-destructive tool:
 //  - normalize and validate the target URL
 //  - block scans of private / internal / reserved addresses (SSRF protection)
 //  - centralize the scan limits read from the environment

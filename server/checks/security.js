@@ -24,12 +24,11 @@ export async function runSecurity(ctx) {
   if (!headers.get("referrer-policy")) missing.push("Referrer-Policy (controls what you leak on click-away)");
   if (!headers.get("permissions-policy")) missing.push("Permissions-Policy (limits camera, mic, geolocation access)");
 
-  const highValueMissing = missing.some((m) => /Content-Security-Policy|Strict-Transport|X-Frame|frame-ancestors/i.test(m));
   if (missing.length >= 2) {
     findings.push({
       id: "missing-security-headers",
       category: "hardening",
-      severity: highValueMissing ? "watch" : "minor",
+      severity: "minor",
       title: "Your site is missing several standard safety headers",
       meaning:
         "Browsers support simple instructions that make a site much harder to abuse (clickjacking, content sniffing, script injection). Yours isn't sending several of them.",
@@ -55,7 +54,7 @@ export async function runSecurity(ctx) {
       findings.push({
         id: "weak-csp",
         category: "hardening",
-        severity: "watch",
+        severity: "minor",
         title: "Your content security policy has gaps",
         meaning:
           "You have a Content-Security-Policy, which is good, but it's loose enough that it may not stop a script-injection attack the way a tight policy would.",
@@ -108,7 +107,7 @@ export async function runSecurity(ctx) {
       findings.push({
         id: "cors-wildcard",
         category: "hardening",
-        severity: "watch",
+        severity: "minor",
         title: "Your site allows any website to read its responses",
         meaning: "Your pages are readable cross-origin by any site. Usually harmless for public content, but worth confirming nothing sensitive is served this way.",
         fix: ["Ask your web person to confirm no private data is served with a wildcard CORS header."],
@@ -132,7 +131,7 @@ export async function runSecurity(ctx) {
       findings.push({
         id: "mixed-content",
         category: "tls",
-        severity: "watch",
+        severity: "minor",
         title: "The padlock can break on some pages",
         meaning:
           "Your site is secure, but it loads some images or scripts over an unprotected connection. Browsers may show a 'Not secure' warning on those pages.",

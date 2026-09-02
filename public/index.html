@@ -3,25 +3,26 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Porchlight</title>
-<meta name="description" content="A friendly website checkup for small businesses. Point it at a site you own or are permitted to test and get a plain-language health report.">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 30'><path d='M13 2C7.7 2 4 6 4 11c0 2.6 1.2 4.4 2.4 6H19.6C20.8 15.4 22 13.6 22 11c0-5-3.7-9-9-9Z' fill='%23F4B23C'/><rect x='10.5' y='20' width='5' height='9' rx='1.4' fill='%23232A3E'/></svg>">
+<title>Sutros</title>
+<meta name="description" content="Sutros reads your whole website and hands you the thread: what is broken, what is risky, and what would make it better, in plain words.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 30'><path d='M3 20 C 9 9 21 9 27 20' stroke='%23E3A130' stroke-width='2.6' fill='none' stroke-linecap='round'/><circle cx='8.5' cy='15.2' r='3' fill='%233E3A93'/><circle cx='15' cy='12.4' r='3.4' fill='%23E3A130'/><circle cx='21.5' cy='15.2' r='3' fill='%233E3A93'/></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@400;500;600;700&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@400;500;600;700&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
 
 <div class="topbar">
   <div class="wrap">
-    <button class="brand" id="brandBtn" aria-label="Porchlight home">
-      <svg class="lamp" viewBox="0 0 26 30" fill="none" aria-hidden="true">
-        <path d="M13 2C7.7 2 4 6 4 11c0 2.6 1.2 4.4 2.4 6H19.6C20.8 15.4 22 13.6 22 11c0-5-3.7-9-9-9Z" fill="var(--glow)"/>
-        <rect x="7.5" y="17.5" width="11" height="2.6" rx="1.3" fill="var(--ink)"/>
-        <rect x="10.5" y="20.5" width="5" height="8.5" rx="1.4" fill="var(--ink)"/>
+    <button class="brand" id="brandBtn" aria-label="Sutros home">
+      <svg class="lamp" viewBox="0 0 30 30" fill="none" aria-hidden="true">
+        <path d="M3 20 C 9 9 21 9 27 20" stroke="var(--glow)" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+        <circle cx="8.5" cy="15.2" r="3" fill="var(--brand)"/>
+        <circle cx="15" cy="12.4" r="3.4" fill="var(--glow)"/>
+        <circle cx="21.5" cy="15.2" r="3" fill="var(--brand)"/>
       </svg>
-      Porchlight
+      Sutros
     </button>
     <div class="spacer"></div>
     <button class="navlink hide-sm" data-nav="how">How it works</button>
@@ -39,9 +40,9 @@
     <div class="hero-glow"></div>
     <div class="wrap">
       <div class="hero-inner">
-        <p class="eyebrow">A neighbor for your website</p>
-        <h1>Is your website's <span class="warm">porch light</span> still on?</h1>
-        <p class="lede">Porchlight gives any small business website a friendly checkup. We gently test it the way a customer would, then hand you a plain report: what's broken, what's risky, and how to fix it.</p>
+        <p class="eyebrow">The thread through your website</p>
+        <h1>Pull the <span class="warm">thread</span> on your website.</h1>
+        <p class="lede">Sutros reads your whole site the way a careful visitor would, then hands you the thread: what's broken, what's risky, and what would make it better, all in plain words.</p>
 
         <form class="checkcard" id="checkForm">
           <label class="field-label" for="urlInput">Enter a website to check</label>
@@ -53,7 +54,7 @@
           </div>
           <label class="consent" for="consent">
             <input type="checkbox" id="consent">
-            <span>I <b>own this website</b> or have permission to check it. Porchlight only looks, never changes or breaks anything.</span>
+            <span>I <b>own this website</b> or have permission to check it. Sutros only looks, never changes or breaks anything.</span>
           </label>
           <p class="err" id="formErr">Please enter a website and confirm you have permission.</p>
           <button class="btn btn-primary btn-lg" type="submit" id="startBtn">
@@ -76,8 +77,8 @@
     <div class="wrap">
       <div class="sec-head">
         <p class="eyebrow">How the checkup works</p>
-        <h2>Like a house call for your website</h2>
-        <p>A helper visits your site, decides what's worth checking, and gently tries things a real visitor would. No fixing, no breaking, just looking.</p>
+        <h2>A careful read of your whole site</h2>
+        <p>Sutros looks around, decides what actually matters for your site, and checks it carefully. No fixing, no breaking, just a clear read.</p>
       </div>
       <div class="steps">
         <div class="stepcard">
@@ -153,7 +154,7 @@
         <div class="commcard badge-demo">
           <div class="verified">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-            Checked by Porchlight
+            Checked by Sutros
           </div>
           <h3 style="font-size:19px;">A badge that builds trust</h3>
           <small>Sites that pass their checkup can show this to customers, proof the doors are locked and the lights are on.</small>
@@ -169,8 +170,8 @@
     <div class="wrap">
       <div class="run-head">
         <div class="target"><span class="dot"></span> Checking <span class="mono" id="runHost">your website</span></div>
-        <h2>Making a house call&hellip;</h2>
-        <p>Hang tight. We're walking through your website like a first-time visitor.</p>
+        <h2>Reading your website&hellip;</h2>
+        <p>Hang tight. We're going through your whole site, top to bottom.</p>
       </div>
 
       <div class="house" id="house">
@@ -230,7 +231,7 @@
       <div class="report-foot">
         <div class="rf-txt">
           <h3>Want a hand fixing these?</h3>
-          <p>We can email this report to your web person, or connect you with a vetted local helper from the Porchlight community.</p>
+          <p>We can email this report to your web person, or connect you with a vetted local helper from the Sutros community.</p>
         </div>
         <div class="rf-actions">
           <button class="btn btn-ghost" id="printBtn" type="button">Print / Save PDF</button>
@@ -253,13 +254,13 @@
       </div>
       <div class="sec-head" style="text-align:left; margin:0 0 26px; max-width:640px;">
         <h2 style="font-size:clamp(26px,3.6vw,34px); margin-bottom:12px;">People who can fix these things</h2>
-        <p style="color:var(--ink-soft); font-size:17px;">Web people who help small businesses, listed by the Porchlight community. Reach out directly, or send any of them your report link. Know your stuff? Add yourself below.</p>
+        <p style="color:var(--ink-soft); font-size:17px;">Web people who help small businesses, listed by the Sutros community. Reach out directly, or send any of them your report link. Know your stuff? Add yourself below.</p>
       </div>
       <div id="helpersList" class="helpers-list"></div>
 
       <div class="helper-form-card">
         <h3>List yourself as a helper</h3>
-        <p>Free. Small businesses running Porchlight can find you here.</p>
+        <p>Free. Small businesses running Sutros can find you here.</p>
         <form id="helperForm">
           <div class="hf-row">
             <input id="hfName" type="text" placeholder="Your name or business" maxlength="80" aria-label="Name">
@@ -277,8 +278,8 @@
 
 <footer>
   <div class="wrap">
-    <span class="brand">Porchlight</span>
-    <p class="disc">Porchlight only checks websites you own or are permitted to test, looks without changing anything, and detects issues rather than exploiting them. Sample report uses fictional data.</p>
+    <span class="brand">Sutros</span>
+    <p class="disc">Sutros only checks websites you own or are permitted to test, looks without changing anything, and detects issues rather than exploiting them. Sample report uses fictional data.</p>
   </div>
 </footer>
 

@@ -1,4 +1,4 @@
-// app.js — Porchlight frontend
+// app.js — Sutros frontend
 // Drives the three screens (home, live run, report), streams the checkup over
 // Server-Sent Events, and renders the report from the API's JSON.
 
@@ -315,7 +315,7 @@ const SAMPLE = {
   tally: { urgent: 2, serious: 1, watch: 3, good: 0 },
   summary: "Your site works for most visitors, but we found two urgent problems: a private file with customer info is visible to anyone, and your online order button leads to an error. The good news is both are fixable, and we've written down exactly how.",
   findings: [
-    { id: "s1", severity: "urgent", category: "exposed-data", title: "A private file with customer info is visible to anyone", meaning: "A database backup is sitting on your website where anyone with the link can download it. It looks like it contains customer names, emails, and past orders. This is the kind of thing that leads to data leaks and scam emails to your customers.", fix: ["Ask whoever manages your site to delete the file backup-db.sql from the server.", "Move future backups somewhere private, not inside the public website folder.", "If it was exposed a while, consider letting customers know as a precaution."], who: "A web person can do this in about 10 minutes.", evidence: { lines: ["GET https://rosastaqueria.com/backup-db.sql", "<- 200 OK   content-type: application/sql   size: 4.2 MB", "matched the shape of a real database backup (contents redacted, not stored)"], note: "Porchlight confirmed the file is reachable and stopped. It did not download, keep, or read the contents." } },
+    { id: "s1", severity: "urgent", category: "exposed-data", title: "A private file with customer info is visible to anyone", meaning: "A database backup is sitting on your website where anyone with the link can download it. It looks like it contains customer names, emails, and past orders. This is the kind of thing that leads to data leaks and scam emails to your customers.", fix: ["Ask whoever manages your site to delete the file backup-db.sql from the server.", "Move future backups somewhere private, not inside the public website folder.", "If it was exposed a while, consider letting customers know as a precaution."], who: "A web person can do this in about 10 minutes.", evidence: { lines: ["GET https://rosastaqueria.com/backup-db.sql", "<- 200 OK   content-type: application/sql   size: 4.2 MB", "matched the shape of a real database backup (contents redacted, not stored)"], note: "Sutros confirmed the file is reachable and stopped. It did not download, keep, or read the contents." } },
     { id: "s2", severity: "urgent", category: "broken-flow", title: 'Your "Order Online" button leads to an error', meaning: "When we tried to place an order the way a customer would, the page returned a server error instead of taking the order. You may be losing sales right now without knowing it.", fix: ["Open your order page yourself to confirm the error.", "Show your web person this report; a server error usually points to a broken plugin.", "Ask them to test a full order end to end before calling it fixed."], who: "Your web person.", evidence: { lines: ["GET https://rosastaqueria.com/order", "<- 500 Internal Server Error"], note: 'Reproduced while following the "ordering" link from your homepage.' } },
     { id: "s3", severity: "serious", category: "outdated", title: "Your website software looks out of date", meaning: "Your site appears to run WordPress 5.8, an older version. Old software has publicly known break-in methods, like a lock everyone already knows how to pick.", fix: ["Back up your site first.", "Update WordPress and all add-ons to their latest versions.", "Turn on automatic updates so it doesn't drift out of date again."], who: "You (from the dashboard) or your web person.", evidence: { lines: ["Detected: WordPress 5.8", "generator tag: WordPress 5.8", "Current major version is around 6.x"], note: "Version read from the page." } },
     { id: "s4", severity: "watch", category: "tls", title: "The padlock can break on some pages", meaning: "Your site is secure, but the order page loads one image over an unprotected connection. Browsers may show a 'Not secure' warning there, right before someone pays.", fix: ["Update that image to load over https instead of http."], who: "Your web person; a quick fix.", evidence: { lines: ["http://rosastaqueria.com/img/menu-3.jpg on a secure page"], note: "Insecure resource referenced on a secure page." } },
@@ -412,7 +412,7 @@ async function nominate() {
     if (!res.ok) throw new Error(data.error || "Could not create the invite.");
     const link = `${location.origin}/?url=${encodeURIComponent(data.target)}`;
     inviteText =
-      `Hi! I came across your website and ran it through Porchlight, a free tool that gives a small-business site a quick, safe checkup (it only looks, never changes anything). ` +
+      `Hi! I came across your website and ran it through Sutros, a free tool that gives a small-business site a quick, safe checkup (it only looks, never changes anything). ` +
       `You can run your own checkup here: ${link} . Thought it might be useful.`;
     $("#inviteMsg").textContent = inviteText;
     $("#inviteLink").href = link;
@@ -438,7 +438,7 @@ function emailReport() {
   const top = (r.findings || []).slice(0, 6).map((f) => `- [${sevWord(f.severity)}] ${f.title}`).join("\n");
   const subject = `Website checkup for ${r.target} (grade ${r.grade})`;
   const body =
-    `Here is the Porchlight checkup for ${r.target}.\n\n` +
+    `Here is the Sutros checkup for ${r.target}.\n\n` +
     `Overall grade: ${r.grade} (${r.gradeLabel})\n\n` +
     `${r.summary}\n\n` +
     (top ? `Main findings:\n${top}\n\n` : "") +

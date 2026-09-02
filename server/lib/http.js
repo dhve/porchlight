@@ -9,7 +9,7 @@
 import { config, normalizeUrl, resolveTarget } from "../safety.js";
 
 export const USER_AGENT =
-  "PorchlightBot/0.1 (+https://github.com/dhve/porchlight; friendly website checkup)";
+  "SutrosBot/0.1 (+https://sutros.org; friendly website checkup)";
 
 export function createClient() {
   let used = 0;

@@ -1,14 +1,14 @@
-# Porchlight
+# Sutros
 
 **A friendly, community-driven website checkup for small businesses.**
 
-Point Porchlight at a website you own or are permitted to test. It gently
+Point Sutros at a website you own or are permitted to test. It gently
 checks the site the way a customer would, then hands back a plain-language
 health report: what is broken, what is risky, and how to fix it. The corner
 bakery running a five-year-old website deserves the same safety as a big
 company, and shouldn't need to know what "XSS" means to get it.
 
-Porchlight is built as an authorized-testing tool. It is consent-based,
+Sutros is built as an authorized-testing tool. It is consent-based,
 read-only, and detects issues rather than exploiting them.
 
 ## What it does
@@ -20,7 +20,7 @@ visible to anyone") plus a simple fix and the technical proof behind it.
 
 ## How the engine works
 
-Porchlight combines a deterministic workflow with an LLM that acts as the
+Sutros combines a deterministic workflow with an LLM that acts as the
 planner and the writer. The reliable, factual work is scripted. The judgment
 and the plain-language write-up use the model.
 
@@ -47,7 +47,7 @@ planner and natural-language write-up turn on automatically.
 
 ## What it checks
 
-Porchlight crawls several pages (plus `robots.txt` and `sitemap.xml`) and runs a
+Sutros crawls several pages (plus `robots.txt` and `sitemap.xml`) and runs a
 deep, read-only analysis across these areas:
 
 **Encryption and transport**
@@ -119,7 +119,7 @@ pushed.
 
 ### Saving reports with Postgres (optional)
 
-Set `DATABASE_URL` in `.env` and Porchlight saves every checkup, gives each
+Set `DATABASE_URL` in `.env` and Sutros saves every checkup, gives each
 report a shareable link like `/r/abc123xyz0`, and lists recent reports at
 `/api/reports`. The table is created automatically on first start. Without a
 database everything still works, reports just are not kept.
@@ -137,7 +137,7 @@ optional. To enable it:
 npm run enable-browser
 ```
 
-Without it, Porchlight still runs a lighter customer-flow check that works over
+Without it, Sutros still runs a lighter customer-flow check that works over
 plain HTTP requests.
 
 ## API
@@ -175,7 +175,7 @@ ssh root@<server> "cd /opt/porchlight && sudo -u porchlight git pull && systemct
 
 ## Safety and responsible use
 
-Porchlight is meant for websites you own or have explicit permission to test.
+Sutros is meant for websites you own or have explicit permission to test.
 
 - **Consent required.** Every checkup requires confirming ownership or
   permission. There is no way to run one without it.
@@ -184,7 +184,7 @@ Porchlight is meant for websites you own or have explicit permission to test.
 - **Detection, not exploitation.** When it finds an exposed file it confirms the
   file is reachable and stops. It does not download or keep sensitive contents.
 - **Polite.** Requests are capped per checkup, time-limited, and sent with an
-  honest `PorchlightBot` user agent.
+  honest `SutrosBot` user agent.
 - **No internal targets.** The scanner refuses localhost, private networks, and
   reserved addresses, so it can't be aimed at internal services.
 

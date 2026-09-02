@@ -1,9 +1,9 @@
 {
-  "name": "porchlight",
+  "name": "sutros",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "A friendly, community-driven website checkup. Point it at a site you own or are permitted to test and get back a plain-language health report.",
+  "description": "A Sutros: a friendly, community-driven website checkup. Point it at a site you own or are permitted to test and get back a plain-language health report.",
   "license": "MIT",
   "engines": {
     "node": ">=18"

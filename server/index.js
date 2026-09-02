@@ -1,5 +1,5 @@
 // index.js
-// The Porchlight web server.
+// The Sutros web server.
 //  - serves the frontend from /public
 //  - GET  /api/checkup/stream  live progress + report over Server-Sent Events
 //  - POST /api/checkup         the same checkup, returned as one JSON response
@@ -154,7 +154,7 @@ const dbOn = await initDb().catch((err) => {
   return false;
 });
 app.listen(PORT, () => {
-  console.log(`\n  Porchlight is on at http://localhost:${PORT}`);
+  console.log(`\n  Sutros is on at http://localhost:${PORT}`);
   console.log(`  LLM: ${llmEnabled() ? "enabled (" + modelName() + ")" : "off - using rule-based fallback (add OPENAI_API_KEY to .env to enable)"}`);
   console.log(`  DB:  ${dbOn ? "connected - reports are saved" : "off - set DATABASE_URL in .env to save reports"}\n`);
 });

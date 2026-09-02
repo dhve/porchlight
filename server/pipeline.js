@@ -28,6 +28,7 @@ import { runForms } from "./checks/forms.js";
 import { runFlows } from "./checks/flows.js";
 import { runLinks } from "./checks/links.js";
 import { runReflection } from "./checks/reflection.js";
+import { runModernization } from "./checks/modernization.js";
 import { runBrowser } from "./checks/browser.js";
 
 const CHECK_FNS = {
@@ -41,11 +42,12 @@ const CHECK_FNS = {
   flows: runFlows,
   links: runLinks,
   reflection: runReflection,
+  modernization: runModernization,
   browser: runBrowser,
 };
 // Step 3 = security posture. Step 4 = functional + input behavior.
 const STEP3 = ["tls", "security", "cookies", "exposedFiles", "libraries", "disclosure"];
-const STEP4 = ["forms", "flows", "links", "reflection", "browser"];
+const STEP4 = ["forms", "flows", "links", "reflection", "modernization", "browser"];
 const MARK = { urgent: "⚠️", serious: "🔧", watch: "👀", good: "✅" };
 
 export async function runCheckup({ url, display }, onEvent = () => {}) {

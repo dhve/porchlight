@@ -115,7 +115,7 @@ export async function runExposedFiles(ctx) {
           `<- 200 OK   content-type: ${h.contentType || "unknown"}`,
           `matched the shape of a real ${h.label} (contents redacted, not stored)`,
         ],
-        note: "Porchlight confirmed the file is reachable and stopped. It did not download, keep, or read the contents.",
+        note: "Sutros confirmed the file is reachable and stopped. It did not download, keep, or read the contents.",
       },
     });
   }

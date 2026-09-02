@@ -39,7 +39,7 @@ export async function runForms(ctx) {
     findings.push({
       id: "form-missing-csrf",
       category: "auth",
-      severity: "watch",
+      severity: "minor",
       title: "A form may be missing cross-site request protection",
       meaning:
         "Some forms that submit sensitive actions don't appear to include an anti-forgery token. Without one, a malicious site can sometimes trick a logged-in visitor into submitting it.",

@@ -27,7 +27,7 @@ export async function runBrowser(ctx) {
   try {
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({
-      userAgent: "PorchlightBot/0.1 (+https://github.com/dhve/porchlight)",
+      userAgent: "SutrosBot/0.1 (+https://sutros.org)",
       viewport: { width: 390, height: 844 }, // a typical phone
     });
     const page = await context.newPage();
