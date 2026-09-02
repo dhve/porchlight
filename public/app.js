@@ -246,8 +246,16 @@ function goodCard(passes) {
 }
 
 function minorNotes(list) {
-  const items = list.map((f) => `<li><b>${esc(f.title)}.</b> ${esc(f.meaning)}</li>`).join("");
-  return `<details class="minor-notes"><summary><span>${list.length} minor note${list.length > 1 ? "s" : ""}</span> <span class="mn-hint">low priority, only if you're curious</span> <svg class="chev" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M9 18l6-6-6-6"/></svg></summary><ul class="mn-list">${items}</ul></details>`;
+  const items = list.map((f) => {
+    const where = f.evidence && f.evidence.lines && f.evidence.lines.length
+      ? `<div class="mn-block"><span class="mn-k">Where</span><ul class="mn-where">${f.evidence.lines.slice(0, 5).map((l) => `<li>${esc(l)}</li>`).join("")}</ul></div>`
+      : "";
+    const fix = f.fix && f.fix.length
+      ? `<div class="mn-block"><span class="mn-k">How to fix it</span><ol class="mn-fix">${f.fix.map((st) => `<li>${esc(st)}</li>`).join("")}</ol>${f.who ? `<div class="mn-who">${PERSON} ${esc(f.who)}</div>` : ""}</div>`
+      : "";
+    return `<div class="mn-item"><h4>${esc(f.title)}</h4><p class="mn-why">${esc(f.meaning)}</p>${where}${fix}</div>`;
+  }).join("");
+  return `<details class="minor-notes"><summary><span>${list.length} minor note${list.length > 1 ? "s" : ""}</span> <span class="mn-hint">low priority. Each one says where it is, why it matters, and how to fix it.</span> <svg class="chev" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M9 18l6-6-6-6"/></svg></summary><div class="mn-body">${items}</div></details>`;
 }
 
 function reassureBanner(hasMinor) {

@@ -29,12 +29,13 @@ export async function runSecurity(ctx) {
       id: "missing-security-headers",
       category: "hardening",
       severity: "minor",
-      title: "Your site is missing several standard safety headers",
+      title: `Your site is missing ${missing.length} standard safety headers`,
       meaning:
-        "Browsers support simple instructions that make a site much harder to abuse (clickjacking, content sniffing, script injection). Yours isn't sending several of them.",
+        `Your server isn't sending ${missing.length} of the standard browser security headers. Each one blocks a specific kind of misuse (listed under Where). On their own they're low risk, and each is a one-line setting.`,
       fix: [
-        "Ask your web person to add the missing security headers.",
-        "On WordPress and similar platforms, a security plugin can add them in one step.",
+        "Where they live: your web server settings (Apache or nginx), your hosting control panel, or a security plugin if you use WordPress.",
+        `Add: ${missing.map((m) => m.split(" (")[0]).join(", ")}.`,
+        "Afterwards, confirm for free at securityheaders.com.",
       ],
       who: "Your web person, or a security plugin.",
       evidence: { lines: missing.map((m) => `missing: ${m}`), note: "Read from the homepage response headers." },
@@ -58,7 +59,10 @@ export async function runSecurity(ctx) {
         title: "Your content security policy has gaps",
         meaning:
           "You have a Content-Security-Policy, which is good, but it's loose enough that it may not stop a script-injection attack the way a tight policy would.",
-        fix: ["Ask your web person to tighten the policy: avoid 'unsafe-inline', 'unsafe-eval', and wildcard sources where possible."],
+        fix: [
+          "Where it lives: the Content-Security-Policy header in your server settings or security plugin.",
+          `Tighten it by fixing: ${weak.join("; ")}. Limit script sources to your own domain plus the few services you actually use.`,
+        ],
         who: "Your web person.",
         evidence: { lines: weak.map((w) => `CSP ${w}`), note: `policy: ${csp.slice(0, 160)}` },
       });

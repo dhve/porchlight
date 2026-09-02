@@ -43,7 +43,10 @@ export async function runForms(ctx) {
       title: "A form may be missing cross-site request protection",
       meaning:
         "Some forms that submit sensitive actions don't appear to include an anti-forgery token. Without one, a malicious site can sometimes trick a logged-in visitor into submitting it.",
-      fix: ["Ask your web person to confirm your forms include CSRF protection. Most frameworks and CMS platforms add it automatically when enabled."],
+      fix: [
+        `Where: the form${noCsrf.length > 1 ? "s" : ""} on ${[...new Set(noCsrf.map((f) => short(f.page)))].slice(0, 4).join(", ")}.`,
+        "Ask your web person to add a CSRF token to that form. WordPress, Laravel, Django, Rails, and most site builders have this built in and just need it switched on.",
+      ],
       who: "Your web person.",
       evidence: { lines: noCsrf.slice(0, 4).map((f) => `form on ${short(f.page)} (${f.method.toUpperCase()}) with no visible token`), note: "Heuristic: token field not detected. Worth a manual check." },
     });
@@ -74,7 +77,10 @@ export async function runForms(ctx) {
       title: "Scripts from other sites load without a safety check",
       meaning:
         "Your site runs code hosted on other companies' servers without verifying it hasn't been tampered with. If one of those providers is ever compromised, the bad code runs on your site too.",
-      fix: ["Ask your web person to add Subresource Integrity (an integrity hash) to external scripts, or self-host the important ones."],
+      fix: [
+        "Where: the <script> tags that load the files listed under Where.",
+        "Add an integrity attribute to each (free generator: srihash.org), or host those scripts on your own site instead.",
+      ],
       who: "Your web person.",
       evidence: { lines: extNoSri.slice(0, 5).map((s) => shortHost(s.src)), note: `${extNoSri.length} external script(s) without an integrity attribute.` },
     });

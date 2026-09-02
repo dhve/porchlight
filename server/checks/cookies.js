@@ -43,7 +43,8 @@ export async function runCookies(ctx) {
       ? "A cookie that looks like it keeps people logged in is missing protections that stop it being stolen or sent from other sites. That can lead to account takeover."
       : "Some cookies your site sets are missing recommended safety flags, which makes them a little easier to misuse.",
     fix: [
-      "Ask your web person to add Secure, HttpOnly, and SameSite to your cookies, especially session and login cookies.",
+      "Where: wherever these cookies are set, usually your site's code, your CMS or plugin settings, or your CDN (Cloudflare has a one-click option).",
+      "Add the Secure, HttpOnly, and SameSite flags, starting with the session cookies listed under Where.",
     ],
     who: "Your web person.",
     evidence: { lines: problems.slice(0, 8).map((p) => `${p.name}${p.session ? " (session-like)" : ""}: missing ${p.flags.join(", ")}`), note: "Cookie names only. Values were not stored." },

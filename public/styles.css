@@ -325,6 +325,14 @@ footer .brand{font-size:17px; color:var(--ink-soft);}
 .minor-notes .mn-hint{font-weight:500; color:var(--ink-faint); font-size:13px;}
 .minor-notes summary .chev{margin-left:auto; transition:transform .2s;}
 .minor-notes[open] summary .chev{transform:rotate(90deg);}
-.minor-notes .mn-list{margin:0; padding:4px 20px 16px 34px; color:var(--ink-soft); font-size:14.5px; line-height:1.55;}
-.minor-notes .mn-list li{margin:7px 0;}
-.minor-notes .mn-list b{color:var(--ink); font-weight:600;}
+.minor-notes .mn-body{padding:2px 18px 14px;}
+.mn-item{padding:14px 0; border-top:1px solid var(--border);}
+.mn-item:first-child{border-top:0;}
+.mn-item h4{font-size:15.5px; font-weight:700; letter-spacing:0; margin-bottom:6px;}
+.mn-why{font-size:14.5px; color:var(--ink-soft); margin-bottom:10px; max-width:70ch;}
+.mn-block{margin-top:8px;}
+.mn-k{display:block; font-size:11px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-faint); margin-bottom:4px;}
+.mn-where,.mn-fix{margin:0; padding-left:18px; font-size:14px; color:var(--ink-soft); line-height:1.55;}
+.mn-where li{word-break:break-word;}
+.mn-fix li{margin:3px 0;}
+.mn-who{margin-top:6px; font-size:13px; color:var(--ink-faint); display:flex; align-items:center; gap:6px;}

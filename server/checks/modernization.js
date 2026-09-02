@@ -75,7 +75,7 @@ export async function runModernization(ctx) {
       severity: "minor",
       title: "One small sign your site could be refreshed",
       meaning: `A small detail suggests a refresh could help: your site ${signals[0]}.`,
-      fix: ["Not urgent. Next time you update the site, a modern template clears this up."],
+      fix: ["Where: your homepage.", "Not urgent. Next time you update the site, switching to a current template clears this up."],
       who: "You or a local helper.",
       evidence: { lines: ["Your site " + signals[0]], note: "Minor modernization signal." },
     });
