@@ -18,9 +18,9 @@ setInterval(() => {
 
 /** Client IP, honoring the first X-Forwarded-For hop when behind Caddy. */
 export function ip(req) {
-  const xf = req.headers["x-forwarded-for"];
-  const first = typeof xf === "string" ? xf.split(",")[0].trim() : "";
-  return first || req.ip || req.socket?.remoteAddress || "unknown";
+  // Express resolves req.ip from the proxy chain under app.set("trust proxy", 1),
+  // so a client cannot pick its own bucket by sending X-Forwarded-For.
+  return req.ip || req.socket?.remoteAddress || "unknown";
 }
 
 /**

@@ -31,6 +31,10 @@ chmod -R a+rX $PW_BROWSERS
 
 echo "== 5/7 postgres =="
 systemctl enable --now postgresql >/dev/null 2>&1
+if grep -q '^DATABASE_URL=' $APP_DIR/.env 2>/dev/null; then
+  echo "database already configured; keeping the existing password"
+  DBPW=unchanged
+else
 DBPW=$(openssl rand -hex 24)
 sudo -u postgres psql -v ON_ERROR_STOP=1 -q <<SQL
 DO \$\$ BEGIN
@@ -43,23 +47,27 @@ END \$\$;
 SELECT 'CREATE DATABASE porchlight OWNER porchlight' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='porchlight')\gexec
 SQL
 echo "database ready"
+fi
 
 echo "== 6/7 .env =="
 touch $APP_DIR/.env
 if [ -f /root/porchlight-openai.env ]; then
-  grep -E '^OPENAI_' /root/porchlight-openai.env > $APP_DIR/.env.new || true
+  # Merge uploaded settings into the existing .env without dropping anything already there.
+  while IFS= read -r line; do
+    k="${line%%=*}"; [ -n "$k" ] || continue
+    if grep -q "^$k=" $APP_DIR/.env; then python3 - "$APP_DIR/.env" "$k" "$line" <<'PYX'
+import sys,re; p,k,line=sys.argv[1:4]; s=open(p).read(); s=re.sub(r'^'+re.escape(k)+r'=.*$', line.replace('\\','\\\\'), s, flags=re.M); open(p,'w').write(s)
+PYX
+    else echo "$line" >> $APP_DIR/.env; fi
+  done < <(grep -E '^[A-Z_]+=' /root/porchlight-openai.env)
   rm -f /root/porchlight-openai.env
-else
-  grep -E '^OPENAI_' $APP_DIR/.env > $APP_DIR/.env.new || true
 fi
-cat >> $APP_DIR/.env.new <<ENV
-DATABASE_URL=postgres://porchlight:$DBPW@localhost:5432/porchlight
-PORT=$PORT
-ENV
-mv $APP_DIR/.env.new $APP_DIR/.env
+grep -q '^DATABASE_URL=' $APP_DIR/.env || echo "DATABASE_URL=postgres://porchlight:$DBPW@localhost:5432/porchlight" >> $APP_DIR/.env
+grep -q '^PORT=' $APP_DIR/.env || echo "PORT=$PORT" >> $APP_DIR/.env
 chown -R $APP_USER:$APP_USER $APP_DIR
 chmod 600 $APP_DIR/.env
-echo ".env written (keys: $(grep -o '^[A-Z_]*=' $APP_DIR/.env | tr -d '=' | tr '\n' ' '))"
+echo ".env preserved and updated (keys: $(grep -o '^[A-Z_]*=' $APP_DIR/.env | tr -d '=' | tr '\n' ' '))"
+for k in SIGNING_PRIVATE_KEY SESSION_SECRET APP_URL; do grep -q "^$k=." $APP_DIR/.env || echo "WARNING: $k is not set in .env"; done
 
 echo "== 7/7 systemd service =="
 cat > /etc/systemd/system/porchlight.service <<UNIT

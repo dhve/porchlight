@@ -8,6 +8,7 @@
 // the safety guards before any request is made.
 
 import express from "express";
+import dns from "node:dns/promises";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,7 +33,7 @@ const { consume } = await import("./ratelimit.js");
 const { mailStatus } = await import("./mail.js");
 
 const app = express();
-app.set("trust proxy", 1);
+app.set("trust proxy", ["loopback", "172.16.0.0/12"]);
 app.use(express.json({ limit: "16kb" }));
 app.use(setupRouter(ROOT));
 app.use(attachUser);
@@ -53,6 +54,30 @@ app.get("/api/config", (_req, res) => {
   });
 });
 
+/** Site owners can opt out: a DNS TXT record _sutros.<host> containing "optout",
+ *  or a robots.txt group "User-agent: SutrosBot" with "Disallow: /". */
+async function optedOut(host) {
+  try {
+    const txt = await dns.resolveTxt(`_sutros.${host}`);
+    if (txt.flat().some((t) => /optout/i.test(t))) return "dns";
+  } catch {}
+  try {
+    const r = await fetch(`https://${host}/robots.txt`, { signal: AbortSignal.timeout(5000), headers: { "User-Agent": "SutrosBot/0.1 (+https://sutros.org)" }, redirect: "follow" });
+    if (r.ok && /text\/plain/i.test(r.headers.get("content-type") || "")) {
+      const body = (await r.text()).slice(0, 20000);
+      let mine = false;
+      for (const raw of body.split(/\r?\n/)) {
+        const line = raw.replace(/#.*$/, "").trim();
+        if (!line) { mine = false; continue; }
+        const ua = line.match(/^user-agent:\s*(.+)$/i);
+        if (ua) { mine = mine || /^sutrosbot$/i.test(ua[1].trim()); continue; }
+        if (mine && /^disallow:\s*\/\s*$/i.test(line)) return "robots";
+      }
+    }
+  } catch {}
+  return null;
+}
+
 /** Account + rate + per-host cooldown gate for running a checkup. Returns an error object or null. */
 async function checkupGate(req, host) {
   if (REQUIRE_ACCOUNT) {
@@ -64,6 +89,7 @@ async function checkupGate(req, host) {
     const r = consume("checkups-ip", req.ip || "x", 30, 60 * 60_000);
     if (!r.ok) return { status: 429, error: "Too many checkups from this connection. Please wait a bit." };
   }
+  if (await optedOut(host)) return { status: 403, error: "This site's owner has asked not to be checked by Sutros." };
   try {
     const latest = (await reportsForHost(host, 1))[0];
     if (latest && Date.now() - new Date(latest.created_at).getTime() < 10 * 60_000) {
@@ -85,6 +111,11 @@ app.get("/api/health", (_req, res) => {
 
 // ---- streaming checkup (Server-Sent Events) ----
 app.get("/api/checkup/stream", async (req, res) => {
+  // Only the site's own EventSource may start a checkup here: a typed or linked
+  // navigation carries neither the event-stream Accept header nor a cors fetch mode.
+  if (req.get("sec-fetch-mode") === "navigate" || !/text\/event-stream/i.test(req.get("accept") || "")) {
+    return res.status(400).json({ error: "Please start checkups from the Sutros site." });
+  }
   const target = await prepare(req.query.url, req.query.consent);
 
   res.set({

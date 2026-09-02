@@ -51,6 +51,10 @@ function from() {
 export async function sendMail({ to, subject, text, html }) {
   const t = build();
   if (!t) {
+    if (/^https:/i.test(process.env.APP_URL || "")) {
+      console.error(`[mail] no transport configured; could not send "${subject}" to ${to}`);
+      return { ok: false, via: "console", error: "no transport" };
+    }
     console.log(`\n[mail] (no transport configured) To: ${to}\nSubject: ${subject}\n${text}\n`);
     return { ok: true, via: "console" };
   }
@@ -59,8 +63,9 @@ export async function sendMail({ to, subject, text, html }) {
     else await t.sendMail({ from: from(), to, subject, text, html });
     return { ok: true, via };
   } catch (err) {
-    console.error("[mail] send failed:", err.message);
-    console.log(`\n[mail] fallback copy. To: ${to}\nSubject: ${subject}\n${text}\n`);
+    console.error(`[mail] send failed to ${to} (${subject}): ${err.message}`);
+    // Only echo the message body in local development; never in production logs.
+    if (!/^https:/i.test(process.env.APP_URL || "")) console.log(`\n[mail] dev copy. To: ${to}\nSubject: ${subject}\n${text}\n`);
     return { ok: false, via, error: err.message };
   }
 }

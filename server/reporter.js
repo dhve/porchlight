@@ -43,6 +43,7 @@ export async function writeReport({ target, facts, findings, passes, grade, grad
         "explain impact in terms an owner feels (lost customers, exposed data, scary warnings); " +
         "keep fixes concrete and short; no jargon, no dashes, no exclamation marks. " +
         "Tone: warm and welcoming, never alarming or dramatic; no analogies or metaphors; state the plain fact of what could go wrong and nudge toward the fix. " +
+        "Because the reader is often not the site owner, say 'this site' or 'the site' rather than 'your site', and 'the owner' rather than 'you' when talking about who fixes things. " +
         "For each finding also write 'why': 2 to 4 sentences of specific, technically accurate explanation of why the evidence proves a real problem and what can go wrong, referring to the concrete evidence (the status code, header, file, version, or error text). Keep EVERY specific mechanism and named risk from the provided why (for example clickjacking, HSTS downgrade, the exact status code, the CVE) and add site-specific detail from the evidence on top; never shorten, soften, or generalize it. " +
         "And 'confirm': one or two concrete steps the owner or their web person can take to see the problem themselves. " +
         "Also write one short 'summary' paragraph (2-3 sentences) describing the site's overall health, " +

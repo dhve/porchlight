@@ -282,11 +282,11 @@ function applyRing() {
 }
 
 function gradeHeadline(r) {
-  if (r.grade === "A") return "Your website is in great shape";
-  if (r.grade === "B") return "Your website is in good shape";
-  if (r.grade === "C") return "Your website needs some care";
-  if (r.grade === "D") return "Your website needs some work";
-  return "Your website needs urgent help";
+  if (r.grade === "A") return "This website is in great shape";
+  if (r.grade === "B") return "This website is in good shape";
+  if (r.grade === "C") return "This website needs some care";
+  if (r.grade === "D") return "This website needs some work";
+  return "This website needs urgent help";
 }
 function whenText(iso) {
   if (!iso) return "just now";
