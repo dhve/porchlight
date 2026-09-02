@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import express from "express";
+import { resetMail, sendMail, mailStatus } from "./mail.js";
 
 const ALLOWED = new Set([
   "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET",
@@ -41,6 +42,56 @@ export function setupRouter(ROOT) {
       if (ALLOWED.has(k) && typeof v === "string" && v.length && v.length < 4096) { upsert(k, v.trim()); saved.push(k); }
     }
     res.json({ ok: true, saved });
+  });
+
+  // ---- Connect Gmail for sending (OAuth2, refresh token stored server-side) ----
+  r.get("/setup/gmail", (req, res) => {
+    if (!token() || req.query.t !== token()) return res.status(404).end();
+    if (!process.env.GOOGLE_CLIENT_ID) return res.status(500).send("GOOGLE_CLIENT_ID is not set");
+    const u = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+    u.searchParams.set("client_id", process.env.GOOGLE_CLIENT_ID);
+    u.searchParams.set("redirect_uri", `${process.env.APP_URL}/setup/gmail/callback`);
+    u.searchParams.set("response_type", "code");
+    u.searchParams.set("scope", "https://www.googleapis.com/auth/gmail.send openid email");
+    u.searchParams.set("access_type", "offline");
+    u.searchParams.set("prompt", "consent");
+    u.searchParams.set("state", token());
+    res.redirect(u.href);
+  });
+
+  r.get("/setup/gmail/callback", async (req, res) => {
+    if (!token() || req.query.state !== token()) return res.status(403).send("bad state");
+    if (req.query.error) return res.status(400).send("Google said: " + String(req.query.error));
+    try {
+      const body = new URLSearchParams({
+        code: String(req.query.code || ""),
+        client_id: process.env.GOOGLE_CLIENT_ID,
+        client_secret: process.env.GOOGLE_CLIENT_SECRET,
+        redirect_uri: `${process.env.APP_URL}/setup/gmail/callback`,
+        grant_type: "authorization_code",
+      });
+      const tr = await fetch("https://oauth2.googleapis.com/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body });
+      const tj = await tr.json();
+      if (!tj.refresh_token) return res.status(400).send("No refresh token returned (" + (tj.error_description || tj.error || "unknown") + ").");
+      const ur = await fetch("https://openidconnect.googleapis.com/v1/userinfo", { headers: { Authorization: "Bearer " + tj.access_token } });
+      const uj = await ur.json();
+      if (!uj.email) return res.status(400).send("Could not read the Gmail address.");
+      upsert("GMAIL_USER", uj.email);
+      upsert("GMAIL_REFRESH_TOKEN", tj.refresh_token);
+      resetMail();
+      res.type("html").send(`<p style="font-family:Helvetica Neue,Arial,sans-serif;padding:40px">Gmail connected for <b>${uj.email}</b>. Sutros will send account emails from this address. You can close this tab.</p>`);
+    } catch (err) {
+      res.status(500).send("Gmail connect failed: " + err.message);
+    }
+  });
+
+  // Send a test message to confirm delivery works.
+  r.get("/setup/mailtest", async (req, res) => {
+    if (!token() || req.query.t !== token()) return res.status(404).end();
+    const to = String(req.query.to || "");
+    if (!/^\S+@\S+\.\S+$/.test(to)) return res.status(400).json({ error: "bad 'to'" });
+    const out = await sendMail({ to, subject: "Sutros test email", text: "This is a test message from Sutros. Email sending works.", html: "<p>This is a test message from <b>Sutros</b>. Email sending works.</p>" });
+    res.json({ ...out, status: mailStatus() });
   });
 
   // Status without values: which keys are set (used to confirm setup worked).
