@@ -55,7 +55,7 @@ export async function runForms(ctx) {
     findings.push({
       id: "password-autocomplete",
       category: "auth",
-      severity: "watch",
+      severity: "minor",
       title: "A password field is set to be remembered",
       meaning: "A password field explicitly allows the browser to store it. On shared or public computers that can expose the account.",
       fix: ['Ask your web person to set autocomplete to "off" (or "new-password") on sensitive password fields.'],
@@ -70,7 +70,7 @@ export async function runForms(ctx) {
     findings.push({
       id: "missing-sri",
       category: "hardening",
-      severity: "watch",
+      severity: "minor",
       title: "Scripts from other sites load without a safety check",
       meaning:
         "Your site runs code hosted on other companies' servers without verifying it hasn't been tampered with. If one of those providers is ever compromised, the bad code runs on your site too.",

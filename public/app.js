@@ -170,6 +170,7 @@ function renderReport(r) {
   if (r.tally.watch) chips.push(chip("watch", r.tally.watch, "worth a look"));
   const goodCount = (r.passes || []).length;
   if (goodCount) chips.push(chip("good", goodCount, "looking good"));
+  if (r.tally.minor) chips.push(chip("minor", r.tally.minor, "minor"));
 
   $("#scorecard").innerHTML = `
     <div class="sc-glow"></div>
@@ -211,17 +212,27 @@ function renderReport(r) {
     share.classList.remove("show");
   }
 
-  // findings grouped by urgency
+  // Findings, ordered by what the owner should do first.
   const fixFirst = r.findings.filter((f) => f.severity === "urgent" || f.severity === "serious");
   const watchList = r.findings.filter((f) => f.severity === "watch");
+  const hasMajor = fixFirst.length > 0;
   let html = "";
-  if (fixFirst.length) html += `<p class="eyebrow">Fix these first</p>` + fixFirst.map(findingCard).join("");
-  if (watchList.length) html += `<p class="eyebrow" style="margin-top:14px;">Worth a look when you can</p>` + watchList.map(findingCard).join("");
+  if (hasMajor) {
+    // Lead with the things that actually matter.
+    html += `<p class="eyebrow">Fix these first</p>` + fixFirst.map(findingCard).join("");
+    if (watchList.length) html += `<p class="eyebrow" style="margin-top:14px;">Then, smaller things worth a look</p>` + watchList.map(findingCard).join("");
+  } else {
+    // No urgent or serious problems: reassure first, then frame the rest as optional.
+    html += reassureBanner(watchList.length > 0);
+    if (watchList.length) html += `<p class="eyebrow" style="margin-top:14px;">Optional improvements (nice to have, not urgent)</p>` + watchList.map(findingCard).join("");
+  }
   if (goodCount) {
     html += `<p class="eyebrow" style="margin-top:14px;">Looking good</p>` + goodCard(r.passes);
   }
-  if (!r.findings.length && !goodCount) {
-    html += `<div class="finding good"><div class="f-head"><span class="sev-chip good">${SEV.good.icon}All clear</span><div class="f-main"><h3>Nothing to flag</h3><p class="f-mean">We didn't find anything worth worrying about on this checkup.</p></div></div></div>`;
+  const minorList = r.findings.filter((f) => f.severity === "minor");
+  if (minorList.length) html += minorNotes(minorList);
+  if (!r.findings.length && !goodCount && !minorList.length) {
+    html += reassureBanner(false);
   }
   $("#findingsRoot").innerHTML = html;
 }
@@ -253,6 +264,23 @@ function findingCard(f) {
 function goodCard(passes) {
   const list = passes.map((p) => esc(p.replace(/\.+$/, ""))).join(". ") + ".";
   return `<div class="finding good"><div class="f-head"><span class="sev-chip good">${SEV.good.icon}All clear</span><div class="f-main"><h3>${passes.length} thing${passes.length > 1 ? "s are" : " is"} working well</h3><p class="f-mean">${list}</p></div></div></div>`;
+}
+
+function minorNotes(list) {
+  const items = list.map((f) => `<li><b>${esc(f.title)}.</b> ${esc(f.meaning)}</li>`).join("");
+  return `<details class="minor-notes"><summary><span>${list.length} minor note${list.length > 1 ? "s" : ""}</span> <span class="mn-hint">low priority, only if you're curious</span> <svg class="chev" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M9 18l6-6-6-6"/></svg></summary><ul class="mn-list">${items}</ul></details>`;
+}
+
+function reassureBanner(hasMinor) {
+  return `<div class="reassure-banner">
+    <div class="rb-icon">${SEV.good.icon}</div>
+    <div class="rb-body">
+      <h3>No major issues found</h3>
+      <p>${hasMinor
+        ? "Your website is in good shape. There's nothing urgent to fix. The items below are small, optional improvements you can get to whenever it's convenient."
+        : "Your website is in good shape and nothing needs your attention right now. Nice work."}</p>
+    </div>
+  </div>`;
 }
 
 function applyRing() {
@@ -318,10 +346,13 @@ $("#techBtn").addEventListener("click", () => {
 $$("[data-nav]").forEach((b) =>
   b.addEventListener("click", () => { go("home"); scrollToId(b.dataset.nav); })
 );
-$("#nominateBtn").addEventListener("click", () =>
-  alert("In the real product: sends a friendly, no-pressure invite to that business owner offering a free checkup. Nothing is scanned without their consent.")
-);
-$$("[data-demo]").forEach((b) => b.addEventListener("click", () => alert("In the real product: " + b.dataset.demo)));
+$("#nominateBtn").addEventListener("click", nominate);
+$("#printBtn").addEventListener("click", () => window.print());
+$("#emailBtn").addEventListener("click", emailReport);
+$("#helpersBtn").addEventListener("click", openHelpers);
+$("#helpersBack").addEventListener("click", () => go(currentReport ? "report" : "home"));
+$("#copyInvite").addEventListener("click", copyInvite);
+$("#helperForm").addEventListener("submit", submitHelper);
 
 $("#checkForm").addEventListener("submit", (e) => {
   e.preventDefault();
@@ -359,4 +390,123 @@ $("#shareCopy").addEventListener("click", async () => {
       $("#formErr").textContent = "We couldn't find that saved report. It may have been removed.";
       $("#formErr").classList.add("show");
     });
+})();
+
+
+/* ---------------- nominate a business ---------------- */
+let inviteText = "";
+async function nominate() {
+  const input = $("#nominateUrl");
+  const url = (input.value || "").trim();
+  const box = $("#nominateResult");
+  if (!url) { input.focus(); return; }
+  const btn = $("#nominateBtn");
+  btn.disabled = true; btn.textContent = "Creating...";
+  try {
+    const res = await fetch("/api/nominate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Could not create the invite.");
+    const link = `${location.origin}/?url=${encodeURIComponent(data.target)}`;
+    inviteText =
+      `Hi! I came across your website and ran it through Porchlight, a free tool that gives a small-business site a quick, safe checkup (it only looks, never changes anything). ` +
+      `You can run your own checkup here: ${link} . Thought it might be useful.`;
+    $("#inviteMsg").textContent = inviteText;
+    $("#inviteLink").href = link;
+    box.hidden = false;
+    box.scrollIntoView({ behavior: REDUCED ? "auto" : "smooth", block: "nearest" });
+  } catch (err) {
+    $("#inviteMsg").textContent = "Sorry, that didn't work: " + err.message;
+    box.hidden = false;
+  } finally {
+    btn.disabled = false; btn.textContent = "Create an invite";
+  }
+}
+async function copyInvite() {
+  try { await navigator.clipboard.writeText(inviteText); $("#copyInvite").textContent = "Copied"; setTimeout(() => ($("#copyInvite").textContent = "Copy invite"), 1500); }
+  catch { prompt("Copy this invite:", inviteText); }
+}
+
+/* ---------------- email this report ---------------- */
+function emailReport() {
+  const r = currentReport;
+  if (!r) return;
+  const link = r.id ? `${location.origin}/r/${r.id}` : location.href;
+  const top = (r.findings || []).slice(0, 6).map((f) => `- [${sevWord(f.severity)}] ${f.title}`).join("\n");
+  const subject = `Website checkup for ${r.target} (grade ${r.grade})`;
+  const body =
+    `Here is the Porchlight checkup for ${r.target}.\n\n` +
+    `Overall grade: ${r.grade} (${r.gradeLabel})\n\n` +
+    `${r.summary}\n\n` +
+    (top ? `Main findings:\n${top}\n\n` : "") +
+    (r.id ? `Full report with fixes: ${link}\n` : "");
+  window.location.href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+}
+function sevWord(s) { return ({ urgent: "Urgent", serious: "Serious", watch: "Worth a look" }[s] || s); }
+
+/* ---------------- helper directory ---------------- */
+function openHelpers() { go("helpers"); loadHelpers(); }
+
+async function loadHelpers() {
+  const list = $("#helpersList");
+  list.innerHTML = `<p class="helpers-empty">Loading...</p>`;
+  try {
+    const res = await fetch("/api/helpers");
+    const data = await res.json();
+    const helpers = data.helpers || [];
+    if (!helpers.length) {
+      list.innerHTML = `<div class="helpers-empty"><p>No helpers are listed yet. If you build or fix small-business websites, be the first below. In the meantime, you can email your report straight to your own web person from the report page.</p></div>`;
+      return;
+    }
+    list.innerHTML = helpers.map(helperCard).join("");
+  } catch {
+    list.innerHTML = `<p class="helpers-empty">Could not load the directory right now.</p>`;
+  }
+}
+function helperCard(h) {
+  const isEmail = /^\S+@\S+\.\S+$/.test(h.contact || "");
+  const href = isEmail ? `mailto:${esc(h.contact)}` : (/^https?:\/\//i.test(h.contact) ? esc(h.contact) : "#");
+  return `<div class="helper-card">
+    <div class="helper-head"><h3>${esc(h.name)}</h3>${h.area ? `<span class="helper-area">${esc(h.area)}</span>` : ""}</div>
+    ${h.blurb ? `<p class="helper-blurb">${esc(h.blurb)}</p>` : ""}
+    <a class="helper-contact" href="${href}"${isEmail ? "" : ' target="_blank" rel="noopener"'}>${esc(h.contact)}</a>
+  </div>`;
+}
+async function submitHelper(e) {
+  e.preventDefault();
+  const err = $("#helperErr");
+  const payload = {
+    name: $("#hfName").value.trim(),
+    contact: $("#hfContact").value.trim(),
+    area: $("#hfArea").value.trim(),
+    blurb: $("#hfBlurb").value.trim(),
+  };
+  if (!payload.name || !payload.contact) { err.textContent = "Please include a name and a way to reach you."; err.classList.add("show"); return; }
+  err.classList.remove("show");
+  try {
+    const res = await fetch("/api/helpers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Could not add you.");
+    $("#helperForm").reset();
+    loadHelpers();
+  } catch (e2) {
+    err.textContent = e2.message;
+    err.classList.add("show");
+  }
+}
+
+/* ---------------- prefill from an invite link (?url=) ---------------- */
+(function prefillFromQuery() {
+  const q = new URLSearchParams(location.search).get("url");
+  if (q && $("#urlInput")) {
+    $("#urlInput").value = q.replace(/^https?:\/\//i, "");
+    history.replaceState(null, "", location.pathname);
+  }
 })();

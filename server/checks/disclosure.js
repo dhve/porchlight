@@ -64,7 +64,7 @@ export async function runDisclosure(ctx) {
     findings.push({
       id: "exposed-source-maps",
       category: "info-leak",
-      severity: "watch",
+      severity: "minor",
       title: "Your original source code is downloadable",
       meaning:
         "Your site publishes source maps, which let anyone reconstruct your original (uncompressed) code, comments and all. That can reveal how your site works and sometimes leaks internal details.",
@@ -132,7 +132,7 @@ export async function runDisclosure(ctx) {
       findings.push({
         id: "robots-discloses-paths",
         category: "info-leak",
-        severity: "watch",
+        severity: "minor",
         title: "Your robots.txt points to sensitive areas",
         meaning:
           "Your robots.txt asks search engines to skip some folders, but attackers read that file specifically to find the interesting areas you'd rather hide.",

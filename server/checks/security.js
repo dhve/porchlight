@@ -24,11 +24,12 @@ export async function runSecurity(ctx) {
   if (!headers.get("referrer-policy")) missing.push("Referrer-Policy (controls what you leak on click-away)");
   if (!headers.get("permissions-policy")) missing.push("Permissions-Policy (limits camera, mic, geolocation access)");
 
+  const highValueMissing = missing.some((m) => /Content-Security-Policy|Strict-Transport|X-Frame|frame-ancestors/i.test(m));
   if (missing.length >= 2) {
     findings.push({
       id: "missing-security-headers",
       category: "hardening",
-      severity: "watch",
+      severity: highValueMissing ? "watch" : "minor",
       title: "Your site is missing several standard safety headers",
       meaning:
         "Browsers support simple instructions that make a site much harder to abuse (clickjacking, content sniffing, script injection). Yours isn't sending several of them.",
@@ -76,7 +77,7 @@ export async function runSecurity(ctx) {
       findings.push({
         id: "weak-hsts",
         category: "tls",
-        severity: "watch",
+        severity: "minor",
         title: "Your https-enforcement window is short",
         meaning: "Your site tells browsers to stick to the secure version, but only briefly. A longer window (six months or more) protects returning visitors better.",
         fix: ["Ask your web person to set the HSTS max-age to at least 15552000 (six months), ideally with includeSubDomains."],

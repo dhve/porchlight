@@ -62,9 +62,9 @@ const TARGETS = [
   { path: "/.htaccess", sev: "serious", label: "server rules file", ok: RX.htaccess },
   { path: "/wp-content/debug.log", sev: "serious", label: "debug log", ok: RX.log },
   { path: "/debug.log", sev: "serious", label: "debug log", ok: RX.log },
-  { path: "/composer.lock", sev: "watch", label: "dependency list", ok: RX.json },
-  { path: "/package.json", sev: "watch", label: "dependency list", ok: RX.json },
-  { path: "/.DS_Store", sev: "watch", label: "folder listing file", ok: RX.dsstore },
+  { path: "/composer.lock", sev: "minor", label: "dependency list", ok: RX.json },
+  { path: "/package.json", sev: "minor", label: "dependency list", ok: RX.json },
+  { path: "/.DS_Store", sev: "minor", label: "folder listing file", ok: RX.dsstore },
 ];
 
 export async function runExposedFiles(ctx) {
@@ -90,7 +90,7 @@ export async function runExposedFiles(ctx) {
     return { findings, passes };
   }
 
-  const order = { urgent: 0, serious: 1, watch: 2 };
+  const order = { urgent: 0, serious: 1, watch: 2, minor: 3 };
   hits.sort((a, b) => order[a.sev] - order[b.sev]);
 
   for (const h of hits) {

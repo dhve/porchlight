@@ -3,10 +3,10 @@
 // purpose: the grade is computed from the facts, never invented by the model,
 // so the same site always scores the same way.
 
-const WEIGHT = { urgent: 34, serious: 16, watch: 5, good: 0 };
+const WEIGHT = { urgent: 34, serious: 16, watch: 5, minor: 0, good: 0 };
 
 export function scoreReport(findings) {
-  const tally = { urgent: 0, serious: 0, watch: 0, good: 0 };
+  const tally = { urgent: 0, serious: 0, watch: 0, minor: 0, good: 0 };
   let penalty = 0;
   for (const f of findings) {
     if (tally[f.severity] === undefined) continue;

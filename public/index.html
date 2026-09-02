@@ -137,10 +137,18 @@
           <h3>Nominate a local business</h3>
           <p>Spot a neighborhood shop with a sketchy or broken website? Send them a friendly, no-jargon heads-up with a free checkup. They decide whether to run it.</p>
           <div class="nominate">
-            <input type="text" placeholder="Their website (e.g. joescoffee.com)" aria-label="Nominate a website">
-            <button class="btn btn-primary" id="nominateBtn" type="button">Send a heads-up</button>
+            <input type="text" id="nominateUrl" placeholder="Their website (e.g. joescoffee.com)" aria-label="Nominate a website">
+            <button class="btn btn-primary" id="nominateBtn" type="button">Create an invite</button>
           </div>
-          <p class="tech-cap" style="margin-top:14px;">We never scan without the owner's OK. Nominating just sends them an invite.</p>
+          <p class="tech-cap" style="margin-top:14px;">We never scan without the owner's OK. This creates a friendly invite and a checkup link you can send them.</p>
+          <div class="invite-box" id="nominateResult" hidden>
+            <p class="invite-title">Ready to send</p>
+            <p class="invite-msg" id="inviteMsg"></p>
+            <div class="invite-actions">
+              <button class="btn btn-primary" type="button" id="copyInvite">Copy invite</button>
+              <a class="btn btn-ghost" id="inviteLink" href="#" target="_blank" rel="noopener">Open their checkup</a>
+            </div>
+          </div>
         </div>
         <div class="commcard badge-demo">
           <div class="verified">
@@ -225,9 +233,43 @@
           <p>We can email this report to your web person, or connect you with a vetted local helper from the Porchlight community.</p>
         </div>
         <div class="rf-actions">
-          <button class="btn btn-ghost" data-demo="Emails a clean PDF of this report to whoever you choose.">Email this report</button>
-          <button class="btn btn-primary" data-demo="Matches you with a vetted local helper from the community.">Find a local helper</button>
+          <button class="btn btn-ghost" id="printBtn" type="button">Print / Save PDF</button>
+          <button class="btn btn-ghost" id="emailBtn" type="button">Email this report</button>
+          <button class="btn btn-primary" id="helpersBtn" type="button">Find a local helper</button>
         </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+
+<!-- ============ HELPERS SCREEN ============ -->
+<div class="screen" id="screen-helpers">
+  <section class="report">
+    <div class="wrap">
+      <div class="report-top">
+        <button class="back-btn" id="helpersBack"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M19 12H5M12 19l-7-7 7-7"/></svg> Back</button>
+        <span class="eyebrow" style="margin:0;">Local helpers</span>
+      </div>
+      <div class="sec-head" style="text-align:left; margin:0 0 26px; max-width:640px;">
+        <h2 style="font-size:clamp(26px,3.6vw,34px); margin-bottom:12px;">People who can fix these things</h2>
+        <p style="color:var(--ink-soft); font-size:17px;">Web people who help small businesses, listed by the Porchlight community. Reach out directly, or send any of them your report link. Know your stuff? Add yourself below.</p>
+      </div>
+      <div id="helpersList" class="helpers-list"></div>
+
+      <div class="helper-form-card">
+        <h3>List yourself as a helper</h3>
+        <p>Free. Small businesses running Porchlight can find you here.</p>
+        <form id="helperForm">
+          <div class="hf-row">
+            <input id="hfName" type="text" placeholder="Your name or business" maxlength="80" aria-label="Name">
+            <input id="hfContact" type="text" placeholder="Email or website link" maxlength="200" aria-label="Contact">
+          </div>
+          <input id="hfArea" type="text" placeholder="Area you serve (e.g. Austin, TX or Remote)" maxlength="80" aria-label="Area">
+          <textarea id="hfBlurb" placeholder="One line about what you help with" maxlength="400" aria-label="About"></textarea>
+          <p class="err" id="helperErr"></p>
+          <button class="btn btn-primary" type="submit">Add me to the directory</button>
+        </form>
       </div>
     </div>
   </section>
