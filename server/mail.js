@@ -14,19 +14,11 @@ let via = "console";
 function build() {
   if (transport) return transport;
   if (process.env.SMTP_URL) {
-    transport = nodemailer.createTransport(process.env.SMTP_URL);
+    transport = nodemailer.createTransport(process.env.SMTP_URL, { connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 20000 });
     via = "smtp";
   } else if (process.env.GMAIL_USER && process.env.GMAIL_REFRESH_TOKEN && process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
-    transport = nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        type: "OAuth2",
-        user: process.env.GMAIL_USER,
-        clientId: process.env.GOOGLE_CLIENT_ID,
-        clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-        refreshToken: process.env.GMAIL_REFRESH_TOKEN,
-      },
-    });
+    // Gmail over the REST API (HTTPS). Many hosts block outbound SMTP ports.
+    transport = { gmailApi: true };
     via = "gmail";
   } else {
     via = "console";
@@ -63,13 +55,52 @@ export async function sendMail({ to, subject, text, html }) {
     return { ok: true, via: "console" };
   }
   try {
-    await t.sendMail({ from: from(), to, subject, text, html });
+    if (t.gmailApi) await sendViaGmailApi({ from: from(), to, subject, text, html });
+    else await t.sendMail({ from: from(), to, subject, text, html });
     return { ok: true, via };
   } catch (err) {
     console.error("[mail] send failed:", err.message);
     console.log(`\n[mail] fallback copy. To: ${to}\nSubject: ${subject}\n${text}\n`);
     return { ok: false, via, error: err.message };
   }
+}
+
+// ---- Gmail REST API transport ----
+async function gmailAccessToken() {
+  const body = new URLSearchParams({
+    client_id: process.env.GOOGLE_CLIENT_ID,
+    client_secret: process.env.GOOGLE_CLIENT_SECRET,
+    refresh_token: process.env.GMAIL_REFRESH_TOKEN,
+    grant_type: "refresh_token",
+  });
+  const r = await fetch("https://oauth2.googleapis.com/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body, signal: AbortSignal.timeout(15000) });
+  const j = await r.json();
+  if (!j.access_token) throw new Error("gmail token: " + (j.error_description || j.error || "no access token"));
+  return j.access_token;
+}
+function encodeHeader(v) {
+  return /^[\x20-\x7e]*$/.test(v) ? v : "=?UTF-8?B?" + Buffer.from(v, "utf8").toString("base64") + "?=";
+}
+function buildRaw({ from, to, subject, text, html }) {
+  const boundary = "sutros_" + Math.random().toString(36).slice(2);
+  const lines = [
+    `From: ${from}`, `To: ${to}`, `Subject: ${encodeHeader(subject)}`, "MIME-Version: 1.0",
+    `Content-Type: multipart/alternative; boundary="${boundary}"`, "",
+    `--${boundary}`, "Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: 8bit", "", text, "",
+    `--${boundary}`, "Content-Type: text/html; charset=UTF-8", "Content-Transfer-Encoding: 8bit", "", html || text, "",
+    `--${boundary}--`,
+  ];
+  return Buffer.from(lines.join("\r\n"), "utf8").toString("base64url");
+}
+async function sendViaGmailApi(msg) {
+  const token = await gmailAccessToken();
+  const r = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+    body: JSON.stringify({ raw: buildRaw(msg) }),
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!r.ok) throw new Error("gmail api " + r.status + ": " + (await r.text()).slice(0, 200));
 }
 
 // ---- templates (plain, warm, no analogies) ----
