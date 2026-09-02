@@ -59,7 +59,7 @@ export async function runReflection(ctx) {
       severity: "serious",
       title: "Your site echoes visitor input without cleaning it",
       meaning:
-        "When we sent a harmless test value in the web address, the page repeated our special characters back exactly, without neutralizing them. That is the doorway a cross-site scripting (XSS) attack uses to run malicious code in your visitors' browsers. We did not attempt any attack, but this needs a developer's review.",
+        "When we sent a harmless test value in the web address, the page repeated our special characters back exactly, without neutralizing them. That is what a cross-site scripting (XSS) attack relies on to run malicious code in your visitors' browsers. We did not attempt any attack. A developer can fix this quickly, and it is worth doing.",
       fix: [
         "Ask your web person to escape or sanitize anything from the URL or a form before it is placed back on the page.",
         "This is a common and well-understood fix in every web framework.",

@@ -41,6 +41,7 @@ export async function writeReport({ target, facts, findings, passes, grade, grad
         "keep each finding's id and severity EXACTLY as given; do not add or remove findings; " +
         "explain impact in terms an owner feels (lost customers, exposed data, scary warnings); " +
         "keep fixes concrete and short; no jargon, no dashes, no exclamation marks. " +
+        "Tone: warm and welcoming, never alarming or dramatic; no analogies or metaphors; state the plain fact of what could go wrong and nudge toward the fix. " +
         "Also write one short 'summary' paragraph (2-3 sentences) describing the site's overall health, " +
         "and lightly tidy the 'passes' list (things that are fine). " +
         "Respond as JSON: {\"summary\": string, \"findings\": [{\"id\": string, \"title\": string, \"meaning\": string, \"fix\": [string], \"who\": string}], \"passes\": [string]}.",

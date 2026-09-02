@@ -111,7 +111,7 @@ export async function runRecon(ctx) {
         category: "outdated",
         severity: "serious",
         title: `Your website software looks out of date`,
-        meaning: `Your site appears to run ${cap(facts.cms.name)} ${facts.cms.version}, an older version. Old software has publicly known break-in methods, like a lock everyone already knows how to pick.`,
+        meaning: `Your site appears to run ${cap(facts.cms.name)} ${facts.cms.version}, an older version. Old software has publicly known security holes that attackers scan for automatically, and updating is usually quick and free.`,
         fix: [
           "Back up your site first.",
           `Update ${cap(facts.cms.name)} and all add-ons to their latest versions.`,
