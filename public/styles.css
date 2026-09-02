@@ -1,15 +1,15 @@
 /* ============ TOKENS ============ */
 :root{
-  --ground:#F2F1EA; --ground-2:#E7E4DA;
-  --surface:#FFFFFF; --surface-2:#F8F7F1;
-  --border:#E2DDD0; --border-strong:#CFC8B7;
-  --ink:#20223A; --ink-soft:#585D70; --ink-faint:#8A8D99;
-  --brand:#3E3A93; --brand-ink:#FFFFFF; --brand-hover:#4B46A8;
-  --glow:#E3A130; --glow-2:#F1D391; --glow-ink:#6E4B0E;
-  --good:#2E9E6B; --good-bg:#E4F2EA;
-  --watch:#DE8419; --watch-bg:#FAEAD6;
-  --serious:#D94F32; --serious-bg:#F9E3DC;
-  --urgent:#B5302A; --urgent-bg:#F6DDDA;
+  --ground:#FBF6EC; --ground-2:#F3EBDB;
+  --surface:#FFFFFF; --surface-2:#FDF9F1;
+  --border:#EADFC9; --border-strong:#DBCAAA;
+  --ink:#3B2733; --ink-soft:#6F5B67; --ink-faint:#9C8C94;
+  --brand:#E6A11C; --brand-ink:#3B2733; --brand-hover:#EFB133;
+  --glow:#D9748A; --glow-2:#F5CFD8; --glow-ink:#9A3F55;
+  --good:#3E8E5E; --good-bg:#E3F1E7;
+  --watch:#CF6F1A; --watch-bg:#FBE9D6;
+  --serious:#C4452F; --serious-bg:#F8E0DA;
+  --urgent:#A32A26; --urgent-bg:#F4D9D7;
   --shadow:35 42 62;
   --radius:16px; --radius-sm:10px;
   --maxw:1080px;
@@ -17,30 +17,30 @@
 }
 :root:not([data-theme="light"]){
   @media (prefers-color-scheme:dark){
-    --ground:#12101F; --ground-2:#0B0916;
-    --surface:#1B1930; --surface-2:#232038;
-    --border:#332E55; --border-strong:#443E6F;
-    --ink:#ECEAE1; --ink-soft:#AAB0C6; --ink-faint:#767C98;
-    --brand:#9E9BF0; --brand-ink:#111527; --brand-hover:#B4B1F5;
-    --glow:#ECB152; --glow-2:#5A4820; --glow-ink:#ECB152;
-    --good:#52C08C; --good-bg:#16311F;
-    --watch:#F0A544; --watch-bg:#39290F;
-    --serious:#F0724F; --serious-bg:#3B2019;
-    --urgent:#EF6258; --urgent-bg:#3B1D1B;
+    --ground:#211720; --ground-2:#1A1119;
+    --surface:#2D202A; --surface-2:#362732;
+    --border:#4A3844; --border-strong:#5C4756;
+    --ink:#F4ECE2; --ink-soft:#CDBFC6; --ink-faint:#9B8B95;
+    --brand:#EBAA25; --brand-ink:#2A1B25; --brand-hover:#F3B93D;
+    --glow:#E88DA0; --glow-2:#5A3440; --glow-ink:#E88DA0;
+    --good:#5FB884; --good-bg:#1E3528;
+    --watch:#E8892F; --watch-bg:#3D2812;
+    --serious:#E86A50; --serious-bg:#3E2119;
+    --urgent:#EF6B62; --urgent-bg:#3F1F1E;
     --shadow:0 0 0;
   }
 }
 :root[data-theme="dark"]{
-  --ground:#12101F; --ground-2:#0B0916;
-  --surface:#1B1930; --surface-2:#232038;
-  --border:#332E55; --border-strong:#443E6F;
-  --ink:#ECEAE1; --ink-soft:#AAB0C6; --ink-faint:#767C98;
-  --brand:#9E9BF0; --brand-ink:#111527; --brand-hover:#B4B1F5;
-  --glow:#ECB152; --glow-2:#5A4820; --glow-ink:#ECB152;
-  --good:#52C08C; --good-bg:#16311F;
-  --watch:#F0A544; --watch-bg:#39290F;
-  --serious:#F0724F; --serious-bg:#3B2019;
-  --urgent:#EF6258; --urgent-bg:#3B1D1B;
+  --ground:#211720; --ground-2:#1A1119;
+  --surface:#2D202A; --surface-2:#362732;
+  --border:#4A3844; --border-strong:#5C4756;
+  --ink:#F4ECE2; --ink-soft:#CDBFC6; --ink-faint:#9B8B95;
+  --brand:#EBAA25; --brand-ink:#2A1B25; --brand-hover:#F3B93D;
+  --glow:#E88DA0; --glow-2:#5A3440; --glow-ink:#E88DA0;
+  --good:#5FB884; --good-bg:#1E3528;
+  --watch:#E8892F; --watch-bg:#3D2812;
+  --serious:#E86A50; --serious-bg:#3E2119;
+  --urgent:#EF6B62; --urgent-bg:#3F1F1E;
   --shadow:0 0 0;
 }
 
@@ -92,8 +92,8 @@ button{font-family:inherit;}
 /* ============ HERO ============ */
 .hero{position:relative; overflow:hidden; padding:76px 0 30px;}
 .hero-glow{position:absolute; top:-160px; left:50%; transform:translateX(-50%); width:760px; height:520px; pointer-events:none;
-  background:radial-gradient(ellipse at center, color-mix(in srgb,var(--brand) 42%,transparent) 0%, transparent 68%);
-  filter:blur(16px); opacity:.5; animation:breathe 7s ease-in-out infinite;}
+  background:radial-gradient(ellipse at center, color-mix(in srgb,var(--brand) 38%,transparent) 0%, transparent 68%);
+  filter:blur(18px); opacity:.55; animation:breathe 7s ease-in-out infinite;}
 @keyframes breathe{0%,100%{opacity:.42; transform:translateX(-50%) scale(1);} 50%{opacity:.62; transform:translateX(-50%) scale(1.05);}}
 .hero .wrap{position:relative;}
 .hero-inner{max-width:720px; margin:0 auto; text-align:center;}
