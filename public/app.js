@@ -59,6 +59,13 @@ function resetRun() {
   $("#runLog").innerHTML = "";
   $("#runCta").classList.remove("show");
   $("#house").classList.remove("lit");
+  setAgentHint(false);
+}
+
+// The quiet line under the live log. Shown only while a checkup is running.
+function setAgentHint(show) {
+  const hint = $("#runAgentHint");
+  if (hint) hint.hidden = !show;
 }
 
 function onStep(data) {
@@ -102,6 +109,7 @@ function startLive(url) {
   $("#runHost").textContent = displayHost(url);
   currentReport = null;
   go("run");
+  setAgentHint(true);
 
   let gotReport = false;
   const es = new EventSource(`/api/checkup/stream?url=${encodeURIComponent(url)}&consent=1`);
@@ -114,16 +122,19 @@ function startLive(url) {
     renderReport(currentReport);
     if (currentReport.id) history.replaceState(null, "", "/r/" + currentReport.id);
     $("#runCta").classList.add("show");
+    setAgentHint(false);
   });
   es.addEventListener("error", (e) => {
     let msg = "Something went wrong during the checkup. Please try again.";
     try { if (e.data) msg = JSON.parse(e.data).message; } catch {}
     es.close();
+    setAgentHint(false);
     if (!gotReport) onRunError(msg);
   });
-  es.addEventListener("done", () => es.close());
+  es.addEventListener("done", () => { es.close(); setAgentHint(false); });
   es.onerror = () => {
     es.close();
+    setAgentHint(false);
     if (!gotReport) onRunError("Lost connection to the checkup. Please try again.");
   };
 }
@@ -142,6 +153,9 @@ const FLAG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke
 const PROOF_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/></svg>';
 const CHEV = '<svg class="chev" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M9 18l6-6-6-6"/></svg>';
 const SHIELD = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>';
+const COMPASS = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="10"/><path d="M16.2 7.8l-2.1 6.3-6.3 2.1 2.1-6.3z"/></svg>';
+const COMPASS_LG = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><path d="M16.2 7.8l-2.1 6.3-6.3 2.1 2.1-6.3z"/></svg>';
+const PLAY = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="10"/><path d="M10 8l6 4-6 4z"/></svg>';
 
 // Shown above the findings. The server sends the same text as r.proofPromise; this
 // copy is the fallback for older saved reports and the offline sample.
@@ -195,9 +209,10 @@ function renderReport(r) {
   const usingLLM = r.engine && r.engine.reporter === "llm";
   badge.classList.toggle("off", !usingLLM);
   $("#engineText").textContent = usingLLM ? `AI report (${r.engine.model || "llm"})` : "Rule-based report";
-  badge.title = r.engine
-    ? `planner: ${r.engine.orchestrator}; writer: ${r.engine.reporter}; checks: ${(r.engine.checksRun || []).join(", ")}`
-    : "";
+  const titleParts = [];
+  if (r.engine) titleParts.push(`planner: ${r.engine.orchestrator}; writer: ${r.engine.reporter}; checks: ${(r.engine.checksRun || []).join(", ")}`);
+  if (r.agent && typeof r.agent.steps === "number" && Number.isFinite(r.agent.steps)) titleParts.push(`agent: ${r.agent.steps} steps`);
+  badge.title = titleParts.join("; ");
 
   // share link (only when the report was saved to the database)
   const share = $("#shareBox");
@@ -216,7 +231,8 @@ function renderReport(r) {
   const minorList = findings.filter((f) => f.severity === "minor");
   const hasMajor = fixFirst.length > 0;
   const promise = findings.length ? proofPromise(r) : "";
-  let html = "";
+  // What the browsing agent did, when it ran. Nothing when it did not.
+  let html = agentCard(r);
   if (hasMajor) {
     // Lead with the things that actually matter.
     html += promise + `<p class="eyebrow">Fix these first</p>` + fixFirst.map((f) => findingCard(f, r)).join("");
@@ -253,6 +269,7 @@ function findingCard(f, r) {
       <div class="f-head">
         <div class="f-chips">
           <span class="sev-chip ${esc(f.severity)}">${meta.icon}${esc(meta.label)}</span>
+          ${agentChip(f)}
           ${disputeChip(f)}
         </div>
         <div class="f-main">
@@ -386,6 +403,53 @@ function retestBlock(f, e, r) {
   return `<div class="proof-retest"><button type="button" class="btn btn-ghost btn-sm retest-btn" data-finding="${esc(f.id)}">Check this again right now</button><div class="retest-out" aria-live="polite"></div></div>`;
 }
 
+/* ---------------- the browsing agent ---------------- */
+// Shown on findings the browsing agent noted. Its notes count in the tally but never move the grade.
+function agentChip(f) {
+  if (!f || f.source !== "agent") return "";
+  return `<span class="agent-chip" title="Noted by our browsing agent while it explored this site in a real browser">${COMPASS}Browsing agent</span>`;
+}
+
+// Returns the normalized href when s is an absolute https URL, else null.
+function isHttpsUrl(s) {
+  if (s == null) return null;
+  try { const u = new URL(String(s)); return u.protocol === "https:" ? u.href : null; } catch { return null; }
+}
+
+// The same page with and without a "#section" is one page in the list.
+function dropFragment(href) {
+  if (!href) return null;
+  try { const u = new URL(href); u.hash = ""; return u.href; } catch { return null; }
+}
+
+const AGENT_SUMMARY_FALLBACK = "Our browsing agent opened this site in a real browser on a phone-sized screen and read it the way a visitor would.";
+const AGENT_NOTES_LINE = "Its notes are labeled Browsing agent below. They count in the list but never change the grade.";
+
+// The card under the scorecard: what the agent did, the pages it opened, and the session replay when there is one.
+function agentCard(r) {
+  const a = r && r.agent;
+  if (!a || !a.ran) return "";
+  const summary = a.summary != null && String(a.summary).trim() ? String(a.summary).trim() : AGENT_SUMMARY_FALLBACK;
+  const base = reportBase(r);
+  const seen = new Set();
+  const pages = [];
+  for (const v of Array.isArray(a.visited) ? a.visited : []) {
+    if (v == null) continue;
+    const href = dropFragment(isHttpUrl(v) || linkTarget(String(v).trim(), base));
+    if (href && !seen.has(href)) { seen.add(href); pages.push(href); }
+    if (pages.length >= 8) break;
+  }
+  const list = pages.length
+    ? `<p class="agent-k">Pages it opened:</p><ul class="agent-pages">${pages.map((p) => `<li>${pageLink(p, r)}</li>`).join("")}</ul>`
+    : "";
+  const replay = isHttpsUrl(a.replayUrl);
+  const watch = replay ? `<a class="agent-replay" href="${esc(replay)}" target="_blank" rel="noopener">${PLAY}Watch the session</a>` : "";
+  // Agent notes are the model's own judgment, unlike the scripted findings the proof promise describes. Say so.
+  const noted = (Array.isArray(r.findings) ? r.findings : []).some((f) => f && f.source === "agent");
+  const note = noted ? `<p class="agent-note">${esc(AGENT_NOTES_LINE)}</p>` : "";
+  return `<div class="agent-card"><span class="ac-icon">${COMPASS_LG}</span><div class="ac-body"><p class="eyebrow">Our browsing agent</p><p class="agent-summary">${esc(summary)}</p>${note}${list}${watch}</div></div>`;
+}
+
 function disputeChip(f) {
   if (!f.disputed) return "";
   return `<span class="dispute-chip">${FLAG}Visitors disputed this on earlier checkups</span>`;
@@ -467,7 +531,7 @@ function minorNotes(list, r) {
       ? `<div class="mn-block"><span class="mn-k">How to fix it</span><ol class="mn-fix">${f.fix.map((st) => `<li>${esc(st)}</li>`).join("")}</ol>${f.who ? `<div class="mn-who">${PERSON} ${esc(f.who)}</div>` : ""}</div>`
       : "";
     const whyTech = ev.why ? `<div class="mn-block"><span class="mn-k">Why it's flagged</span><p class="mn-whytech">${esc(ev.why)}</p></div>` : "";
-    return `<div class="mn-item"><h4>${esc(f.title)}${disputeChip(f)}</h4><p class="mn-why">${esc(f.meaning)}</p>${where}${whyTech}${fix}${disputeBlock(f)}<div class="f-slot" data-finding="${esc(f.id)}"></div></div>`;
+    return `<div class="mn-item"><h4>${esc(f.title)}${agentChip(f)}${disputeChip(f)}</h4><p class="mn-why">${esc(f.meaning)}</p>${where}${whyTech}${fix}${disputeBlock(f)}<div class="f-slot" data-finding="${esc(f.id)}"></div></div>`;
   }).join("");
   return `<details class="minor-notes"><summary><span>${list.length} minor note${list.length > 1 ? "s" : ""}</span> <span class="mn-hint">low priority. Each one says where it is, why it matters, and how to fix it.</span> ${CHEV}</summary><div class="mn-body">${items}</div></details>`;
 }
@@ -551,7 +615,7 @@ const SAMPLE = {
   url: "https://rosastaqueria.com",
   scannedAt: new Date().toISOString(),
   grade: "C", gradeLabel: "Needs care", score: 62, ringPercent: 62,
-  tally: { urgent: 2, serious: 1, watch: 3, good: 0 },
+  tally: { urgent: 2, serious: 1, watch: 4, good: 0 },
   summary: "This site works for most visitors, but we found two urgent problems: a private file with customer info is visible to anyone, and the online order button leads to an error. The good news is both are fixable, and we've written down exactly how.",
   findings: [
     { id: "s1", severity: "urgent", category: "exposed-data", title: "A private file with customer info is visible to anyone", meaning: "A database backup is sitting on this site where anyone with the link can download it. It looks like it contains customer names, emails, and past orders. This is the kind of thing that leads to data leaks and scam emails to customers.", fix: ["Ask whoever manages the site to delete the file backup-db.sql from the server.", "Move future backups somewhere private, not inside the public website folder.", "If it was exposed a while, consider letting customers know as a precaution."], who: "A web person can do this in about 10 minutes.", evidence: { lines: ["GET https://rosastaqueria.com/backup-db.sql", "<- 200 OK   content-type: application/sql   size: 4.2 MB", "matched the shape of a real database backup (contents redacted, not stored)"], note: "Sutros confirmed the file is reachable and stopped. It did not download, keep, or read the contents.", method: "We requested /backup-db.sql directly, the way any visitor's browser would, and looked at the status and the first few bytes of the answer.", pages: ["https://rosastaqueria.com/"], items: [{ url: "https://rosastaqueria.com/backup-db.sql", status: 200, statusText: "OK", kind: "file" }], why: "The file is served to anyone who requests that exact address, and automated scanners request well-known backup paths like this one constantly. A database dump typically contains customer records and often password hashes, so one download is a full data breach.", confirm: "Open the address in a private browser window; the file downloads. Then have it removed." } },
@@ -560,9 +624,11 @@ const SAMPLE = {
     { id: "s4", severity: "watch", category: "tls", title: "The padlock can break on some pages", meaning: "The site is secure, but the order page loads one image over an unprotected connection. Browsers may show a 'Not secure' warning there, right before someone pays.", fix: ["Update that image to load over https instead of http."], who: "Your web person; a quick fix.", evidence: { lines: ["http://rosastaqueria.com/img/menu-3.jpg on a secure page"], note: "Insecure resource referenced on a secure page." } },
     { id: "s5", severity: "watch", category: "quality", title: "2 images are broken on mobile", meaning: "On phones, the tacos and horchata photos show a broken-image icon. Since most visitors are on phones, this is often the first thing they see.", fix: ["Re-upload the two menu photos; the originals were moved or deleted."], who: "The site owner can likely do this without help.", evidence: { lines: ["404 Not Found  /img/tacos.jpg  (image \"Tacos al pastor\" on /menu)", "404 Not Found  /img/horchata.jpg  (image \"Horchata\" on /menu)"], note: "2 broken of 10 images tested.", method: "We collected every image address on the pages we crawled, requested each one, and retried any refusal with standard browser headers before calling it broken.", pages: ["https://rosastaqueria.com/menu", "https://rosastaqueria.com/"], items: [{ url: "https://rosastaqueria.com/img/tacos.jpg", status: 404, statusText: "Not Found", page: "https://rosastaqueria.com/menu", text: "Tacos al pastor", kind: "image" }, { url: "https://rosastaqueria.com/img/horchata.jpg", status: 404, statusText: "Not Found", page: "https://rosastaqueria.com/menu", text: "Horchata", kind: "image" }] } },
     { id: "s6", severity: "watch", category: "performance", title: "This site is slow to load on a phone", meaning: "The homepage takes about 6 seconds to appear on a typical phone. Many people leave after three. The main cause is very large photos.", fix: ["Compress the homepage photos, or ask your web person to add an image optimizer."], who: "A web person; free tools can automate it.", evidence: { lines: ["homepage load: 6.1s on a simulated phone"], note: "Measured in a headless browser." } },
+    { id: "agent-menu-photos-cover-the-prices-on-a-phone", source: "agent", severity: "watch", category: "quality", title: "Menu photos cover the prices on a phone", meaning: "On a phone-sized screen, each photo on the menu page sits on top of the price under it, so a visitor cannot see what things cost without turning the phone sideways.", fix: ["Ask the web person to check the menu page on a phone and let each photo stack above its price instead of over it."], who: "The owner or their web person.", evidence: { lines: ["https://rosastaqueria.com/menu", "Seen: the price under each photo was partly hidden on a 390 pixel wide screen"], pages: ["https://rosastaqueria.com/menu"], method: "Our browsing agent opened this page in a real browser on a phone-sized screen and read it the way a visitor would. It never typed or submitted anything.", note: "Seen by the browsing agent." } },
   ],
   passes: ["The homepage looks great and loads without errors", "The phone number and hours are correct and clickable", "The mobile menu opens smoothly", "The contact form sends properly", "None of the common private files were left exposed"],
-  engine: { llm: true, model: "sample", orchestrator: "llm", reporter: "llm", focus: "Focusing on data exposure and the ordering flow.", checksRun: ["tls", "security", "exposedFiles", "flows", "links", "browser"], browser: { ran: true, skippedReason: null } },
+  engine: { llm: true, model: "sample", orchestrator: "llm", reporter: "llm", focus: "Focusing on data exposure and the ordering flow.", checksRun: ["tls", "security", "exposedFiles", "flows", "links", "browser", "agent"], browser: { ran: true, skippedReason: null } },
+  agent: { ran: true, mode: "local", steps: 8, visited: ["https://rosastaqueria.com/", "https://rosastaqueria.com/menu", "https://rosastaqueria.com/order", "https://rosastaqueria.com/contact"], summary: "This site works on a phone for the most part. The menu and hours are easy to find and the phone number can be tapped. The order page shows a server error, and the menu photos cover the prices on a small screen.", replayUrl: null },
 };
 function loadSample() {
   currentReport = SAMPLE;

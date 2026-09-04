@@ -412,3 +412,39 @@ footer .brand{font-size:17px; color:var(--ink-soft);}
   .proof-retest,.f-slot,#reportFeedbackSlot{display:none !important;}
   .proof-body a,.mn-where a{color:#111; text-decoration:none;}
 }
+
+/* ============ ROUND 3B: THE BROWSING AGENT ============ */
+/* chip beside the severity chip on findings the agent noted */
+.agent-chip{display:inline-flex; align-items:center; gap:6px; padding:5px 9px; border-radius:8px; font-size:11.5px; font-weight:700; line-height:1.3; white-space:nowrap; background:color-mix(in srgb,var(--brand) 12%,transparent); color:var(--brand); border:1px solid color-mix(in srgb,var(--brand) 32%,transparent);}
+.agent-chip svg{flex:none;}
+.mn-item h4 .agent-chip{margin-left:8px; vertical-align:middle; font-size:11px; padding:3px 8px;}
+
+/* the card under the scorecard, before the findings */
+.agent-card{display:flex; gap:14px; align-items:flex-start; background:var(--surface); border:1px solid var(--border); border-left:4px solid var(--brand); border-radius:var(--radius); padding:18px 22px;}
+.agent-card .ac-icon{flex:none; width:32px; height:32px; border-radius:50%; display:grid; place-items:center; background:color-mix(in srgb,var(--brand) 14%,transparent); color:var(--brand);}
+.agent-card .ac-body{flex:1; min-width:0;}
+.agent-card .eyebrow{margin:0 0 6px; color:var(--brand);}
+.agent-summary{font-size:15px; color:var(--ink-soft); line-height:1.55; max-width:72ch;}
+.agent-k{font-size:11px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-faint); margin:14px 0 6px;}
+.agent-pages{list-style:none; margin:0; padding:0; display:flex; flex-wrap:wrap; gap:6px 8px;}
+.agent-pages li{font-size:13px; background:var(--surface-2); border:1px solid var(--border); border-radius:100px; padding:3px 11px; max-width:100%; line-height:1.5;}
+.agent-pages a{color:var(--brand); font-weight:600; text-decoration:none; word-break:break-all;}
+.agent-pages a:hover{text-decoration:underline; text-underline-offset:2px;}
+.agent-replay{display:inline-flex; align-items:center; gap:7px; margin-top:14px; font-size:14px; font-weight:700; color:var(--brand); text-decoration:underline; text-decoration-color:color-mix(in srgb,var(--brand) 40%,transparent); text-underline-offset:3px;}
+.agent-replay:hover{text-decoration-color:var(--brand);}
+.agent-replay svg{flex:none;}
+.agent-note{font-size:13.5px; color:var(--ink-faint); line-height:1.5; margin-top:8px; max-width:72ch;}
+
+/* run screen: the quiet line under the live log, only while a run is live */
+.run-agent-hint{max-width:660px; margin:10px auto 0; display:flex; align-items:center; justify-content:center; gap:7px; font-size:13px; color:var(--ink-faint); text-align:center;}
+.run-agent-hint[hidden]{display:none;}
+.run-agent-hint svg{flex:none;}
+
+@media(max-width:540px){
+  .agent-card{padding:16px 18px;}
+}
+@media print{
+  .agent-card{break-inside:avoid; box-shadow:none;}
+  .agent-pages a,.agent-replay{color:#111; text-decoration:none;}
+  .agent-chip{background:none; color:#111; border-color:#999;}
+}
