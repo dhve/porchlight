@@ -118,11 +118,11 @@ export async function runBrowser(ctx) {
 
     // Errors caused by our headless environment, not by the site, and errors thrown inside
     // other companies' scripts are not the site's code failing, so they are set aside.
-    const ENV_NOISE = /geolocation|GeolocationPositionError|User denied|permission (?:was )?denied|NotAllowedError|play\(\) (?:failed|request was interrupted)|autoplay|AudioContext was not allowed|Notification permission|ResizeObserver loop|ERR_BLOCKED_BY_CLIENT|net::ERR_|\[Violation\]|Tracking Prevention|third-party cookie/i;
+    const ENV_NOISE = /GeolocationPositionError|Error getting position|\bGeolocation (?:has been disabled|error\b)|User denied|permission (?:was )?denied|NotAllowedError|play\(\) (?:failed|request was interrupted)|\bautoplay (?:was |is )?(?:prevented|blocked|failed|not allowed|disabled)|AudioContext was not allowed|Notification permission|ResizeObserver loop|ERR_BLOCKED_BY_CLIENT|net::ERR_|\[Violation\]|Tracking Prevention|third-party cookie/i;
     for (let i = consoleErrors.length - 1; i >= 0; i--) {
       const e = consoleErrors[i];
       const thirdParty = e.url && !sameSite(e.url, siteHost);
-      if (ENV_NOISE.test(e.text) || thirdParty) consoleErrors.splice(i, 1);
+      if (ENV_NOISE.test(e.raw || e.text) || thirdParty) consoleErrors.splice(i, 1);
     }
 
     // ---- sort every failed request into broken / blocked for bots / not testable / limited ----
@@ -256,7 +256,7 @@ export async function runBrowser(ctx) {
         },
       });
     } else if (mainOk) {
-      passes.push("The homepage loaded with no JavaScript errors.");
+      passes.push("The homepage loaded with no JavaScript errors from its own scripts.");
     }
 
     if (loadMs > 5000) {
@@ -338,11 +338,14 @@ async function observe(context, url) {
   const failed = new Map();  // url -> { status, reason, errorText, retryAfterMs }
   const responses = new Map(); // url -> status, every response we saw
 
+  const obsHost = hostOf(url);
   page.on("pageerror", (err) => {
-    const frame = (String(err.stack || "").split("\n").find((l) => /\(?https?:\/\/[^)]+:\d+:\d+\)?/.test(l)) || "").trim();
+    const frames = String(err.stack || "").split("\n").filter((l) => /\(?https?:\/\/[^)]+:\d+:\d+\)?/.test(l));
+    const own = frames.find((l) => { const mm = l.match(/(https?:\/\/[^\s()]+?):\d+:\d+/); return mm && sameSite(mm[1], obsHost); });
+    const frame = (own || frames[0] || "").trim();
     const where = frame ? ` (at ${frame.replace(/^at\s+/, "").slice(0, 120)})` : "";
     const m = frame.match(/(https?:\/\/[^\s()]+?):\d+:\d+/);
-    consoleErrors.push({ text: (String(err.message).slice(0, 160) + where).slice(0, 260), url: m ? m[1] : "" });
+    consoleErrors.push({ text: (String(err.message).slice(0, 160) + where).slice(0, 260), url: m ? m[1] : "", raw: String(err.message) });
   });
   page.on("console", (msg) => {
     if (msg.type() !== "error") return;
@@ -350,7 +353,7 @@ async function observe(context, url) {
     if (/^Failed to load resource/i.test(text)) return; // captured below with its URL
     const loc = msg.location && msg.location();
     const where = loc && loc.url ? ` (at ${loc.url}${loc.lineNumber ? ":" + loc.lineNumber : ""})` : "";
-    consoleErrors.push({ text: (text.slice(0, 160) + where).slice(0, 260), url: loc && loc.url ? loc.url : "" });
+    consoleErrors.push({ text: (text.slice(0, 160) + where).slice(0, 260), url: loc && loc.url ? loc.url : "", raw: text });
   });
   page.on("response", (res) => {
     const u = res.url();

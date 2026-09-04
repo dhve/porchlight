@@ -36,11 +36,13 @@ export async function runSecurity(ctx) {
 
   // ---- security headers, only where they change something for visitors ----
   // Most brochure sites lack these headers and are none the worse for it, so we only
-  // speak up when the site has logins or sessions, and only about the two headers
+  // speak up when the site has a login form, and only about the two headers
   // that protect those visitors: HSTS (keeps them on https) and framing protection.
-  const hasLogin = (facts.forms || []).some((f) => f && (f.hasPassword || /login|signin|sign-in|account/i.test(String(f.action || "") + String(f.page || ""))));
-  const setCookies = typeof headers.getSetCookie === "function" ? headers.getSetCookie() : [headers.get("set-cookie")].filter(Boolean);
-  const hasSession = setCookies.some((c) => /^(?:[^=]*(?:sess|sid|auth|token|login|user|csrf|xsrf)[^=]*)=/i.test(String(c)));
+  // A login form is the trigger. Session cookies are not: nearly every CMS sets one for
+  // anonymous visitors, and the path (not the hostname) is what says "login".
+  const LOGIN_PATH = /(?:^|\/)(?:login|log-in|signin|sign-in|account|my-account|wp-login\.php|user\/login)(?:\/|\.\w+)?$/i;
+  const loginPath = (u) => { try { return LOGIN_PATH.test(new URL(String(u)).pathname); } catch { return false; } };
+  const hasLogin = (facts.forms || []).some((f) => f && (f.hasPassword || loginPath(f.action) || loginPath(f.page)));
   const missing = [];
   if (facts.isHttps && !headers.get("strict-transport-security")) {
     missing.push({ name: "Strict-Transport-Security", plain: "No Strict-Transport-Security header. A visitor who types the address without https can be sent to the unprotected http version first, where a login could be read on the network." });
@@ -49,14 +51,14 @@ export async function runSecurity(ctx) {
     missing.push({ name: "X-Frame-Options or frame-ancestors", plain: "No framing protection. Another website can load this site's pages inside a hidden frame and trick a signed-in visitor into clicking something they cannot see." });
   }
 
-  if ((hasLogin || hasSession) && missing.length) {
+  if (hasLogin && missing.length) {
     findings.push({
       id: "missing-security-headers",
       category: "hardening",
       severity: "minor",
       title: missing.length === 1 ? "One protection for signed-in visitors is switched off" : "Two protections for signed-in visitors are switched off",
       meaning:
-        "This site has logins or sessions, so two small server settings matter more than they would on a plain brochure site. " +
+        "This site has a login form, so two small server settings matter more than they would on a plain brochure site. " +
         (missing.length === 1 ? "One of them is missing." : "Both are missing.") +
         " Each is a single line in the server or hosting settings.",
       fix: [
@@ -66,8 +68,8 @@ export async function runSecurity(ctx) {
       who: "The owner's web person, or a security plugin.",
       evidence: {
         lines: missing.map((m) => m.plain),
-        note: "Read from the homepage response headers. Only checked because the site has logins or sessions.",
-        method: "We loaded the homepage and read the response headers the server sent with it. Because the site sets session cookies or has a login form, we checked for the two headers that protect signed-in visitors.",
+        note: "Read from the homepage response headers. Only checked because the site has a login form.",
+        method: "We loaded the homepage and read the response headers the server sent with it. Because the site has a login form, we checked for the two headers that protect signed-in visitors.",
         pages: [homepage],
       },
     });

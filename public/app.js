@@ -327,7 +327,7 @@ function isHttpUrl(s) {
 
 // Absolute http(s) URLs link as they are; tokens that start with a single "/" resolve
 // against the report's origin. Anything else is left as plain text.
-const TEXT_FILE_RE = /\.(m?js|css|map|json|xml|txt|woff2?|ttf|otf)(\?|#|$)/i; // opens as a wall of code, never useful to a reader
+const TEXT_FILE_RE = /\.(m?js|css|map|json|xml|txt|woff2?|ttf|otf)(?=[?#:/]|$)/i; // opens as a wall of code, never useful to a reader
 function linkTarget(tok, base) {
   try {
     if (TEXT_FILE_RE.test(tok)) return null;
@@ -508,7 +508,7 @@ function retestLines(data, r) {
   if (!items.length) return `<p class="retest-note">There was nothing to check again for this finding.</p>`;
   const lines = items.map((it) => {
     const href = isHttpUrl(it.url);
-    const ref = href ? pageLink(href, r) : esc(it.url || "this address");
+    const ref = href && linkTarget(href, reportBase(r)) ? pageLink(href, r) : esc(href ? pathLabel(href, r) : (it.url || "this address"));
     const status = Number(it.status) || 0;
     const now = status ? `${status} ${it.statusText || ""}`.trim() : (it.statusText || "did not load");
     const tail = it.changed ? (it.ok ? "this one works now" : "this one worked when we checked") : "same as when we checked";

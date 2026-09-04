@@ -95,25 +95,37 @@ export async function captureProof({ facts, findings, onEvent } = {}) {
   let skipped = null;
 
   try {
-    const context = await session.browser.newContext({
-      userAgent: CHROME_USER_AGENT,
-      viewport: VIEWPORT,
-      deviceScaleFactor: 1,
-      acceptDownloads: false,
-      reducedMotion: "reduce",
-      extraHTTPHeaders: { "Accept-Language": "en-US,en;q=0.9" },
-    });
-    const page = await context.newPage();
-    page.setDefaultTimeout(PAGE_TIMEOUT_MS);
-    page.on("dialog", (d) => d.dismiss().catch(() => {}));
-    // Stay on the site: a top-level navigation to another domain is not followed. (Redirect
-    // hops do not pass through here, so takeShot checks where the page really ended up.)
-    await page.route("**/*", (route) => {
-      const req = route.request();
-      let leaving = false;
-      try { leaving = req.isNavigationRequest() && req.frame() === page.mainFrame() && !sameSite(req.url(), siteHost); } catch {}
-      return (leaving ? route.abort() : route.continue()).catch(() => {});
-    }).catch(() => {});
+    // One desktop page for most pictures, and a real phone context (mobile identity,
+    // touch, viewport emulation) opened only when a finding is about phones. Resizing
+    // the desktop page would not do: Chromium only honors the viewport meta tag, the
+    // thing a "not mobile friendly" picture must show, when the context is mobile.
+    async function openPage(phone) {
+      const ctx = await session.browser.newContext({
+        userAgent: phone ? PHONE_USER_AGENT : CHROME_USER_AGENT,
+        viewport: phone ? PHONE : VIEWPORT,
+        deviceScaleFactor: 1,
+        isMobile: phone,
+        hasTouch: phone,
+        acceptDownloads: false,
+        reducedMotion: "reduce",
+        extraHTTPHeaders: { "Accept-Language": "en-US,en;q=0.9" },
+      });
+      const pg = await ctx.newPage();
+      pg.setDefaultTimeout(PAGE_TIMEOUT_MS);
+      pg.on("dialog", (d) => d.dismiss().catch(() => {}));
+      // Stay on the site: a top-level navigation to another domain is not followed. (Redirect
+      // hops do not pass through here, so takeShot checks where the page really ended up.)
+      await pg.route("**/*", (route) => {
+        const req = route.request();
+        let leaving = false;
+        try { leaving = req.isNavigationRequest() && req.frame() === pg.mainFrame() && !sameSite(req.url(), siteHost); } catch {}
+        return (leaving ? route.abort() : route.continue()).catch(() => {});
+      }).catch(() => {});
+      return pg;
+    }
+    const page = await openPage(false);
+    let phonePage = null;
+    const getPhonePage = async () => phonePage || (phonePage = await openPage(true));
 
     // A 429 while picturing means the site asked us to slow down: we stop and say so.
     let limited = false;
@@ -122,7 +134,7 @@ export async function captureProof({ facts, findings, onEvent } = {}) {
     for (const t of targets) {
       if (shots.length >= MAX_SHOTS) break;
       if (remaining() < 3000) { skipped = skipped || "Ran out of time before every page was pictured."; break; }
-      const opts = { shots, plainByPage, remaining, onLimited, siteHost };
+      const opts = { shots, plainByPage, remaining, onLimited, siteHost, getPhonePage };
       const ref = t.needsHighlight ? await shootHighlighted(page, t, opts) : await shootPlain(page, t, opts);
       if (ref) t.finding.evidence.shots = [ref];
       if (limited) { skipped = "The site limited our checker"; break; }
@@ -144,6 +156,7 @@ export async function captureProof({ facts, findings, onEvent } = {}) {
 }
 
 const PHONE = { width: 390, height: 844 };
+const PHONE_USER_AGENT = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36";
 
 /**
  * A picture is only worth showing when it makes the problem visible. Headers, cookies,
@@ -152,8 +165,8 @@ const PHONE = { width: 390, height: 844 };
  */
 function pictureRule(f) {
   const id = String((f && f.id) || "");
-  if (/^broken-(links|images)$/.test(id)) return { caption: null, phone: false, highlight: true }; // caption comes from what was outlined
-  if (id === "verbose-errors") return { caption: "The error text visitors can see on this page", phone: false, highlight: false };
+  if (/^broken-(links|images)(-render)?$/.test(id)) return { caption: null, phone: false, highlight: true }; // caption comes from what was outlined
+  if (id === "verbose-errors") return { caption: "The error text visitors can see on this page", phone: false, highlight: false, errorPage: true };
   if (id === "directory-listing") return { caption: "The folder listing anyone can open", phone: false, highlight: false };
   if (/^flow-(error|missing)-/.test(id)) return { caption: "The error page visitors get", phone: false, highlight: false, errorPage: true };
   if (id === "not-mobile-friendly" || id === "dated-design") return { caption: "The page on a phone-sized screen", phone: true, highlight: false };
@@ -172,7 +185,11 @@ function pickTargets(findings, siteHost) {
   const targets = [];
   for (const { f } of ranked) {
     const rule = pictureRule(f);
-    const pages = [...new Set(f.evidence.pages.map((p) => String(p || "")))].filter((p) => okUrl(p, siteHost)).slice(0, 6);
+    // A flow finding's pages say where the link was found; the page to picture is the address that failed.
+    const source = rule.errorPage && /^flow-/.test(String(f.id))
+      ? (Array.isArray(f.evidence.items) ? f.evidence.items : []).filter((it) => it && it.kind === "page" && it.url).map((it) => it.url)
+      : f.evidence.pages;
+    const pages = [...new Set(source.map((p) => String(p || "")))].filter((p) => okUrl(p, siteHost)).slice(0, 6);
     if (!pages.length) continue;
     const items = (Array.isArray(f.evidence.items) ? f.evidence.items : [])
       .filter((it) => it && (it.kind === "link" || it.kind === "image") && okUrl(it.url, null));
@@ -183,13 +200,14 @@ function pickTargets(findings, siteHost) {
   return targets;
 }
 
-async function shootPlain(page, t, { shots, plainByPage, remaining, onLimited, siteHost }) {
+async function shootPlain(page, t, { shots, plainByPage, remaining, onLimited, siteHost, getPhonePage }) {
   if (!t.rule || t.rule.highlight) return null; // a highlight finding with nothing to outline shows nothing
   const cacheKey = (url) => `${t.rule.phone ? "phone" : "desk"}|${t.rule.caption}|${url}`;
   for (const url of t.pages.slice(0, 2)) {
     if (plainByPage.has(cacheKey(url))) return plainByPage.get(cacheKey(url));
     if (shots.length >= MAX_SHOTS || remaining() < 3000) return null;
-    const shot = await takeShot(page, url, null, { remaining, onLimited, siteHost, phone: t.rule.phone, allowErrorPage: Boolean(t.rule.errorPage) });
+    const pg = t.rule.phone && getPhonePage ? await getPhonePage() : page;
+    const shot = await takeShot(pg, url, null, { remaining, onLimited, siteHost, phone: t.rule.phone, allowErrorPage: Boolean(t.rule.errorPage) });
     if (!shot) continue;
     const ref = register(shots, shot, url, t.rule.caption, 0);
     plainByPage.set(cacheKey(url), ref);
@@ -234,9 +252,7 @@ function captionFor(shot) {
  */
 async function takeShot(page, url, marks, { remaining, onLimited, siteHost, phone = false, allowErrorPage = false }) {
   try {
-    const size = phone ? PHONE : VIEWPORT;
-    const cur = page.viewportSize();
-    if (!cur || cur.width !== size.width || cur.height !== size.height) await page.setViewportSize(size);
+    const size = phone ? PHONE : VIEWPORT; // the page handed in already has this viewport
     const navTimeout = Math.max(1000, Math.min(PAGE_TIMEOUT_MS, remaining() - 1500));
     const res = await page.goto(url, { waitUntil: "domcontentloaded", timeout: navTimeout });
     const status = res ? res.status() : 0;
