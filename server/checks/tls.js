@@ -81,11 +81,12 @@ export async function runTls(ctx) {
     passes.push("Your site only allows modern, secure encryption protocols.");
   }
 
+  for (const f of findings) if (f.evidence && !f.evidence.pages) f.evidence.pages = [`https://${host}/`];
   return { findings, passes };
 }
 
 function mk(id, severity, title, meaning, fix, who, lines) {
-  return { id, category: "tls", severity, title, meaning, fix, who, evidence: { lines, note: "Read-only TLS handshake." } };
+  return { id, category: "tls", severity, title, meaning, fix, who, evidence: { lines, note: "Read-only TLS handshake.", method: "We opened a TLS handshake with the server from our own server and read the certificate and the protocol versions it accepts. Nothing beyond the handshake was sent." } };
 }
 
 function getCertificate(host) {

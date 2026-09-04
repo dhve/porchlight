@@ -35,7 +35,7 @@ export async function runRecon(ctx) {
             "Check with your hosting provider that the site is online.",
           ],
           who: "Your hosting provider or web person.",
-          evidence: { lines: [`GET ${url.href}`, `error: ${String(err.message).slice(0, 120)}`], note: "No response within the timeout." },
+          evidence: { lines: [`GET ${url.href}`, `error: ${String(err.message).slice(0, 120)}`], note: "No response within the timeout.", method: "We requested the homepage from our server and waited for an answer within the timeout. The request never completed.", pages: [url.href], items: [{ url: url.href, status: 0, statusText: "did not load", kind: "page" }] },
         },
       ],
       passes,
@@ -97,7 +97,7 @@ export async function runRecon(ctx) {
         "Once it's on, make sure the site redirects visitors from http to https.",
       ],
       who: "Your hosting provider or web person.",
-      evidence: { lines: [`Homepage served over http://, no https redirect`], note: "Checked the final URL after redirects." },
+      evidence: { lines: [`Homepage served over http://, no https redirect`], note: "Checked the final URL after redirects.", method: "We followed the homepage address through every redirect and checked whether the final address uses https.", pages: [finalUrl.href], items: [{ url: finalUrl.href, status: res.status, statusText: "served over http", kind: "page" }] },
     });
   } else if (facts.isHttps) {
     passes.push("Your site loads over a secure (https) connection.");
@@ -126,6 +126,8 @@ export async function runRecon(ctx) {
             `Current major version is around ${latest}.x`,
           ],
           note: "Version read from the page.",
+          method: "We read the generator tag and other version markers in the homepage source and compared the major version with the current release.",
+          pages: [finalUrl.href],
         },
       });
     } else {
