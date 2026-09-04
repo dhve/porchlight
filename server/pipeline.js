@@ -81,7 +81,7 @@ export async function runCheckup({ url, display, userId = null }, onEvent = () =
 
   if (!recon.facts.reachable) {
     for (const key of ["plan", "probe", "customer"]) onEvent("step", { key, status: "done", detail: "skipped" });
-    return finish({ url, display, userId, findings, passes, plan: { focus: "Site was unreachable.", llm: false }, checksRun, browserInfo, onEvent });
+    return finish({ url, display, userId, findings, passes, plan: { focus: "Site was unreachable.", llm: false }, checksRun, browserInfo, onEvent, client });
   }
 
   // ---- Step 2: plan (orchestrator) ----
@@ -103,7 +103,7 @@ export async function runCheckup({ url, display, userId = null }, onEvent = () =
   agentInfo = extra.agent || null;
 
   // ---- Step 5: report ----
-  return finish({ url, display, userId, facts: recon.facts, findings, passes, plan, checksRun, browserInfo, agentInfo, onEvent });
+  return finish({ url, display, userId, facts: recon.facts, findings, passes, plan, checksRun, browserInfo, agentInfo, onEvent, client });
 }
 
 async function runStep(onEvent, key, ids, ctx, findings, passes, checksRun, browserInfo, extra = {}) {
@@ -111,6 +111,7 @@ async function runStep(onEvent, key, ids, ctx, findings, passes, checksRun, brow
   for (const id of ids) {
     const fn = CHECK_FNS[id];
     if (!fn) continue;
+    await respectThrottle(ctx, onEvent, "the next check");
     const out = await safe(() => fn(ctx), { findings: [], passes: [] });
     if (id === "browser") browserInfo = Object.assign(browserInfo, { ran: !out.skipped, skippedReason: out.skipped ? out.reason : null, mode: out.browserMode || null });
     if (id === "agent") extra.agent = out.agent || { ran: false, reason: out.reason || null };
@@ -121,7 +122,7 @@ async function runStep(onEvent, key, ids, ctx, findings, passes, checksRun, brow
   onEvent("step", { key, status: "done" });
 }
 
-async function finish({ url, display, userId = null, facts, findings, passes, plan, checksRun, browserInfo, agentInfo = null, onEvent }) {
+async function finish({ url, display, userId = null, facts, findings, passes, plan, checksRun, browserInfo, agentInfo = null, onEvent, client = null }) {
   onEvent("step", { key: "report", status: "start" });
 
   // De-duplicate by id, then sort most severe first.
@@ -152,6 +153,7 @@ async function finish({ url, display, userId = null, facts, findings, passes, pl
   const { grade, gradeLabel, score, ringPercent, tally } = scoreReport(unique);
 
   // Pictures of the affected pages are taken while the write-up is produced; both are bounded.
+  if (facts && facts.reachable) await respectThrottle({ facts, client }, onEvent, "taking pictures of the affected pages");
   const proofPromise = facts && facts.reachable
     ? captureProof({ facts, findings: unique, onEvent }).catch((err) => ({ shots: [], skipped: `capture failed: ${String(err.message).slice(0, 100)}` }))
     : Promise.resolve({ shots: [], skipped: "site unreachable" });
@@ -196,7 +198,7 @@ async function finish({ url, display, userId = null, facts, findings, passes, pl
       focus: plan.focus,
       checksRun,
       browser: browserInfo,
-      throttled: Boolean(facts && facts.throttled),
+      throttled: Boolean(facts && (facts.throttled || facts.wasThrottled)),
       proof: { shots: (proof.shots || []).length, skipped: proof.skipped || null },
     },
     proofPromise: PROOF_PROMISE,
@@ -225,6 +227,25 @@ async function finish({ url, display, userId = null, facts, findings, passes, pl
 }
 
 // ---- helpers ----
+const MAX_THROTTLE_WAIT_MS = 60_000;
+/**
+ * A site that answers 429 is asking us to slow down. Rather than skip every later
+ * check (and mislabel the site), wait out its Retry-After (bounded, at most twice
+ * per checkup) and give the next check a clean start.
+ */
+async function respectThrottle(ctx, onEvent, why) {
+  const facts = ctx && ctx.facts;
+  if (!facts || !facts.throttled) return;
+  facts.throttleWaits = (facts.throttleWaits || 0) + 1;
+  facts.wasThrottled = true;
+  if (facts.throttleWaits > 2) return; // the site keeps limiting us; let the remaining checks report that honestly
+  const info = ctx.client && typeof ctx.client.throttleInfo === "function" ? ctx.client.throttleInfo() : null;
+  let wait = info && Number.isFinite(info.retryAfterMs) ? info.retryAfterMs - (Date.now() - info.at) + 1500 : 20_000;
+  wait = Math.max(3000, Math.min(MAX_THROTTLE_WAIT_MS, wait));
+  onEvent("log", { mark: "⏳", text: `The site asked us to slow down. Waiting ${Math.round(wait / 1000)} seconds before ${why}.` });
+  await new Promise((r) => setTimeout(r, wait));
+  facts.throttled = false; // the next check re-detects the limit if it is still on
+}
 async function safe(fn, fallback) {
   try {
     const out = await fn();

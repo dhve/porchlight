@@ -4,6 +4,13 @@
 // listings, verbose error pages, and internal addresses.
 //
 // Deterministic and read-only. Any matched secret is REDACTED in the report.
+//
+// Every finding carries evidence.pages (where on the site it was found),
+// evidence.method (how we tested it), and, where a concrete address was
+// requested, evidence.items (the address and the status it answered with).
+// A 401, 403, 405, 406, 429, or 503 answer means the site refused our checker;
+// it is never read as an exposed file, a listing, or an error page. After two
+// 429 answers we stop probing and set facts.throttled.
 
 const SECRET_PATTERNS = [
   { re: /AKIA[0-9A-Z]{16}/g, label: "AWS access key id" },
@@ -15,19 +22,30 @@ const SECRET_PATTERNS = [
   { re: /eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}/g, label: "JSON Web Token" },
 ];
 
+const BLOCKED = new Set([401, 403, 405, 406, 429, 503]);
+const STATUS_TEXT = {
+  200: "OK", 201: "Created", 204: "No Content", 301: "Moved Permanently", 302: "Found", 304: "Not Modified",
+  400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed",
+  406: "Not Acceptable", 408: "Request Timeout", 410: "Gone", 429: "Too Many Requests",
+  500: "Internal Server Error", 502: "Bad Gateway", 503: "Service Unavailable", 504: "Gateway Timeout",
+};
+
 export async function runDisclosure(ctx) {
   const { facts, client } = ctx;
   const findings = [];
   const passes = [];
   const origin = facts.baseOrigin;
+  const homepage = homepageOf(facts);
+  const throttle = { count: 0, stop: false };
+  if (facts.throttled && client) await pause(3000);
 
   // ---- secrets in page source (homepage + crawled pages) ----
-  const secretHits = []; // { label, path, count }
+  const secretHits = []; // { label, path, count, page }
   for (const page of facts.pages || []) {
     if (!page.html) continue;
     for (const p of SECRET_PATTERNS) {
       const matches = page.html.match(p.re);
-      if (matches) secretHits.push({ label: p.label, path: page.url.replace(origin, "") || "/", count: matches.length });
+      if (matches) secretHits.push({ label: p.label, path: href(page.url).replace(origin, "") || "/", count: matches.length, page: href(page.url) });
     }
   }
   if (secretHits.length) {
@@ -43,21 +61,35 @@ export async function runDisclosure(ctx) {
         "Treat the exposed key as compromised and rotate it (generate a new one, disable the old).",
       ],
       who: "Your web person, promptly.",
-      evidence: { lines: secretHits.slice(0, 6).map((h) => `${h.path}: ${h.label} (${h.count} match${h.count > 1 ? "es" : ""}, value redacted)`), note: "The key itself was detected in that page's source but is not stored or shown here." },
+      evidence: {
+        lines: secretHits.slice(0, 6).map((h) => `${h.path}: ${h.label} (${h.count} match${h.count > 1 ? "es" : ""}, value redacted)`),
+        note: "The key itself was detected in that page's source but is not stored or shown here.",
+        method: "We read the source of every page we loaded and searched it for the patterns of common key formats, such as AWS, Google, Stripe, GitHub, and Slack keys. The matched value is never stored or shown.",
+        pages: uniq(secretHits.map((h) => h.page), homepage),
+      },
     });
   }
 
   // ---- exposed source maps (reveal your original source code) ----
-  const mapHits = [];
+  const mapHits = []; // { url, status, statusText, page }
   for (const s of (facts.scripts || []).slice(0, 12)) {
     if (s.external) continue;
+    if (throttle.stop || !client) break;
+    const mapUrl = s.src + ".map";
     try {
-      const res = await client.get(s.src + ".map");
+      const res = await client.get(mapUrl);
+      noteStatus(facts, throttle, res.status);
       if (res.status === 200) {
         const body = await res.text(2000);
-        if (/"version"\s*:|"sources"\s*:|"mappings"\s*:/.test(body)) mapHits.push(s.src + ".map");
+        if (/"version"\s*:|"sources"\s*:|"mappings"\s*:/.test(body)) {
+          mapHits.push({ url: mapUrl, status: res.status, statusText: statusTextOf(res), page: pagesReferencing(facts, [s.src], homepage)[0] });
+        }
+      } else {
+        release(res);
       }
-    } catch {}
+    } catch (err) {
+      if (err && err.code === "BUDGET") { throttle.stop = true; } // nothing more will answer this checkup
+    }
     if (mapHits.length >= 3) break;
   }
   if (mapHits.length) {
@@ -70,21 +102,36 @@ export async function runDisclosure(ctx) {
         "Your site publishes source maps, which let anyone reconstruct your original (uncompressed) code, comments and all. That can reveal how your site works and sometimes leaks internal details.",
       fix: ["Ask your web person to stop publishing source maps in production, or restrict access to them."],
       who: "Your web person.",
-      evidence: { lines: mapHits.map((u) => u.replace(origin, "")), note: "Source map files were reachable." },
+      evidence: {
+        lines: mapHits.map((h) => h.url.replace(origin, "")),
+        note: "Source map files were reachable.",
+        method: "For each script this site loads from its own domain, we requested the same address with .map added on the end and checked whether the answer was a real source map file. Only a 200 answer with source map contents counts.",
+        pages: uniq(mapHits.map((h) => h.page), homepage),
+        items: mapHits.map((h) => ({ url: h.url, status: h.status, statusText: h.statusText, page: h.page, kind: "file" })),
+      },
     });
   }
 
   // ---- directory listing enabled ----
   const dirs = new Set(["/wp-content/uploads/", "/uploads/", "/images/", "/assets/", "/files/", "/backup/"]);
-  const listing = [];
+  const listing = []; // { path, url, status, statusText }
   for (const d of dirs) {
+    if (throttle.stop || !client) break;
+    const u = origin + d;
     try {
-      const res = await client.get(origin + d);
+      const res = await client.get(u);
+      noteStatus(facts, throttle, res.status);
       if (res.status === 200) {
         const body = await res.text(3000);
-        if (/<title>\s*Index of \//i.test(body) || /Directory listing for/i.test(body)) listing.push(d);
+        if (/<title>\s*Index of \//i.test(body) || /Directory listing for/i.test(body)) {
+          listing.push({ path: d, url: u, status: res.status, statusText: statusTextOf(res) });
+        }
+      } else {
+        release(res);
       }
-    } catch {}
+    } catch (err) {
+      if (err && err.code === "BUDGET") { throttle.stop = true; }
+    }
     if (listing.length >= 3) break;
   }
   if (listing.length) {
@@ -97,7 +144,13 @@ export async function runDisclosure(ctx) {
         "Some folders on your site show a full file listing to visitors. That lets outsiders find files you never linked to, including backups or documents you assumed were private.",
       fix: ["Ask your web person or host to turn off directory listing (often one line in the server config)."],
       who: "Your web person or hosting provider.",
-      evidence: { lines: listing.map((d) => `Index listing at ${d}`), note: "Folders returned a browsable file list." },
+      evidence: {
+        lines: listing.map((l) => `Index listing at ${l.path}`),
+        note: "Folders returned a browsable file list.",
+        method: "We requested a few common folder addresses on this site and checked whether the answer was a browsable file list instead of a normal page or an error. Folders that answered with an access denied or rate limit status were not counted.",
+        pages: uniq(listing.map((l) => l.url), homepage),
+        items: listing.map((l) => ({ url: l.url, status: l.status, statusText: l.statusText, kind: "page" })),
+      },
     });
   }
 
@@ -115,14 +168,16 @@ export async function runDisclosure(ctx) {
     /Whoops, looks like something went wrong/i,
     /\bat [\w.$<>]+ \((?:[\w./-]+):\d+:\d+\)/,
   ];
-  const errHits = [];
+  const errHits = []; // { path, snippet, url, status }
   for (const page of (facts.pages || []).slice(0, 6)) {
     if (!page.html) continue;
+    // The site refused our checker for this page; that answer is not an error page.
+    if (BLOCKED.has(Number(page.status))) continue;
     for (const re of ERR_PATTERNS) {
       const m = page.html.match(re);
       if (m) {
         const snippet = m[0].replace(/\s+/g, " ").trim().slice(0, 160);
-        errHits.push({ path: page.url.replace(origin, "") || "/", snippet });
+        errHits.push({ path: href(page.url).replace(origin, "") || "/", snippet, url: href(page.url), status: Number(page.status) || 0 });
         break;
       }
     }
@@ -140,6 +195,9 @@ export async function runDisclosure(ctx) {
       evidence: {
         lines: errHits.slice(0, 5).map((h) => `${h.path}: "${h.snippet}"`),
         note: "The quoted text is what visitors can see on that page.",
+        method: "We read the source of the pages we loaded and looked for the exact wording of common server error messages and stack traces, such as PHP fatal errors, SQL errors, and Python tracebacks. Pages that answered with an access denied or rate limit status were skipped.",
+        pages: uniq(errHits.map((h) => h.url), homepage),
+        items: errHits.slice(0, 6).map((h) => ({ url: h.url, status: h.status, statusText: statusWords(h.status), kind: "page" })),
       },
     });
   }
@@ -150,6 +208,7 @@ export async function runDisclosure(ctx) {
       .map((m) => m[1])
       .filter((p) => /admin|login|backup|config|private|db|sql|secret|internal|staging|api/i.test(p));
     if (juicy.length) {
+      const robotsUrl = origin + "/robots.txt";
       findings.push({
         id: "robots-discloses-paths",
         category: "info-leak",
@@ -159,11 +218,97 @@ export async function runDisclosure(ctx) {
           "Your robots.txt asks search engines to skip some folders, but attackers read that file specifically to find the interesting areas you'd rather hide.",
         fix: ["Don't rely on robots.txt to hide admin or private areas. Protect them with a login instead, and remove the hints if they aren't needed."],
         who: "Your web person.",
-        evidence: { lines: juicy.slice(0, 8).map((p) => `Disallow: ${p}`), note: "From robots.txt." },
+        evidence: {
+          lines: juicy.slice(0, 8).map((p) => `Disallow: ${p}`),
+          note: "From robots.txt.",
+          method: "We requested this site's robots.txt file and read each Disallow line, looking for folder names that suggest admin, login, backup, config, or other private areas.",
+          pages: [robotsUrl],
+          items: [{ url: robotsUrl, status: 200, statusText: "OK", kind: "file" }],
+        },
       });
     }
   }
 
   if (!findings.length) passes.push("We didn't find secrets, source code, or error details leaking in your pages.");
   return { findings, passes };
+}
+
+// ---- helpers ----
+
+// Count 429 answers; after two, stop probing in this check and tell the pipeline.
+function noteStatus(facts, throttle, status) {
+  if (status !== 429) return;
+  throttle.count++;
+  if (throttle.count >= 2) {
+    throttle.stop = true;
+    facts.throttled = true;
+  }
+}
+
+function statusTextOf(res) {
+  return (res && res.statusText) || statusWords(res && res.status);
+}
+
+// Human words for a status code, always a string.
+function statusWords(code) {
+  const n = Number(code);
+  if (STATUS_TEXT[n]) return STATUS_TEXT[n];
+  if (n >= 200 && n < 300) return "OK";
+  if (n >= 300 && n < 400) return "Redirect";
+  if (n >= 400 && n < 500) return "Client Error";
+  if (n >= 500 && n < 600) return "Server Error";
+  return "";
+}
+
+// Let go of a body we are not going to read, so the connection is released.
+function release(res) {
+  try { if (res && typeof res.discard === "function") res.discard(); } catch {}
+}
+
+function href(u) {
+  if (!u) return "";
+  if (typeof u === "string") return u;
+  return u.href || String(u);
+}
+
+function homepageOf(facts) {
+  return href(facts.finalUrl) || href(facts.pages && facts.pages[0] && facts.pages[0].url) || (facts.baseOrigin ? facts.baseOrigin + "/" : "");
+}
+
+// Distinct, non-empty entries in order, at most six; fall back to the homepage.
+function uniq(list, fallback, max = 6) {
+  const out = [];
+  for (const x of list) {
+    if (x && !out.includes(x)) out.push(x);
+    if (out.length >= max) break;
+  }
+  return out.length ? out : (fallback ? [fallback] : []);
+}
+
+// The crawled pages whose <script src> resolves to one of the given URLs.
+function pagesReferencing(facts, urls, fallback) {
+  const want = new Set(urls);
+  const out = [];
+  for (const page of facts.pages || []) {
+    if (!page || !page.url) continue;
+    let hit = false;
+    if (page.$) {
+      page.$("script[src]").each((_, el) => {
+        if (hit) return;
+        let abs;
+        try { abs = new URL(page.$(el).attr("src") || "", page.url).href; } catch { return; }
+        if (want.has(abs)) hit = true;
+      });
+    } else if (page.html) {
+      hit = [...want].some((u) => page.html.includes(u));
+    }
+    const u = href(page.url);
+    if (hit && !out.includes(u)) out.push(u);
+    if (out.length >= 6) break;
+  }
+  return out.length ? out : [fallback];
+}
+
+function pause(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

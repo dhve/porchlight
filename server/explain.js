@@ -98,7 +98,7 @@ const BY_ID = {
     confirm: "View the page source and find the script tags listed; they have no integrity attribute.",
   },
   "failed-resources": {
-    why: "Each line is a file the homepage asked for and the status the server answered with. 404 means the file is not at that address any more. 403 means the server refused the request, usually a permissions or security rule. 406 (Not Acceptable) means the server would not send the file in a format the browser asked for, which is almost always a misconfigured server rule or a security plugin blocking the request. Whatever that file provided is missing for every visitor.",
+    why: "Each line is a file the homepage asked for and the status the server answered with. 404 means the file is not at that address any more. 403 means the server refused the request, usually a permissions or security rule. 406 (Not Acceptable) means the server would not send the file in a format the browser asked for, which is almost always a misconfigured server rule or a security plugin blocking the request. Any file the site refused was requested a second time with the headers a normal browser sends, and it is listed here only when that second request failed too, so this is not a case of the site blocking our checker. Whatever that file provided is missing for every visitor.",
     confirm: "Open the page, press F12 (Cmd-Option-I on a Mac), open the Network tab, reload, and look for rows in red; or paste one of the listed addresses into the browser.",
   },
   "console-errors": {
@@ -130,10 +130,10 @@ const BY_ID = {
 const BY_PREFIX = [
   { re: /^vuln-lib-/, why: "This library version has a published vulnerability (a CVE, referenced in the evidence). Exploit code for known CVEs is public, and automated scanners look for exactly this version string in page source, so the risk is not theoretical.", confirm: "Search the CVE number from the evidence to read the advisory; the version is visible in the script address in your page source." },
   { re: /^exposed-/, why: "The file is served to anyone who requests that exact address. Automated scanners request these well-known paths constantly. Files of this kind typically contain passwords, keys, or customer data that give direct access to your systems.", confirm: "Open the address in a private browser window; the file contents appear. Then have it removed." },
-  { re: /^flow-error-/, why: "The server answered with a 5xx status, which means its own code failed while handling the request. Visitors get an error page instead of the feature, and the failure repeats on every attempt until the underlying plugin or code is fixed.", confirm: "Open the address in the evidence; you will see the error page." },
-  { re: /^flow-missing-/, why: "A 404 status means nothing exists at that address any more, so the link is dead for every visitor who clicks it.", confirm: "Click the link on your site; it lands on a Not Found page." },
-  { re: /^broken-images/, why: "The image address returns an error, so browsers draw a broken-image icon instead. Usually the file was moved, renamed, or deleted while the page still points at the old address.", confirm: "Open one of the image addresses listed; it returns an error instead of a picture." },
-  { re: /^broken-links/, why: "The link target returns an error status, so visitors who click it hit a dead end.", confirm: "Click one of the links listed on your site." },
+  { re: /^flow-error-/, why: "The server answered with a 5xx status, which means its own code failed while handling the request. We waited and requested the page once more with the headers a normal browser sends, and it failed the same way, so this is not a case of the site blocking our checker. Visitors get an error page instead of the feature, and the failure repeats on every attempt until the underlying plugin or code is fixed.", confirm: "Open the address in the proof; you will see the error page." },
+  { re: /^flow-missing-/, why: "A 404 status means nothing exists at that address any more. We asked twice, the second time with standard browser headers, and got the same answer, so the link is dead for every visitor who clicks it.", confirm: "Click the link on the page named in the proof; it lands on a Not Found page." },
+  { re: /^broken-images/, why: "The image address answered with an error twice, once to our plain request and once more with standard browser headers after a short wait, so browsers draw a broken-image icon in its place. Sites that only refuse automated checkers answer the second request normally, which is why this one counts as really broken. Usually the file was moved, renamed, or deleted while the page still points at the old address.", confirm: "Open the page named in the proof and look for the broken-image icon, or open one of the image addresses listed; it returns an error instead of a picture." },
+  { re: /^broken-links/, why: "The link target answered with an error twice, once to our plain request and once more with standard browser headers after a short wait. Sites that only refuse automated checkers answer the second request normally, so this one is a real dead end for every visitor who clicks it.", confirm: "Click the link on the page named in the proof, or open the address directly; it lands on an error page." },
 ];
 
 const BY_CATEGORY = {
@@ -145,6 +145,15 @@ const BY_CATEGORY = {
   "quality": { why: "This is something visitors can see or run into directly.", confirm: "Open the page listed." },
   "modernization": { why: "This affects how the site looks and works for today's visitors, most of whom are on phones.", confirm: "Open the site on a phone." },
 };
+
+/**
+ * The promise shown above the findings. Every report carries it so readers
+ * know what a finding is and is not.
+ */
+export const PROOF_PROMISE =
+  "Every finding in this report comes from a direct, scripted test that we ran against this site. " +
+  "The AI only writes the wording. It cannot add, remove, or change a finding. " +
+  "Each proof shows the request we sent, the answer we received, and where on the site we found it.";
 
 /** Return { why, confirm } for a finding; empty strings if nothing applies. */
 export function explain(finding) {

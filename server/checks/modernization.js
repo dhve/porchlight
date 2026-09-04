@@ -5,6 +5,10 @@
 // non-technical next steps and named tools, not jargon.
 //
 // Deterministic, reads the homepage HTML already fetched by recon.
+//
+// Every finding carries evidence.pages (the homepage, where these signals are
+// read) and evidence.method (how we tested it). Nothing here requests an
+// address, so there are no evidence.items.
 
 export async function runModernization(ctx) {
   const { facts } = ctx;
@@ -15,8 +19,9 @@ export async function runModernization(ctx) {
   const html = page.html;
   const $ = page.$ || facts.$;
   const year = new Date().getFullYear();
+  const homepage = href(facts.finalUrl) || href(page.url) || (facts.baseOrigin ? facts.baseOrigin + "/" : "");
 
-  const hasViewport = $('meta[name="viewport"]').length > 0 || /<meta[^>]+name=["']viewport["']/i.test(html);
+  const hasViewport = Boolean($ && typeof $ === "function" && $('meta[name="viewport"]').length > 0) || /<meta[^>]+name=["']viewport["']/i.test(html);
 
   const signals = [];
   if (/<font[\s>]/i.test(html)) signals.push("uses old <font> tags");
@@ -30,6 +35,9 @@ export async function runModernization(ctx) {
   const years = [...html.matchAll(/(?:©|&copy;|copyright)[^\d]{0,10}(?:\d{4}\s*[-–]\s*)?(\d{4})/gi)]
     .map((m) => parseInt(m[1], 10)).filter((y) => y > 2000 && y <= year);
   if (years.length && Math.max(...years) <= year - 3) signals.push(`the copyright year still says ${Math.max(...years)}`);
+
+  const signalsMethod =
+    "We read the homepage source and looked for a fixed set of older techniques: font and center tags, scrolling or blinking text, table or frame layouts, Flash, the HTML 4 page format, very old jQuery, dated page builders, and a copyright year three or more years behind. Each sign we found is listed above.";
 
   if (!hasViewport) {
     findings.push({
@@ -46,7 +54,12 @@ export async function runModernization(ctx) {
         "Prefer to hand it off? See the local helpers listed in Sutros.",
       ],
       who: "You (with a website builder) or a local helper.",
-      evidence: { lines: ["No mobile viewport setting was found on the homepage.", "You can confirm with Google's free Mobile-Friendly Test."], note: "Read from the homepage HTML." },
+      evidence: {
+        lines: ["No mobile viewport setting was found on the homepage.", "You can confirm with Google's free Mobile-Friendly Test."],
+        note: "Read from the homepage HTML.",
+        method: "We read the homepage source and looked for a meta viewport tag, the one line that tells phones how to size the page. There was none.",
+        pages: [homepage],
+      },
     });
   } else {
     passes.push("Your site is set up to work properly on phones.");
@@ -66,7 +79,12 @@ export async function runModernization(ctx) {
         "Want it done for you? Find a local helper in the Sutros directory.",
       ],
       who: "You (with a website builder) or a local helper.",
-      evidence: { lines: signals.slice(0, 6).map((s) => "Your site " + s), note: "Signs of an older build, from the homepage." },
+      evidence: {
+        lines: signals.slice(0, 6).map((s) => "Your site " + s),
+        note: "Signs of an older build, from the homepage.",
+        method: signalsMethod,
+        pages: [homepage],
+      },
     });
   } else if (signals.length === 1) {
     findings.push({
@@ -77,9 +95,20 @@ export async function runModernization(ctx) {
       meaning: `A small detail suggests a refresh could help: your site ${signals[0]}.`,
       fix: ["Where: your homepage.", "Not urgent. Next time you update the site, switching to a current template clears this up."],
       who: "You or a local helper.",
-      evidence: { lines: ["Your site " + signals[0]], note: "Minor modernization signal." },
+      evidence: {
+        lines: ["Your site " + signals[0]],
+        note: "Minor modernization signal.",
+        method: signalsMethod,
+        pages: [homepage],
+      },
     });
   }
 
   return { findings, passes };
+}
+
+function href(u) {
+  if (!u) return "";
+  if (typeof u === "string") return u;
+  return u.href || String(u);
 }

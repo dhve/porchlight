@@ -9,6 +9,14 @@
 //  - we never store or return the sensitive contents; evidence is redacted
 //
 // Like checking whether a back door was left unlocked, not walking in.
+//
+// Every finding carries evidence.items (the address we requested and the
+// status it answered), evidence.pages (the homepage, never the sensitive file
+// itself, so proof screenshots never capture its contents), and
+// evidence.method (how we tested it). Only a 200 answer whose body matches the
+// file's shape counts as exposed; a 401, 403, 405, 406, 429, or 503 answer
+// means the site refused our checker. After two 429 answers we stop probing
+// and set facts.throttled.
 
 const RX = {
   env: (t) => /^\s*[A-Z0-9_]+\s*=/m.test(t) && !/<html/i.test(t),
@@ -67,26 +75,66 @@ const TARGETS = [
   { path: "/.DS_Store", sev: "minor", label: "folder listing file", ok: RX.dsstore },
 ];
 
+const STATUS_TEXT = {
+  200: "OK", 201: "Created", 204: "No Content", 301: "Moved Permanently", 302: "Found", 304: "Not Modified",
+  400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed",
+  406: "Not Acceptable", 408: "Request Timeout", 410: "Gone", 429: "Too Many Requests",
+  500: "Internal Server Error", 502: "Bad Gateway", 503: "Service Unavailable", 504: "Gateway Timeout",
+};
+
 export async function runExposedFiles(ctx) {
   const { client, facts } = ctx;
   const findings = [];
   const passes = [];
   const origin = facts.baseOrigin;
   if (!origin) return { findings, passes };
+  if (!client) return { findings, passes };
+  const homepage = homepageOf(facts);
+  const throttle = { count: 0, stop: false };
+  if (facts.throttled) await pause(3000);
 
   const hits = [];
+  let tested = 0; // targets that got an answer other than a rate limit
+  let failed = 0; // requests that never completed (timeout, budget, connection)
   for (const t of TARGETS) {
+    if (throttle.stop) break;
     let res;
-    try { res = await client.get(origin + t.path); } catch { continue; }
-    if (res.status !== 200) continue;
+    try {
+      res = await client.get(origin + t.path);
+    } catch (err) {
+      failed++;
+      // The request budget for this checkup is spent; nothing more will answer.
+      if (err && err.code === "BUDGET") break;
+      continue;
+    }
+    noteStatus(facts, throttle, res.status);
+    if (res.status === 429) { release(res); continue; }
+    tested++;
+    // Only a 200 can be an exposed file. Access denied, method not allowed,
+    // rate limit, and unavailable answers mean the site refused our checker.
+    if (res.status !== 200) { release(res); continue; }
     let body = "";
     try { body = await res.text(4000); } catch { body = ""; }
     if (!t.ok(body, res.contentType)) continue;
-    hits.push({ ...t, contentType: res.contentType });
+    hits.push({ ...t, contentType: res.contentType, status: res.status, statusText: statusTextOf(res) });
   }
 
   if (!hits.length) {
-    passes.push("None of the common private files were left exposed.");
+    // Only claim a pass for files that actually answered. When the check was
+    // cut short, say so instead of claiming the untested files are fine.
+    if (throttle.stop) {
+      if (tested > 0) {
+        passes.push(`We tested ${tested} of the ${TARGETS.length} common private files and none of them was exposed. The rest could not be tested because the site limited our checker.`);
+      } else {
+        passes.push("The common private files could not be tested because the site limited our checker.");
+      }
+    } else if (failed > 0) {
+      if (tested > 0) {
+        passes.push(`We tested ${tested} of the ${TARGETS.length} common private files and none of them was exposed. The rest did not answer.`);
+      }
+    } else {
+      passes.push("None of the common private files were left exposed.");
+    }
     return { findings, passes };
   }
 
@@ -95,6 +143,7 @@ export async function runExposedFiles(ctx) {
 
   for (const h of hits) {
     const isData = h.sev === "urgent";
+    const fileUrl = origin + h.path;
     findings.push({
       id: `exposed${h.path.replace(/[^a-z0-9]+/gi, "-")}`,
       category: isData ? "exposed-data" : "info-leak",
@@ -116,9 +165,58 @@ export async function runExposedFiles(ctx) {
           `matched the shape of a real ${h.label} (contents redacted, not stored)`,
         ],
         note: "Sutros confirmed the file is reachable and stopped. It did not download, keep, or read the contents.",
+        method: `We requested ${h.path} on this site with a plain GET, exactly what a browser does, and checked that the answer was a 200 whose first few lines matched the shape of a real ${h.label}. We stopped there and did not keep the contents.`,
+        pages: [homepage],
+        items: [{ url: fileUrl, status: h.status, statusText: h.statusText, kind: "file" }],
       },
     });
   }
 
   return { findings, passes };
+}
+
+// ---- helpers ----
+
+// Count 429 answers; after two, stop probing in this check and tell the pipeline.
+function noteStatus(facts, throttle, status) {
+  if (status !== 429) return;
+  throttle.count++;
+  if (throttle.count >= 2) {
+    throttle.stop = true;
+    facts.throttled = true;
+  }
+}
+
+function statusTextOf(res) {
+  return (res && res.statusText) || statusWords(res && res.status);
+}
+
+// Human words for a status code, always a string.
+function statusWords(code) {
+  const n = Number(code);
+  if (STATUS_TEXT[n]) return STATUS_TEXT[n];
+  if (n >= 200 && n < 300) return "OK";
+  if (n >= 300 && n < 400) return "Redirect";
+  if (n >= 400 && n < 500) return "Client Error";
+  if (n >= 500 && n < 600) return "Server Error";
+  return "";
+}
+
+// Let go of a body we are not going to read, so the connection is released.
+function release(res) {
+  try { if (res && typeof res.discard === "function") res.discard(); } catch {}
+}
+
+function href(u) {
+  if (!u) return "";
+  if (typeof u === "string") return u;
+  return u.href || String(u);
+}
+
+function homepageOf(facts) {
+  return href(facts.finalUrl) || href(facts.pages && facts.pages[0] && facts.pages[0].url) || (facts.baseOrigin ? facts.baseOrigin + "/" : "");
+}
+
+function pause(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

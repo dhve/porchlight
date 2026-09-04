@@ -138,18 +138,36 @@ const SEV = {
 };
 const PERSON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>';
 const WRENCH = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>';
+const FLAG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 22V3M5 3h13l-2.5 4.5L18 12H5"/></svg>';
+const PROOF_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/></svg>';
+const CHEV = '<svg class="chev" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M9 18l6-6-6-6"/></svg>';
+const SHIELD = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>';
+
+// Shown above the findings. The server sends the same text as r.proofPromise; this
+// copy is the fallback for older saved reports and the offline sample.
+const PROOF_PROMISE_FALLBACK = "Every finding in this report comes from a direct, scripted test that we ran against this site. The AI only writes the wording. It cannot add, remove, or change a finding. Each proof shows the request we sent, the answer we received, and where on the site we found it.";
+
+// Same shapes the server accepts for report ids and screenshot keys.
+const REPORT_ID_RE = /^[A-Za-z0-9_-]{6,20}$/;
+const SHOT_KEY_RE = /^s[1-9]$/;
 
 function renderReport(r) {
   const color = GRADE_COLOR[r.grade] || "var(--watch)";
   ringTarget = RING_CIRC * (1 - Math.max(0, Math.min(100, r.ringPercent || 0)) / 100);
+  const findings = Array.isArray(r.findings) ? r.findings : [];
+  const tally = r.tally || {};
 
   const chips = [];
-  if (r.tally.urgent) chips.push(chip("urgent", r.tally.urgent, "urgent"));
-  if (r.tally.serious) chips.push(chip("serious", r.tally.serious, "serious"));
-  if (r.tally.watch) chips.push(chip("watch", r.tally.watch, "worth a look"));
+  if (tally.urgent) chips.push(chip("urgent", tally.urgent, "urgent"));
+  if (tally.serious) chips.push(chip("serious", tally.serious, "serious"));
+  if (tally.watch) chips.push(chip("watch", tally.watch, "worth a look"));
   const goodCount = (r.passes || []).length;
   if (goodCount) chips.push(chip("good", goodCount, "looking good"));
-  if (r.tally.minor) chips.push(chip("minor", r.tally.minor, "minor"));
+  if (tally.minor) chips.push(chip("minor", tally.minor, "minor"));
+
+  const throttled = r.engine && r.engine.throttled
+    ? `<p class="sc-throttled">The site limited our checker partway through, so some checks were shortened.</p>`
+    : "";
 
   $("#scorecard").innerHTML = `
     <div class="sc-glow"></div>
@@ -167,6 +185,7 @@ function renderReport(r) {
       <h1>${esc(gradeHeadline(r))}</h1>
       <p class="host">${esc(r.target)} &middot; checked ${esc(whenText(r.scannedAt))}</p>
       <p class="sc-summary">${esc(r.summary || "")}</p>
+      ${throttled}
       <div class="sc-tally">${chips.join("")}</div>
     </div>`;
   ringEl = $("#gradeRing");
@@ -192,27 +211,27 @@ function renderReport(r) {
   }
 
   // Findings, ordered by what the owner should do first.
-  const fixFirst = r.findings.filter((f) => f.severity === "urgent" || f.severity === "serious");
-  const watchList = r.findings.filter((f) => f.severity === "watch");
+  const fixFirst = findings.filter((f) => f.severity === "urgent" || f.severity === "serious");
+  const watchList = findings.filter((f) => f.severity === "watch");
+  const minorList = findings.filter((f) => f.severity === "minor");
   const hasMajor = fixFirst.length > 0;
+  const promise = findings.length ? proofPromise(r) : "";
   let html = "";
   if (hasMajor) {
     // Lead with the things that actually matter.
-    html += `<p class="eyebrow">Fix these first</p>` + fixFirst.map(findingCard).join("");
-    if (watchList.length) html += `<p class="eyebrow" style="margin-top:14px;">Then, smaller things worth a look</p>` + watchList.map(findingCard).join("");
+    html += promise + `<p class="eyebrow">Fix these first</p>` + fixFirst.map((f) => findingCard(f, r)).join("");
+    if (watchList.length) html += `<p class="eyebrow" style="margin-top:14px;">Then, smaller things worth a look</p>` + watchList.map((f) => findingCard(f, r)).join("");
   } else {
     // No urgent or serious problems: reassure first, then frame the rest as optional.
-    html += reassureBanner(watchList.length > 0);
-    if (watchList.length) html += `<p class="eyebrow" style="margin-top:14px;">Optional improvements (nice to have, not urgent)</p>` + watchList.map(findingCard).join("");
+    html += reassureBanner(watchList.length > 0) + promise;
+    if (watchList.length) html += `<p class="eyebrow" style="margin-top:14px;">Optional improvements (nice to have, not urgent)</p>` + watchList.map((f) => findingCard(f, r)).join("");
   }
   if (goodCount) {
     html += `<p class="eyebrow" style="margin-top:14px;">Looking good</p>` + goodCard(r.passes);
   }
-  const minorList = r.findings.filter((f) => f.severity === "minor");
-  if (minorList.length) html += minorNotes(minorList);
-  if (!r.findings.length && !goodCount && !minorList.length) {
-    html += reassureBanner(false);
-  }
+  if (minorList.length) html += minorNotes(minorList, r);
+  // feedback-ui.js fills this (and every .f-slot) once the report has an id.
+  html += `<div id="reportFeedbackSlot"></div>`;
   $("#findingsRoot").innerHTML = html;
   try { if (window.Sutros) Sutros.onReportRendered(r); } catch (e) { console.error(e); }
 }
@@ -221,44 +240,236 @@ function chip(cls, n, label) {
   return `<span class="tally ${cls}"><span class="n">${esc(n)}</span> ${esc(label)}</span>`;
 }
 
-function findingCard(f) {
+function proofPromise(r) {
+  const text = r.proofPromise && String(r.proofPromise).trim() ? String(r.proofPromise).trim() : PROOF_PROMISE_FALLBACK;
+  return `<div class="proof-promise"><span class="pp-icon">${SHIELD}</span><p>${esc(text)}</p></div>`;
+}
+
+function findingCard(f, r) {
   const meta = SEV[f.severity] || SEV.watch;
   const fixes = (f.fix || []).map((step) => `<li>${esc(step)}</li>`).join("");
-  const ev = f.evidence;
-  const proof = ev
-    ? `<details class="proof"><summary><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/></svg> Show the technical proof <svg class="chev" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M9 18l6-6-6-6"/></svg></summary><div class="proof-body">${ev.why ? `<p class="proof-why"><b>Why this is a problem.</b> ${esc(ev.why)}</p>` : ""}<p class="proof-k">What we observed</p><pre>${esc((ev.lines || []).join("\n"))}</pre>${ev.confirm ? `<p class="proof-confirm"><b>See it yourself.</b> ${esc(ev.confirm)}</p>` : ""}<p class="proof-note">${esc(ev.note || "")}</p></div></details>`
-    : "";
   return `
     <div class="finding ${esc(f.severity)}">
       <div class="f-head">
-        <span class="sev-chip ${esc(f.severity)}">${meta.icon}${esc(meta.label)}</span>
+        <div class="f-chips">
+          <span class="sev-chip ${esc(f.severity)}">${meta.icon}${esc(meta.label)}</span>
+          ${disputeChip(f)}
+        </div>
         <div class="f-main">
           <h3>${esc(f.title)}</h3>
           <p class="f-mean">${esc(f.meaning)}</p>
         </div>
       </div>
       ${fixes ? `<div class="f-fix"><div class="fx-label">${WRENCH}How to fix it</div><ol>${fixes}</ol>${f.who ? `<div class="who">${PERSON} ${esc(f.who)}</div>` : ""}</div>` : ""}
-      ${proof}
+      ${proofPanel(f, r)}
+      <div class="f-slot" data-finding="${esc(f.id)}"></div>
     </div>`;
 }
 
+// The technical proof panel. Order: why, how we tested, what we observed, found on,
+// screenshots, check again, see it yourself, note, what visitors said.
+function proofPanel(f, r) {
+  const ev = f.evidence;
+  const said = disputeBlock(f);
+  if (!ev && !said) return "";
+  const e = ev || {};
+  const lines = cleanLines(e.lines);
+  const body =
+    (e.why ? `<p class="proof-why"><b>Why this is a problem.</b> ${esc(e.why)}</p>` : "") +
+    (e.method ? `<p class="proof-method"><b>How we tested this.</b> ${esc(e.method)}</p>` : "") +
+    (lines.length ? `<p class="proof-k">What we observed</p><pre>${lines.map((l) => linkifyLine(l, r)).join("\n")}</pre>` : "") +
+    pagesList(e, r) +
+    shotsBlock(e, r) +
+    retestBlock(f, e, r) +
+    (e.confirm ? `<p class="proof-confirm"><b>See it yourself.</b> ${esc(e.confirm)}</p>` : "") +
+    (e.note ? `<p class="proof-note">${esc(e.note)}</p>` : "") +
+    said;
+  return `<details class="proof"><summary>${PROOF_ICON} Show the technical proof ${CHEV}</summary><div class="proof-body">${body}</div></details>`;
+}
+
+function cleanLines(lines) {
+  return (Array.isArray(lines) ? lines : []).filter((l) => l != null && String(l).trim() !== "").map(String);
+}
+
+// Base for resolving site paths: the report's final URL, else https:// plus the target host.
+function reportBase(r) {
+  const cands = [r && r.url, r && r.target ? "https://" + String(r.target).replace(/^https?:\/\//i, "") : null];
+  for (const c of cands) {
+    if (!c) continue;
+    try { const u = new URL(String(c)); if (/^https?:$/.test(u.protocol)) return u.href; } catch {}
+  }
+  return null;
+}
+
+// Returns the normalized href when s is an absolute http(s) URL, else null.
+function isHttpUrl(s) {
+  if (s == null) return null;
+  try { const u = new URL(String(s)); return /^https?:$/.test(u.protocol) ? u.href : null; } catch { return null; }
+}
+
+// Absolute http(s) URLs link as they are; tokens that start with a single "/" resolve
+// against the report's origin. Anything else is left as plain text.
+function linkTarget(tok, base) {
+  try {
+    if (/^https?:\/\/\S+$/i.test(tok)) return isHttpUrl(tok);
+    if (base && /^\/(?!\/)\S*$/.test(tok)) {
+      const u = new URL(tok, base);
+      return /^https?:$/.test(u.protocol) && u.origin === new URL(base).origin ? u.href : null;
+    }
+  } catch {}
+  return null;
+}
+
+// Escape an evidence line and turn URLs and site paths into links.
+function linkifyLine(line, r) {
+  const base = reportBase(r);
+  return String(line).split(/(\s+)/).map((tok) => {
+    if (!tok || /^\s+$/.test(tok)) return esc(tok);
+    const m = tok.match(/^([("'\[<]*)(.*?)([)"'\]>,.;:!?]*)$/);
+    const lead = m ? m[1] : "";
+    const core = m ? m[2] : tok;
+    const tail = m ? m[3] : "";
+    const href = linkTarget(core, base);
+    if (!href) return esc(tok);
+    return `${esc(lead)}<a href="${esc(href)}" target="_blank" rel="noopener">${esc(core)}</a>${esc(tail)}`;
+  }).join("");
+}
+
+// Short label for a URL: its path on this site, "the homepage" for "/", host plus path elsewhere.
+function pathLabel(url, r) {
+  try {
+    const u = new URL(url);
+    const base = reportBase(r);
+    const path = (u.pathname || "/") + (u.search || "");
+    const strip = (h) => String(h || "").toLowerCase().replace(/^www\./, "");
+    const sameSite = base && strip(u.host) === strip(new URL(base).host);
+    if (!sameSite) return u.host + path;
+    return path === "/" ? "the homepage" : path;
+  } catch {
+    return String(url);
+  }
+}
+
+function pageLink(url, r) {
+  return `<a href="${esc(url)}" title="${esc(url)}" target="_blank" rel="noopener">${esc(pathLabel(url, r))}</a>`;
+}
+
+function pagesList(e, r) {
+  const seen = new Set();
+  const pages = [];
+  for (const p of Array.isArray(e.pages) ? e.pages : []) {
+    const href = isHttpUrl(p);
+    if (href && !seen.has(href)) { seen.add(href); pages.push(href); }
+    if (pages.length >= 6) break;
+  }
+  if (!pages.length) return "";
+  return `<p class="proof-k">Found on</p><ul class="proof-pages">${pages.map((p) => `<li>${pageLink(p, r)}</li>`).join("")}</ul>`;
+}
+
+function shotsBlock(e, r) {
+  if (!r.id || !REPORT_ID_RE.test(String(r.id))) return "";
+  const shots = (Array.isArray(e.shots) ? e.shots : []).filter((s) => s && SHOT_KEY_RE.test(String(s.key))).slice(0, 3);
+  if (!shots.length) return "";
+  const figs = shots.map((s) => {
+    const src = `/api/reports/${r.id}/shots/${s.key}`;
+    const page = isHttpUrl(s.page);
+    const cap = s.caption && String(s.caption).trim() ? String(s.caption).trim() : "The page as a visitor sees it";
+    return `<figure class="proof-shot"><a class="proof-shot-link" href="${esc(src)}" target="_blank" rel="noopener"><img loading="lazy" decoding="async" src="${esc(src)}" alt="${esc(cap)}"></a><figcaption><span class="cap">${esc(cap)}</span>${page ? ` &middot; ${pageLink(page, r)}` : ""}</figcaption></figure>`;
+  }).join("");
+  return `<p class="proof-k">What we saw on the page</p><div class="proof-shots">${figs}</div>`;
+}
+
+function retestBlock(f, e, r) {
+  if (!r.id || !REPORT_ID_RE.test(String(r.id))) return "";
+  const n = (Array.isArray(e.items) ? e.items : []).filter((it) => it && isHttpUrl(it.url)).length;
+  if (!n) return "";
+  return `<div class="proof-retest"><button type="button" class="btn btn-ghost btn-sm retest-btn" data-finding="${esc(f.id)}">Check this again right now</button><div class="retest-out" aria-live="polite"></div></div>`;
+}
+
+function disputeChip(f) {
+  if (!f.disputed) return "";
+  return `<span class="dispute-chip">${FLAG}Visitors disputed this on earlier checkups</span>`;
+}
+
+function disputeBlock(f) {
+  const d = f.disputed;
+  if (!d) return "";
+  const wrong = Number(d.wrong) || 0;
+  const right = Number(d.right) || 0;
+  const notes = (Array.isArray(d.notes) ? d.notes : []).filter((n) => n && String(n.text || "").trim()).slice(0, 3);
+  const people = (n) => `${n} ${n === 1 ? "person" : "people"}`;
+  const sum = `On earlier checkups of this site, ${people(wrong)} said this finding was wrong and ${people(right)} said it was right.`;
+  const list = notes.length
+    ? `<ul class="proof-said-list">${notes.map((n) => `<li><span class="q">${esc(String(n.text).trim())}</span>${n.when && agoText(n.when) ? ` <span class="when">${esc(agoText(n.when))}</span>` : ""}</li>`).join("")}</ul>`
+    : "";
+  return `<div class="proof-said"><p class="proof-k">What visitors said</p><p class="proof-said-sum">${esc(sum)}</p>${list}</div>`;
+}
+
+/* ---------------- check again right now ---------------- */
+async function apiPost(path, body) {
+  if (window.Sutros && typeof Sutros.api === "function") return Sutros.api(path, { method: "POST", body });
+  const res = await fetch(path, {
+    method: "POST", credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-Requested-With": "fetch" },
+    body: JSON.stringify(body),
+  });
+  let data = null; try { data = await res.json(); } catch {}
+  if (!res.ok) throw new Error((data && data.error) || "Something went wrong.");
+  return data;
+}
+
+async function retestFinding(btn) {
+  const r = currentReport;
+  const findingId = btn.dataset.finding;
+  const out = btn.parentElement ? btn.parentElement.querySelector(".retest-out") : null;
+  if (!r || !r.id || !findingId || !out) return;
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = "Checking...";
+  out.innerHTML = "";
+  try {
+    const data = await apiPost(`/api/reports/${encodeURIComponent(r.id)}/retest`, { findingId });
+    out.innerHTML = retestLines(data, r);
+  } catch (err) {
+    out.innerHTML = `<p class="retest-err">${esc((err && err.message) || "We could not check this right now. Please try again in a minute.")}</p>`;
+  } finally {
+    btn.disabled = false; btn.textContent = label;
+  }
+}
+
+function retestLines(data, r) {
+  const items = Array.isArray(data && data.items) ? data.items : [];
+  if (!items.length) return `<p class="retest-note">There was nothing to check again for this finding.</p>`;
+  const lines = items.map((it) => {
+    const href = isHttpUrl(it.url);
+    const ref = href ? pageLink(href, r) : esc(it.url || "this address");
+    const status = Number(it.status) || 0;
+    const now = status ? `${status} ${it.statusText || ""}`.trim() : (it.statusText || "did not load");
+    const tail = it.changed ? (it.ok ? "this one works now" : "this one worked when we checked") : "same as when we checked";
+    return `<li class="retest-line ${it.ok ? "ok" : "bad"}">Right now: ${esc(now)} for ${ref} (${esc(tail)})</li>`;
+  }).join("");
+  const when = agoText(data.checkedAt) || "just now";
+  return `<p class="retest-note">Checked ${esc(when)}.</p><ul class="retest-list">${lines}</ul>`;
+}
+
 function goodCard(passes) {
-  const list = passes.map((p) => esc(p.replace(/\.+$/, ""))).join(". ") + ".";
+  const list = passes.map((p) => esc(String(p == null ? "" : p).replace(/\.+$/, ""))).join(". ") + ".";
   return `<div class="finding good"><div class="f-head"><span class="sev-chip good">${SEV.good.icon}All clear</span><div class="f-main"><h3>${passes.length} thing${passes.length > 1 ? "s are" : " is"} working well</h3><p class="f-mean">${list}</p></div></div></div>`;
 }
 
-function minorNotes(list) {
+function minorNotes(list, r) {
   const items = list.map((f) => {
-    const where = f.evidence && f.evidence.lines && f.evidence.lines.length
-      ? `<div class="mn-block"><span class="mn-k">Where</span><ul class="mn-where">${f.evidence.lines.slice(0, 5).map((l) => `<li>${esc(l)}</li>`).join("")}</ul></div>`
+    const ev = f.evidence || {};
+    const lines = cleanLines(ev.lines);
+    const where = lines.length
+      ? `<div class="mn-block"><span class="mn-k">Where</span><ul class="mn-where">${lines.slice(0, 5).map((l) => `<li>${linkifyLine(l, r)}</li>`).join("")}</ul></div>`
       : "";
     const fix = f.fix && f.fix.length
       ? `<div class="mn-block"><span class="mn-k">How to fix it</span><ol class="mn-fix">${f.fix.map((st) => `<li>${esc(st)}</li>`).join("")}</ol>${f.who ? `<div class="mn-who">${PERSON} ${esc(f.who)}</div>` : ""}</div>`
       : "";
-    const whyTech = f.evidence && f.evidence.why ? `<div class="mn-block"><span class="mn-k">Why it's flagged</span><p class="mn-whytech">${esc(f.evidence.why)}</p></div>` : "";
-    return `<div class="mn-item"><h4>${esc(f.title)}</h4><p class="mn-why">${esc(f.meaning)}</p>${where}${whyTech}${fix}</div>`;
+    const whyTech = ev.why ? `<div class="mn-block"><span class="mn-k">Why it's flagged</span><p class="mn-whytech">${esc(ev.why)}</p></div>` : "";
+    return `<div class="mn-item"><h4>${esc(f.title)}${disputeChip(f)}</h4><p class="mn-why">${esc(f.meaning)}</p>${where}${whyTech}${fix}${disputeBlock(f)}<div class="f-slot" data-finding="${esc(f.id)}"></div></div>`;
   }).join("");
-  return `<details class="minor-notes"><summary><span>${list.length} minor note${list.length > 1 ? "s" : ""}</span> <span class="mn-hint">low priority. Each one says where it is, why it matters, and how to fix it.</span> <svg class="chev" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M9 18l6-6-6-6"/></svg></summary><div class="mn-body">${items}</div></details>`;
+  return `<details class="minor-notes"><summary><span>${list.length} minor note${list.length > 1 ? "s" : ""}</span> <span class="mn-hint">low priority. Each one says where it is, why it matters, and how to fix it.</span> ${CHEV}</summary><div class="mn-body">${items}</div></details>`;
 }
 
 function reassureBanner(hasMinor) {
@@ -267,8 +478,8 @@ function reassureBanner(hasMinor) {
     <div class="rb-body">
       <h3>No major issues found</h3>
       <p>${hasMinor
-        ? "Your website is in good shape. There's nothing urgent to fix. The items below are small, optional improvements you can get to whenever it's convenient."
-        : "Your website is in good shape and nothing needs your attention right now. Nice work."}</p>
+        ? "This website is in good shape. There is nothing urgent to fix. The items below are small, optional improvements that can wait for a convenient time."
+        : "This website is in good shape and nothing needs attention right now. Nice work."}</p>
     </div>
   </div>`;
 }
@@ -295,6 +506,44 @@ function whenText(iso) {
   const mins = Math.round(diff / 60_000);
   return mins < 60 ? `${mins} min ago` : "today";
 }
+// "just now", "12 min ago", "3 hours ago", "2 days ago", "4 months ago". Empty for bad input.
+function agoText(iso) {
+  if (!iso) return "";
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "";
+  const m = Math.round(Math.max(0, Date.now() - t) / 60_000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} hour${h === 1 ? "" : "s"} ago`;
+  const d = Math.round(h / 24);
+  if (d < 30) return `${d} day${d === 1 ? "" : "s"} ago`;
+  const mo = Math.round(d / 30);
+  return `${mo} month${mo === 1 ? "" : "s"} ago`;
+}
+
+/* ---------------- printing: open every proof and load the screenshots first ---------------- */
+let printOpened = null;
+function prepareForPrint() {
+  if (printOpened) return; // printReport() already ran this before window.print() fired beforeprint
+  printOpened = $$("details.proof:not([open]), details.minor-notes:not([open])");
+  printOpened.forEach((d) => { d.open = true; });
+  $$(".proof-shot img").forEach((img) => { if (img.loading === "lazy") img.loading = "eager"; });
+}
+function restoreAfterPrint() {
+  (printOpened || []).forEach((d) => { d.open = false; });
+  printOpened = null;
+}
+async function printReport() {
+  prepareForPrint();
+  const pending = $$(".proof-shot img").filter((img) => !img.complete).map((img) =>
+    new Promise((resolve) => { img.addEventListener("load", resolve, { once: true }); img.addEventListener("error", resolve, { once: true }); })
+  );
+  if (pending.length) await Promise.race([Promise.all(pending), new Promise((resolve) => setTimeout(resolve, 2500))]);
+  window.print();
+}
+window.addEventListener("beforeprint", prepareForPrint);
+window.addEventListener("afterprint", restoreAfterPrint);
 
 /* ---------------- sample (offline demo) ---------------- */
 const SAMPLE = {
@@ -303,16 +552,16 @@ const SAMPLE = {
   scannedAt: new Date().toISOString(),
   grade: "C", gradeLabel: "Needs care", score: 62, ringPercent: 62,
   tally: { urgent: 2, serious: 1, watch: 3, good: 0 },
-  summary: "Your site works for most visitors, but we found two urgent problems: a private file with customer info is visible to anyone, and your online order button leads to an error. The good news is both are fixable, and we've written down exactly how.",
+  summary: "This site works for most visitors, but we found two urgent problems: a private file with customer info is visible to anyone, and the online order button leads to an error. The good news is both are fixable, and we've written down exactly how.",
   findings: [
-    { id: "s1", severity: "urgent", category: "exposed-data", title: "A private file with customer info is visible to anyone", meaning: "A database backup is sitting on your website where anyone with the link can download it. It looks like it contains customer names, emails, and past orders. This is the kind of thing that leads to data leaks and scam emails to your customers.", fix: ["Ask whoever manages your site to delete the file backup-db.sql from the server.", "Move future backups somewhere private, not inside the public website folder.", "If it was exposed a while, consider letting customers know as a precaution."], who: "A web person can do this in about 10 minutes.", evidence: { lines: ["GET https://rosastaqueria.com/backup-db.sql", "<- 200 OK   content-type: application/sql   size: 4.2 MB", "matched the shape of a real database backup (contents redacted, not stored)"], note: "Sutros confirmed the file is reachable and stopped. It did not download, keep, or read the contents.", why: "The file is served to anyone who requests that exact address, and automated scanners request well-known backup paths like this one constantly. A database dump typically contains customer records and often password hashes, so one download is a full data breach.", confirm: "Open the address in a private browser window; the file downloads. Then have it removed." } },
-    { id: "s2", severity: "urgent", category: "broken-flow", title: 'Your "Order Online" button leads to an error', meaning: "When we tried to place an order the way a customer would, the page returned a server error instead of taking the order. You may be losing sales right now without knowing it.", fix: ["Open your order page yourself to confirm the error.", "Show your web person this report; a server error usually points to a broken plugin.", "Ask them to test a full order end to end before calling it fixed."], who: "Your web person.", evidence: { lines: ["GET https://rosastaqueria.com/order", "<- 500 Internal Server Error"], note: 'Reproduced while following the "ordering" link from your homepage.', why: "A 500 status means the server's own code failed while handling the order. The console error 'cart.total is not a function' points at the ordering plugin: the code it expects is missing or a different version, so checkout cannot complete for anyone until it is repaired.", confirm: "Open the order page and try to place an order; you will see the error. Press F12 to see the same message in the Console tab." } },
-    { id: "s3", severity: "serious", category: "outdated", title: "Your website software looks out of date", meaning: "Your site appears to run WordPress 5.8, an older version. Old software has publicly known break-in methods, like a lock everyone already knows how to pick.", fix: ["Back up your site first.", "Update WordPress and all add-ons to their latest versions.", "Turn on automatic updates so it doesn't drift out of date again."], who: "You (from the dashboard) or your web person.", evidence: { lines: ["Detected: WordPress 5.8", "generator tag: WordPress 5.8", "Current major version is around 6.x"], note: "Version read from the page.", why: "Each WordPress release fixes security holes that are then publicly documented, so 5.8 means known, unpatched holes on this site. The contact-form add-on version also matches a published advisory. Attackers scan for these exact version strings and apply the matching exploit automatically.", confirm: "Log in to the WordPress dashboard; the Updates page shows the current version and pending updates." } },
-    { id: "s4", severity: "watch", category: "tls", title: "The padlock can break on some pages", meaning: "Your site is secure, but the order page loads one image over an unprotected connection. Browsers may show a 'Not secure' warning there, right before someone pays.", fix: ["Update that image to load over https instead of http."], who: "Your web person; a quick fix.", evidence: { lines: ["http://rosastaqueria.com/img/menu-3.jpg on a secure page"], note: "Insecure resource referenced on a secure page." } },
-    { id: "s5", severity: "watch", category: "quality", title: "2 images are broken on mobile", meaning: "On phones, the tacos and horchata photos show a broken-image icon. Since most of your visitors are on phones, this is often the first thing they see.", fix: ["Re-upload the two menu photos; the originals were moved or deleted."], who: "You can likely do this yourself.", evidence: { lines: ["/img/tacos.jpg", "/img/horchata.jpg"], note: "2 broken of 10 images sampled." } },
-    { id: "s6", severity: "watch", category: "performance", title: "Your site is slow to load on a phone", meaning: "Your homepage takes about 6 seconds to appear on a typical phone. Many people leave after three. The main cause is very large photos.", fix: ["Compress the homepage photos, or ask your web person to add an image optimizer."], who: "A web person; free tools can automate it.", evidence: { lines: ["homepage load: 6.1s on a simulated phone"], note: "Measured in a headless browser." } },
+    { id: "s1", severity: "urgent", category: "exposed-data", title: "A private file with customer info is visible to anyone", meaning: "A database backup is sitting on this site where anyone with the link can download it. It looks like it contains customer names, emails, and past orders. This is the kind of thing that leads to data leaks and scam emails to customers.", fix: ["Ask whoever manages the site to delete the file backup-db.sql from the server.", "Move future backups somewhere private, not inside the public website folder.", "If it was exposed a while, consider letting customers know as a precaution."], who: "A web person can do this in about 10 minutes.", evidence: { lines: ["GET https://rosastaqueria.com/backup-db.sql", "<- 200 OK   content-type: application/sql   size: 4.2 MB", "matched the shape of a real database backup (contents redacted, not stored)"], note: "Sutros confirmed the file is reachable and stopped. It did not download, keep, or read the contents.", method: "We requested /backup-db.sql directly, the way any visitor's browser would, and looked at the status and the first few bytes of the answer.", pages: ["https://rosastaqueria.com/"], items: [{ url: "https://rosastaqueria.com/backup-db.sql", status: 200, statusText: "OK", kind: "file" }], why: "The file is served to anyone who requests that exact address, and automated scanners request well-known backup paths like this one constantly. A database dump typically contains customer records and often password hashes, so one download is a full data breach.", confirm: "Open the address in a private browser window; the file downloads. Then have it removed." } },
+    { id: "s2", severity: "urgent", category: "broken-flow", title: 'The "Order Online" button leads to an error', meaning: "When we tried to place an order the way a customer would, the page returned a server error instead of taking the order. The site may be losing sales right now without anyone knowing it.", fix: ["Open the order page to confirm the error.", "Show your web person this report; a server error usually points to a broken plugin.", "Ask them to test a full order end to end before calling it fixed."], who: "Your web person.", evidence: { lines: ["GET https://rosastaqueria.com/order", "<- 500 Internal Server Error"], note: 'Reproduced while following the "ordering" link from the homepage.', method: "We followed the Order Online link from the homepage and requested the order page with standard browser headers, then tried once more after a short wait.", pages: ["https://rosastaqueria.com/"], items: [{ url: "https://rosastaqueria.com/order", status: 500, statusText: "Internal Server Error", page: "https://rosastaqueria.com/", text: "Order Online", kind: "page" }], why: "A 500 status means the server's own code failed while handling the order. The console error 'cart.total is not a function' points at the ordering plugin: the code it expects is missing or a different version, so checkout cannot complete for anyone until it is repaired.", confirm: "Open the order page and try to place an order; you will see the error. Press F12 to see the same message in the Console tab." } },
+    { id: "s3", severity: "serious", category: "outdated", title: "The website software looks out of date", meaning: "This site appears to run WordPress 5.8, an older version. Old software has publicly known break-in methods, and attackers try them automatically.", fix: ["Back up the site first.", "Update WordPress and all add-ons to their latest versions.", "Turn on automatic updates so it doesn't drift out of date again."], who: "The site owner from the WordPress dashboard, or a web person.", evidence: { lines: ["Detected: WordPress 5.8", "generator tag: WordPress 5.8", "Current major version is around 6.x"], note: "Version read from the page.", why: "Each WordPress release fixes security holes that are then publicly documented, so 5.8 means known, unpatched holes on this site. The contact-form add-on version also matches a published advisory. Attackers scan for these exact version strings and apply the matching exploit automatically.", confirm: "Log in to the WordPress dashboard; the Updates page shows the current version and pending updates." } },
+    { id: "s4", severity: "watch", category: "tls", title: "The padlock can break on some pages", meaning: "The site is secure, but the order page loads one image over an unprotected connection. Browsers may show a 'Not secure' warning there, right before someone pays.", fix: ["Update that image to load over https instead of http."], who: "Your web person; a quick fix.", evidence: { lines: ["http://rosastaqueria.com/img/menu-3.jpg on a secure page"], note: "Insecure resource referenced on a secure page." } },
+    { id: "s5", severity: "watch", category: "quality", title: "2 images are broken on mobile", meaning: "On phones, the tacos and horchata photos show a broken-image icon. Since most visitors are on phones, this is often the first thing they see.", fix: ["Re-upload the two menu photos; the originals were moved or deleted."], who: "The site owner can likely do this without help.", evidence: { lines: ["404 Not Found  /img/tacos.jpg  (image \"Tacos al pastor\" on /menu)", "404 Not Found  /img/horchata.jpg  (image \"Horchata\" on /menu)"], note: "2 broken of 10 images tested.", method: "We collected every image address on the pages we crawled, requested each one, and retried any refusal with standard browser headers before calling it broken.", pages: ["https://rosastaqueria.com/menu", "https://rosastaqueria.com/"], items: [{ url: "https://rosastaqueria.com/img/tacos.jpg", status: 404, statusText: "Not Found", page: "https://rosastaqueria.com/menu", text: "Tacos al pastor", kind: "image" }, { url: "https://rosastaqueria.com/img/horchata.jpg", status: 404, statusText: "Not Found", page: "https://rosastaqueria.com/menu", text: "Horchata", kind: "image" }] } },
+    { id: "s6", severity: "watch", category: "performance", title: "This site is slow to load on a phone", meaning: "The homepage takes about 6 seconds to appear on a typical phone. Many people leave after three. The main cause is very large photos.", fix: ["Compress the homepage photos, or ask your web person to add an image optimizer."], who: "A web person; free tools can automate it.", evidence: { lines: ["homepage load: 6.1s on a simulated phone"], note: "Measured in a headless browser." } },
   ],
-  passes: ["Your homepage looks great and loads without errors", "Your phone number and hours are correct and clickable", "The mobile menu opens smoothly", "Your contact form sends properly", "None of the common private files were left exposed"],
+  passes: ["The homepage looks great and loads without errors", "The phone number and hours are correct and clickable", "The mobile menu opens smoothly", "The contact form sends properly", "None of the common private files were left exposed"],
   engine: { llm: true, model: "sample", orchestrator: "llm", reporter: "llm", focus: "Focusing on data exposure and the ordering flow.", checksRun: ["tls", "security", "exposedFiles", "flows", "links", "browser"], browser: { ran: true, skippedReason: null } },
 };
 function loadSample() {
@@ -336,7 +585,11 @@ $$("[data-nav]").forEach((b) =>
   b.addEventListener("click", () => { go("home"); scrollToId(b.dataset.nav); })
 );
 $("#nominateBtn").addEventListener("click", nominate);
-$("#printBtn").addEventListener("click", () => window.print());
+$("#printBtn").addEventListener("click", printReport);
+$("#findingsRoot").addEventListener("click", (e) => {
+  const btn = e.target.closest && e.target.closest(".retest-btn");
+  if (btn) retestFinding(btn);
+});
 $("#emailBtn").addEventListener("click", emailReport);
 $("#helpersBtn").addEventListener("click", openHelpers);
 $("#helpersBack").addEventListener("click", () => go(currentReport ? "report" : "home"));
@@ -402,7 +655,7 @@ async function nominate() {
     if (!res.ok) throw new Error(data.error || "Could not create the invite.");
     const link = `${location.origin}/?url=${encodeURIComponent(data.target)}`;
     inviteText =
-      `Hi! I came across your website and ran it through Sutros, a free tool that gives a small-business site a quick, safe checkup (it only looks, never changes anything). ` +
+      `Hi. I came across your website and ran it through Sutros, a free tool that gives a small-business site a quick, safe checkup (it only looks, never changes anything). ` +
       `You can run your own checkup here: ${link} . Thought it might be useful.`;
     $("#inviteMsg").textContent = inviteText;
     $("#inviteLink").href = link;

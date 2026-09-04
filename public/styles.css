@@ -343,3 +343,72 @@ footer .brand{font-size:17px; color:var(--ink-soft);}
 .proof-k{font-size:11px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-faint); margin:0 0 6px;}
 .proof-confirm{margin-top:12px;}
 .mn-whytech{font-size:14px; color:var(--ink-soft); line-height:1.55; margin:0 0 4px; max-width:70ch;}
+
+/* ============ ROUND 3: PROOF PROMISE, VISIBLE PROOF, RETEST, DISPUTES, FEEDBACK SLOTS ============ */
+.proof-promise{display:flex; gap:14px; align-items:flex-start; background:var(--surface); border:1px solid var(--border); border-left:4px solid var(--glow); border-radius:var(--radius); padding:16px 20px;}
+.proof-promise .pp-icon{flex:none; width:32px; height:32px; border-radius:50%; display:grid; place-items:center; background:color-mix(in srgb,var(--glow) 24%,transparent); color:var(--glow-ink);}
+.proof-promise p{font-size:14.5px; color:var(--ink-soft); line-height:1.55; max-width:78ch;}
+
+.sc-throttled{margin-top:10px; font-size:13.5px; color:var(--ink-faint); display:flex; align-items:center; gap:8px;}
+.sc-throttled::before{content:""; width:7px; height:7px; border-radius:50%; background:var(--watch); flex:none;}
+
+/* severity chip plus the optional dispute chip stack on the left of a finding head */
+.f-chips{flex:none; display:flex; flex-direction:column; gap:7px; align-items:flex-start;}
+.dispute-chip{display:inline-flex; align-items:center; gap:6px; padding:5px 9px; border-radius:8px; font-size:11.5px; font-weight:700; line-height:1.3; background:var(--glow-2); color:var(--watch-text); border:1px solid color-mix(in srgb,var(--watch) 45%,transparent); max-width:190px;}
+.dispute-chip svg{flex:none;}
+.mn-item h4 .dispute-chip{margin-left:8px; vertical-align:middle; font-size:11px; padding:3px 8px; max-width:none;}
+
+/* feedback-ui.js fills these; empty slots take no room */
+.f-slot:empty,#reportFeedbackSlot:empty{display:none;}
+.f-slot{padding:0 22px 20px;}
+.mn-item .f-slot{padding:10px 0 0;}
+
+/* proof panel additions */
+.proof-method{font-size:14px; color:var(--ink-soft); line-height:1.6; margin:0 0 10px; max-width:78ch;}
+.proof-method b{color:var(--ink);}
+.proof-body > .proof-k{margin-top:14px;}
+.proof-body > .proof-k:first-child{margin-top:0;}
+.proof-body a,.mn-where a,.retest-list a{color:var(--brand); font-weight:600; text-decoration:underline; text-decoration-color:color-mix(in srgb,var(--brand) 40%,transparent); text-underline-offset:2px; word-break:break-all;}
+.proof-body a:hover,.mn-where a:hover,.retest-list a:hover{text-decoration-color:var(--brand);}
+.proof-pages{margin:0; padding-left:18px; font-size:13.5px; color:var(--ink-soft); line-height:1.6;}
+.proof-pages li{word-break:break-word;}
+
+.proof-shots{display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:12px;}
+.proof-shot{margin:0; background:var(--surface); border:1px solid var(--border); border-radius:10px; overflow:hidden;}
+.proof-shot img{display:block; width:100%; height:auto; background:var(--ground-2);}
+.proof-shot-link{display:block;}
+.proof-shot figcaption{padding:8px 11px 10px; font-size:12.5px; color:var(--ink-soft); line-height:1.45;}
+.proof-shot figcaption .cap{color:var(--ink); font-weight:600;}
+
+.btn-sm{padding:9px 15px; font-size:13.5px; border-radius:10px; gap:7px;}
+.proof-retest{margin-top:14px;}
+.retest-btn:disabled{opacity:.6; cursor:progress;}
+.retest-note{font-size:12.5px; color:var(--ink-faint); margin-top:10px;}
+.retest-list{margin:6px 0 0; padding-left:18px; font-size:13.5px; color:var(--ink-soft); line-height:1.6;}
+.retest-line{word-break:break-word;}
+.retest-line.ok::marker{color:var(--good);}
+.retest-line.bad::marker{color:var(--serious);}
+.retest-err{font-size:13.5px; color:var(--serious); font-weight:600; margin-top:10px;}
+
+.proof-said{margin-top:14px; padding-top:12px; border-top:1px dashed var(--border);}
+.proof-said .proof-k{margin:0 0 6px;}
+.proof-said-sum{font-size:13.5px; color:var(--ink-soft); margin:0 0 8px; max-width:70ch;}
+.proof-said-list{margin:0; padding-left:18px; font-size:13.5px; color:var(--ink-soft); line-height:1.55;}
+.proof-said-list li{margin:3px 0; word-break:break-word;}
+.proof-said-list .q{color:var(--ink);}
+.proof-said-list .when{color:var(--ink-faint); font-size:12.5px; margin-left:6px; white-space:nowrap;}
+.mn-item .proof-said{border-top:0; padding-top:0; margin-top:10px;}
+
+@media(max-width:540px){
+  .f-chips{flex-direction:row; flex-wrap:wrap;}
+  .dispute-chip{max-width:none;}
+  .proof-shots{grid-template-columns:1fr;}
+}
+@media print{
+  .proof-promise{break-inside:avoid;}
+  .proof-shot{break-inside:avoid;}
+  .proof-shots{grid-template-columns:1fr 1fr;}
+  .proof-shot img{max-width:100%;}
+  .proof-retest,.f-slot,#reportFeedbackSlot{display:none !important;}
+  .proof-body a,.mn-where a{color:#111; text-decoration:none;}
+}

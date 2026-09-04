@@ -252,6 +252,7 @@
 <div class="screen" id="screen-auth">
   <section class="au-page"><div class="wrap"><div class="au-card au-narrow">
     <p class="eyebrow">Your account</p>
+    <p class="au-sub">An account is optional. It keeps your checkups together, lets you post to the bulletin, and helps keep out spam.</p>
     <div class="au-tabs" role="tablist" id="auTabs">
       <button type="button" role="tab" data-tab="login" id="auTabLogin">Sign in</button>
       <button type="button" role="tab" data-tab="signup" id="auTabSignup">Create an account</button>
@@ -789,7 +790,7 @@
     renderBanner(S.user);
     if (flags.verified) {
       flags.verified = false;
-      S.toast("Email confirmed. Thanks!");
+      S.toast("Email confirmed. Thank you.");
     }
     if (flags.error && !/^\/(login|signup|auth-error)\/?$/.test(location.pathname)) {
       S.toast(errorText(flags.error));
