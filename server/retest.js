@@ -133,7 +133,9 @@ async function fetchStatus(client, target, host, resolve) {
     } catch {
       return { status, text: statusText(status) };
     }
-    if (!isHttp(next) || !(await allowed(next, host, resolve))) return { status: 0, text: "not allowed" };
+    // A redirect may land on any public host (a parent domain, a CDN); each hop is still held to
+    // a standard port and the private-address guard, so the chain can never reach inside a network.
+    if (!isHttp(next) || !(await allowedHop(next, resolve))) return { status: 0, text: "not allowed" };
     current = next;
   }
   return { status: 0, text: "did not load" };
@@ -156,6 +158,17 @@ function parseHttpUrl(s) {
 
 function isHttp(u) {
   return u.protocol === "http:" || u.protocol === "https:";
+}
+
+/** A redirect hop: standard web port and the safety guard says the address is public. */
+async function allowedHop(u, resolve) {
+  if (u.port && u.port !== "80" && u.port !== "443") return false;
+  try {
+    const safe = await resolve(u);
+    return Boolean(safe && safe.ok);
+  } catch {
+    return false;
+  }
 }
 
 /** Same host or a subdomain, standard web port, and the safety guard says the address is public. */
