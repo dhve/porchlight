@@ -90,7 +90,7 @@ async function call(body) {
  * @param {{system:string, messages:object[], tools:object[], maxTokens?:number, toolChoice?:string|object}} opts
  * @returns {Promise<{message:object, finishReason:string, usage:object|null}>}
  */
-export async function chatTools({ system, messages, tools, maxTokens = 3000, toolChoice = "auto" }) {
+export async function chatTools({ system, messages, tools, maxTokens = 3000, toolChoice = "auto", reasoningEffort = "none" }) {
   if (!llmEnabled()) throw new Error("LLM is not configured (no OPENAI_API_KEY).");
   const body = {
     model: modelName(),
@@ -99,8 +99,11 @@ export async function chatTools({ system, messages, tools, maxTokens = 3000, too
     tools,
     tool_choice: toolChoice,
   };
+  // gpt-5.x on chat completions only accepts function tools with reasoning_effort "none";
+  // older models reject the parameter altogether, so drop it if the API says so.
+  if (reasoningEffort) body.reasoning_effort = reasoningEffort;
   let lastErr;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 60_000);
     try {
@@ -114,6 +117,9 @@ export async function chatTools({ system, messages, tools, maxTokens = 3000, too
         const detail = await res.text().catch(() => "");
         const err = new Error(`OpenAI API error ${res.status}: ${detail.slice(0, 400)}`);
         if (res.status === 429 || res.status >= 500) { lastErr = err; continue; }
+        if (body.reasoning_effort && /reasoning_effort/i.test(detail) && /unsupported|not supported|unknown|unrecognized|invalid/i.test(detail)) {
+          delete body.reasoning_effort; lastErr = err; continue;
+        }
         throw err;
       }
       const data = await res.json();
