@@ -22,6 +22,7 @@ export const CHECK_CATALOG = [
   { id: "reflection", desc: "Conservative reflected-input (XSS surface) check, detection only." },
   { id: "modernization", desc: "Dated design and not-mobile-friendly, with specific modernization guidance." },
   { id: "browser", desc: "Headless-browser pass: JS errors, load speed, render issues." },
+  { id: "agent", desc: "Browsing agent: an LLM with a real phone-sized browser explores the site read-only and notes what a visitor would run into." },
 ];
 
 const ALL_IDS = CHECK_CATALOG.map((c) => c.id);

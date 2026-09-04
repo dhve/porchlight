@@ -34,6 +34,7 @@ import { runLinks } from "./checks/links.js";
 import { runReflection } from "./checks/reflection.js";
 import { runModernization } from "./checks/modernization.js";
 import { runBrowser } from "./checks/browser.js";
+import { runAgentBrowse } from "./checks/agentBrowse.js";
 
 const CHECK_FNS = {
   tls: runTls,
@@ -48,15 +49,17 @@ const CHECK_FNS = {
   reflection: runReflection,
   modernization: runModernization,
   browser: runBrowser,
+  agent: runAgentBrowse,
 };
 // Step 3 = security posture. Step 4 = functional + input behavior.
 const STEP3 = ["tls", "security", "cookies", "exposedFiles", "libraries", "disclosure"];
-const STEP4 = ["forms", "flows", "links", "reflection", "modernization", "browser"];
+const STEP4 = ["forms", "flows", "links", "reflection", "modernization", "browser", "agent"];
 const MARK = { urgent: "⚠️", serious: "🔧", watch: "👀", good: "✅" };
 
 export async function runCheckup({ url, display, userId = null }, onEvent = () => {}) {
   const client = createClient();
-  const ctx = { url, client };
+  const ctx = { url, client, onEvent };
+  let agentInfo = null; // filled by the browsing agent when it runs
   const findings = [];
   const passes = [];
   const checksRun = [];
@@ -93,19 +96,24 @@ export async function runCheckup({ url, display, userId = null }, onEvent = () =
   await runStep(onEvent, "probe", order.filter((id) => STEP3.includes(id)), ctx, findings, passes, checksRun, browserInfo);
 
   // ---- Step 4: customer ----
-  await runStep(onEvent, "customer", order.filter((id) => STEP4.includes(id)), ctx, findings, passes, checksRun, browserInfo);
+  const extra = {};
+  const step4 = order.filter((id) => STEP4.includes(id));
+  if (!step4.includes("agent") && STEP4.includes("agent")) step4.push("agent"); // the browsing agent always gets its turn
+  await runStep(onEvent, "customer", step4, ctx, findings, passes, checksRun, browserInfo, extra);
+  agentInfo = extra.agent || null;
 
   // ---- Step 5: report ----
-  return finish({ url, display, userId, facts: recon.facts, findings, passes, plan, checksRun, browserInfo, onEvent });
+  return finish({ url, display, userId, facts: recon.facts, findings, passes, plan, checksRun, browserInfo, agentInfo, onEvent });
 }
 
-async function runStep(onEvent, key, ids, ctx, findings, passes, checksRun, browserInfo) {
+async function runStep(onEvent, key, ids, ctx, findings, passes, checksRun, browserInfo, extra = {}) {
   onEvent("step", { key, status: "start" });
   for (const id of ids) {
     const fn = CHECK_FNS[id];
     if (!fn) continue;
     const out = await safe(() => fn(ctx), { findings: [], passes: [] });
-    if (id === "browser") browserInfo = Object.assign(browserInfo, { ran: !out.skipped, skippedReason: out.skipped ? out.reason : null });
+    if (id === "browser") browserInfo = Object.assign(browserInfo, { ran: !out.skipped, skippedReason: out.skipped ? out.reason : null, mode: out.browserMode || null });
+    if (id === "agent") extra.agent = out.agent || { ran: false, reason: out.reason || null };
     checksRun.push(id);
     push(findings, passes, out);
     logFindings(onEvent, out.findings);
@@ -113,7 +121,7 @@ async function runStep(onEvent, key, ids, ctx, findings, passes, checksRun, brow
   onEvent("step", { key, status: "done" });
 }
 
-async function finish({ url, display, userId = null, facts, findings, passes, plan, checksRun, browserInfo, onEvent }) {
+async function finish({ url, display, userId = null, facts, findings, passes, plan, checksRun, browserInfo, agentInfo = null, onEvent }) {
   onEvent("step", { key: "report", status: "start" });
 
   // De-duplicate by id, then sort most severe first.
@@ -193,6 +201,11 @@ async function finish({ url, display, userId = null, facts, findings, passes, pl
     },
     proofPromise: PROOF_PROMISE,
   };
+  if (agentInfo) {
+    const { shots: agentShots, ...rest } = agentInfo;
+    report.agent = rest;
+    if (Array.isArray(agentShots) && agentShots.length) proof.shots = [...(proof.shots || []), ...agentShots];
+  }
 
   // Identity, ownership, contact hints, and the signed attestation, then persist.
   report.id = newId();
