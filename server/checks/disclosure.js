@@ -41,12 +41,36 @@ export async function runDisclosure(ctx) {
 
   // ---- secrets in page source (homepage + crawled pages) ----
   const secretHits = []; // { label, path, count, page }
+  const browserKeys = []; // Google API keys: designed to sit in page code, only a problem when unrestricted
   for (const page of facts.pages || []) {
     if (!page.html) continue;
     for (const p of SECRET_PATTERNS) {
       const matches = page.html.match(p.re);
-      if (matches) secretHits.push({ label: p.label, path: href(page.url).replace(origin, "") || "/", count: matches.length, page: href(page.url) });
+      if (!matches) continue;
+      const hit = { label: p.label, path: href(page.url).replace(origin, "") || "/", count: matches.length, page: href(page.url) };
+      if (p.label === "Google API key") browserKeys.push(hit); else secretHits.push(hit);
     }
+  }
+  if (browserKeys.length) {
+    findings.push({
+      id: "google-browser-key",
+      category: "hardening",
+      severity: "minor",
+      title: "A Google API key is visible in the page code",
+      meaning:
+        "Keys for Google Maps and similar browser services are meant to sit in page code, so this is normal. It only becomes a problem if the key is unrestricted, because anyone could copy it and run up usage on the site's Google account.",
+      fix: [
+        "In Google Cloud Console, open the key and restrict it to this site's domains (HTTP referrers) and to the APIs it needs.",
+        "Set a usage cap or budget alert on the project so a copied key cannot run up a bill.",
+      ],
+      who: "The owner or their web person, whoever manages the Google account.",
+      evidence: {
+        lines: browserKeys.slice(0, 4).map((h) => `${h.path}: Google API key (${h.count} match${h.count > 1 ? "es" : ""}, value redacted)`),
+        note: "The key itself is not stored or shown. Whether it is restricted can only be seen inside the site's Google Cloud project.",
+        method: "We read the source of every page we loaded and looked for the Google API key format. Browser keys like this are expected in page code, so this is a reminder to restrict the key, not a leak.",
+        pages: uniq(browserKeys.map((h) => h.page), homepage),
+      },
+    });
   }
   if (secretHits.length) {
     findings.push({

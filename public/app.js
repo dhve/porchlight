@@ -327,8 +327,10 @@ function isHttpUrl(s) {
 
 // Absolute http(s) URLs link as they are; tokens that start with a single "/" resolve
 // against the report's origin. Anything else is left as plain text.
+const TEXT_FILE_RE = /\.(m?js|css|map|json|xml|txt|woff2?|ttf|otf)(\?|#|$)/i; // opens as a wall of code, never useful to a reader
 function linkTarget(tok, base) {
   try {
+    if (TEXT_FILE_RE.test(tok)) return null;
     if (/^https?:\/\/\S+$/i.test(tok)) return isHttpUrl(tok);
     if (base && /^\/(?!\/)\S*$/.test(tok)) {
       const u = new URL(tok, base);
@@ -392,7 +394,7 @@ function shotsBlock(e, r) {
     const src = `/api/reports/${r.id}/shots/${s.key}`;
     const page = isHttpUrl(s.page);
     const cap = s.caption && String(s.caption).trim() ? String(s.caption).trim() : "The page as a visitor sees it";
-    return `<figure class="proof-shot"><a class="proof-shot-link" href="${esc(src)}" target="_blank" rel="noopener"><img loading="lazy" decoding="async" src="${esc(src)}" alt="${esc(cap)}"></a><figcaption><span class="cap">${esc(cap)}</span>${page ? ` &middot; ${pageLink(page, r)}` : ""}</figcaption></figure>`;
+    return `<figure class="proof-shot"><button type="button" class="proof-shot-link" data-lightbox="${esc(src)}" data-caption="${esc(cap)}" aria-label="Enlarge this picture"><img loading="lazy" decoding="async" src="${esc(src)}" alt="${esc(cap)}"></button><figcaption><span class="cap">${esc(cap)}</span>${page ? ` &middot; ${pageLink(page, r)}` : ""}</figcaption></figure>`;
   }).join("");
   return `<p class="proof-k">What we saw on the page</p><div class="proof-shots">${figs}</div>`;
 }
@@ -893,4 +895,36 @@ async function submitHelper(e) {
     if (document.hidden) cancelAnimationFrame(raf); else if (!REDUCED) frame();
   });
   start();
+})();
+
+
+// ---- picture lightbox: enlarge in place, close with the X, Escape, or a click outside ----
+(function () {
+  let box = null;
+  function close() {
+    if (!box) return;
+    box.remove(); box = null;
+    document.body.classList.remove("has-lightbox");
+  }
+  function open(src, caption) {
+    close();
+    box = document.createElement("div");
+    box.className = "lightbox";
+    box.setAttribute("role", "dialog");
+    box.setAttribute("aria-modal", "true");
+    box.setAttribute("aria-label", caption || "Enlarged picture");
+    box.innerHTML = `<button type="button" class="lightbox-close" aria-label="Close">${esc("\u00d7")}</button><figure class="lightbox-fig"><img src="${esc(src)}" alt="${esc(caption || "")}"><figcaption>${esc(caption || "")}</figcaption></figure>`;
+    box.addEventListener("click", (e) => { if (e.target === box || e.target.closest(".lightbox-close")) close(); });
+    document.body.appendChild(box);
+    document.body.classList.add("has-lightbox");
+    const btn = box.querySelector(".lightbox-close");
+    if (btn) btn.focus();
+  }
+  document.addEventListener("click", (e) => {
+    const t = e.target.closest("[data-lightbox]");
+    if (!t) return;
+    e.preventDefault();
+    open(t.getAttribute("data-lightbox"), t.getAttribute("data-caption") || "");
+  });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
 })();

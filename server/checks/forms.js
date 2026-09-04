@@ -88,15 +88,20 @@ export async function runForms(ctx) {
   }
 
   // ---- external scripts without Subresource Integrity ----
-  const extNoSri = (facts.scripts || []).filter((s) => s.external && !s.integrity);
+  // Integrity checks only make sense for fixed library files from a static CDN. Tag managers,
+  // analytics, chat widgets, consent tools, and video players change their code constantly and
+  // cannot carry an integrity hash, so they are not counted.
+  const STATIC_CDN = /(^|\.)(cdnjs\.cloudflare\.com|cdn\.jsdelivr\.net|unpkg\.com|code\.jquery\.com|ajax\.googleapis\.com|stackpath\.bootstrapcdn\.com|maxcdn\.bootstrapcdn\.com|ajax\.aspnetcdn\.com|cdn\.datatables\.net|use\.fontawesome\.com)$/i;
+  const cdnHost = (src) => { try { return new URL(src).hostname; } catch { return ""; } };
+  const extNoSri = (facts.scripts || []).filter((s) => s.external && !s.integrity && STATIC_CDN.test(cdnHost(s.src)));
   if (extNoSri.length >= 1) {
     findings.push({
       id: "missing-sri",
       category: "hardening",
       severity: "minor",
-      title: "Scripts from other sites load without a safety check",
+      title: "Library files from a public CDN load without a file check",
       meaning:
-        "Your site runs code hosted on other companies' servers without verifying it hasn't been tampered with. If one of those providers is ever compromised, the bad code runs on your site too.",
+        "This site loads fixed library files (such as jQuery or Bootstrap) from a public CDN without an integrity check. An integrity check makes the browser refuse the file if it is ever changed on that CDN. It is a one-line addition for files like these.",
       fix: [
         "Where: the <script> tags that load the files listed under Where.",
         "Add an integrity attribute to each (free generator: srihash.org), or host those scripts on your own site instead.",
@@ -104,12 +109,12 @@ export async function runForms(ctx) {
       who: "Your web person.",
       evidence: {
         lines: extNoSri.slice(0, 5).map((s) => shortHost(s.src)),
-        note: `${extNoSri.length} external script(s) without an integrity attribute.`,
-        method: "We listed every script tag on the pages we loaded that points to another domain and checked whether it carries an integrity attribute. We did not download those scripts.",
+        note: `${extNoSri.length} library file(s) from a public CDN without an integrity attribute. Tag managers, analytics, and widgets are not counted because they cannot use one.`,
+        method: "We listed every script tag on the pages we loaded that points to a public library CDN (cdnjs, jsDelivr, unpkg, jQuery, Google Hosted Libraries, and similar) and checked whether it carries an integrity attribute. We did not download those scripts.",
         pages: pagesReferencing(facts, extNoSri.map((s) => s.src), homepage),
       },
     });
-  } else if ((facts.scripts || []).some((s) => s.external)) {
+  } else if ((facts.scripts || []).some((s) => s.external && s.integrity && STATIC_CDN.test(cdnHost(s.src)))) {
     passes.push("Your external scripts use integrity checks.");
   }
 

@@ -34,8 +34,12 @@ const BY_ID = {
     confirm: "Run the domain through the free SSL Labs test (ssllabs.com/ssltest); it lists every protocol version the server accepts.",
   },
   "missing-security-headers": {
-    why: "These headers are instructions your server sends with every page. Without X-Frame-Options or frame-ancestors, another site can load your page inside an invisible frame and trick visitors into clicking things (clickjacking). Without Content-Security-Policy, any script that gets injected runs freely. Without HSTS, a visitor's first request can be intercepted and downgraded to plain http. Each missing header is one specific protection switched off.",
+    why: "Both settings only matter for visitors who sign in. Without Strict-Transport-Security, a visitor's first request can go over plain http, where a login can be read or altered on the network. Without X-Frame-Options or frame-ancestors, another site can load this site's pages inside an invisible frame and trick a signed-in visitor into clicking something they cannot see, which is called clickjacking. Sites with no logins are not affected, which is why plenty of secure brochure sites do without these.",
     confirm: "Enter the domain at securityheaders.com; it lists exactly which headers are present and missing.",
+  },
+  "google-browser-key": {
+    why: "Google Maps, Places, and similar browser APIs require the key in page code, so its presence is not a leak. The risk is only an unrestricted key: anyone can copy it into their own site and the usage is billed to this site's Google project.",
+    confirm: "In Google Cloud Console, open APIs and Services, then Credentials, select the key, and check that Application restrictions lists this site's domains and API restrictions lists only the APIs it uses.",
   },
   "weak-csp": {
     why: "A Content-Security-Policy is meant to stop injected scripts from running. 'unsafe-inline' allows any inline script, which is exactly what an injection attack inserts. 'unsafe-eval' allows code built from text at runtime. A wildcard source lets scripts load from anywhere. Each one cancels the protection the policy is supposed to provide.",
@@ -94,7 +98,7 @@ const BY_ID = {
     confirm: "View the page source and look at the password input's autocomplete attribute.",
   },
   "missing-sri": {
-    why: "If the third-party host serving that script is compromised or hijacked, the altered script runs on your page with full access to it. An integrity hash makes the browser refuse any file that has changed.",
+    why: "The file is a fixed library version served from a public CDN. If that CDN is ever compromised, the altered file runs on this site's pages with full access to them. An integrity hash makes the browser refuse any file that has changed, and it works for fixed library files like these (tag managers, analytics, and widgets change constantly and cannot use one).",
     confirm: "View the page source and find the script tags listed; they have no integrity attribute.",
   },
   "failed-resources": {

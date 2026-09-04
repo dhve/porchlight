@@ -34,38 +34,45 @@ export async function runSecurity(ctx) {
   const homepage = homepageOf(facts);
   const throttle = { count: 0, stop: false };
 
-  // ---- missing / weak security headers ----
+  // ---- security headers, only where they change something for visitors ----
+  // Most brochure sites lack these headers and are none the worse for it, so we only
+  // speak up when the site has logins or sessions, and only about the two headers
+  // that protect those visitors: HSTS (keeps them on https) and framing protection.
+  const hasLogin = (facts.forms || []).some((f) => f && (f.hasPassword || /login|signin|sign-in|account/i.test(String(f.action || "") + String(f.page || ""))));
+  const setCookies = typeof headers.getSetCookie === "function" ? headers.getSetCookie() : [headers.get("set-cookie")].filter(Boolean);
+  const hasSession = setCookies.some((c) => /^(?:[^=]*(?:sess|sid|auth|token|login|user|csrf|xsrf)[^=]*)=/i.test(String(c)));
   const missing = [];
-  if (facts.isHttps && !headers.get("strict-transport-security")) missing.push("Strict-Transport-Security (keeps visitors on https)");
-  if (!headers.get("content-security-policy")) missing.push("Content-Security-Policy (limits what can run on your pages)");
-  if (!headers.get("x-content-type-options")) missing.push("X-Content-Type-Options (stops content-type confusion)");
-  if (!headers.get("x-frame-options") && !/frame-ancestors/i.test(headers.get("content-security-policy") || "")) missing.push("X-Frame-Options or frame-ancestors (stops clickjacking)");
-  if (!headers.get("referrer-policy")) missing.push("Referrer-Policy (controls what you leak on click-away)");
-  if (!headers.get("permissions-policy")) missing.push("Permissions-Policy (limits camera, mic, geolocation access)");
+  if (facts.isHttps && !headers.get("strict-transport-security")) {
+    missing.push({ name: "Strict-Transport-Security", plain: "No Strict-Transport-Security header. A visitor who types the address without https can be sent to the unprotected http version first, where a login could be read on the network." });
+  }
+  if (!headers.get("x-frame-options") && !/frame-ancestors/i.test(headers.get("content-security-policy") || "")) {
+    missing.push({ name: "X-Frame-Options or frame-ancestors", plain: "No framing protection. Another website can load this site's pages inside a hidden frame and trick a signed-in visitor into clicking something they cannot see." });
+  }
 
-  if (missing.length >= 2) {
+  if ((hasLogin || hasSession) && missing.length) {
     findings.push({
       id: "missing-security-headers",
       category: "hardening",
       severity: "minor",
-      title: `Your site is missing ${missing.length} standard safety headers`,
+      title: missing.length === 1 ? "One protection for signed-in visitors is switched off" : "Two protections for signed-in visitors are switched off",
       meaning:
-        `Your server isn't sending ${missing.length} of the standard browser security headers. Each one blocks a specific kind of misuse (listed under Where). On their own they're low risk, and each is a one-line setting.`,
+        "This site has logins or sessions, so two small server settings matter more than they would on a plain brochure site. " +
+        (missing.length === 1 ? "One of them is missing." : "Both are missing.") +
+        " Each is a single line in the server or hosting settings.",
       fix: [
-        "Where they live: your web server settings (Apache or nginx), your hosting control panel, or a security plugin if you use WordPress.",
-        `Add: ${missing.map((m) => m.split(" (")[0]).join(", ")}.`,
-        "Afterwards, confirm for free at securityheaders.com.",
+        `Add ${missing.map((m) => m.name).join(" and ")} in the web server settings, the hosting control panel, or a security plugin.`,
+        "Afterwards, confirm at securityheaders.com.",
       ],
-      who: "Your web person, or a security plugin.",
+      who: "The owner's web person, or a security plugin.",
       evidence: {
-        lines: missing.map((m) => `missing: ${m}`),
-        note: "Read from the homepage response headers.",
-        method: "We loaded the homepage and read the response headers the server sent with it, then checked for each of the six standard browser security headers by name.",
+        lines: missing.map((m) => m.plain),
+        note: "Read from the homepage response headers. Only checked because the site has logins or sessions.",
+        method: "We loaded the homepage and read the response headers the server sent with it. Because the site sets session cookies or has a login form, we checked for the two headers that protect signed-in visitors.",
         pages: [homepage],
       },
     });
-  } else if (missing.length === 0) {
-    passes.push("Your site sends the important browser security headers.");
+  } else if (!missing.length && facts.isHttps) {
+    passes.push("The site keeps visitors on https and blocks other sites from framing its pages.");
   }
 
   // ---- CSP quality ----

@@ -143,6 +143,23 @@ export async function captureProof({ facts, findings, onEvent } = {}) {
   return { shots, skipped: n ? null : (skipped || "The pages did not load in time.") };
 }
 
+const PHONE = { width: 390, height: 844 };
+
+/**
+ * A picture is only worth showing when it makes the problem visible. Headers, cookies,
+ * keys in source, and console errors have nothing to look at, so they get no picture.
+ * Returns null, or { caption, phone, highlight }.
+ */
+function pictureRule(f) {
+  const id = String((f && f.id) || "");
+  if (/^broken-(links|images)$/.test(id)) return { caption: null, phone: false, highlight: true }; // caption comes from what was outlined
+  if (id === "verbose-errors") return { caption: "The error text visitors can see on this page", phone: false, highlight: false };
+  if (id === "directory-listing") return { caption: "The folder listing anyone can open", phone: false, highlight: false };
+  if (/^flow-(error|missing)-/.test(id)) return { caption: "The error page visitors get", phone: false, highlight: false, errorPage: true };
+  if (id === "not-mobile-friendly" || id === "dated-design") return { caption: "The page on a phone-sized screen", phone: true, highlight: false };
+  return null;
+}
+
 /** Decide which (finding, pages) pairs deserve a picture, most severe first. */
 function pickTargets(findings, siteHost) {
   const list = Array.isArray(findings) ? findings : [];
@@ -150,30 +167,32 @@ function pickTargets(findings, siteHost) {
     .map((f, i) => ({ f, i }))
     .filter(({ f }) => f && f.evidence && Array.isArray(f.evidence.pages) && f.evidence.pages.length && f.severity in SEVERITY_RANK)
     .filter(({ f }) => !(Array.isArray(f.evidence.shots) && f.evidence.shots.length)) // already pictured by its own check
+    .filter(({ f }) => pictureRule(f) !== null)
     .sort((a, b) => (SEVERITY_RANK[a.f.severity] - SEVERITY_RANK[b.f.severity]) || (a.i - b.i));
   const targets = [];
   for (const { f } of ranked) {
+    const rule = pictureRule(f);
     const pages = [...new Set(f.evidence.pages.map((p) => String(p || "")))].filter((p) => okUrl(p, siteHost)).slice(0, 6);
     if (!pages.length) continue;
     const items = (Array.isArray(f.evidence.items) ? f.evidence.items : [])
       .filter((it) => it && (it.kind === "link" || it.kind === "image") && okUrl(it.url, null));
     const links = items.filter((it) => it.kind === "link").map((it) => it.url);
     const images = items.filter((it) => it.kind === "image").map((it) => it.url);
-    targets.push({ finding: f, pages, links, images, needsHighlight: links.length + images.length > 0 });
+    targets.push({ finding: f, rule, pages, links, images, needsHighlight: rule.highlight && links.length + images.length > 0 });
   }
   return targets;
 }
 
 async function shootPlain(page, t, { shots, plainByPage, remaining, onLimited, siteHost }) {
-  const existing = plainByPage.get(t.pages[0]);
-  if (existing) return existing;
+  if (!t.rule || t.rule.highlight) return null; // a highlight finding with nothing to outline shows nothing
+  const cacheKey = (url) => `${t.rule.phone ? "phone" : "desk"}|${t.rule.caption}|${url}`;
   for (const url of t.pages.slice(0, 2)) {
-    if (plainByPage.has(url)) return plainByPage.get(url);
+    if (plainByPage.has(cacheKey(url))) return plainByPage.get(cacheKey(url));
     if (shots.length >= MAX_SHOTS || remaining() < 3000) return null;
-    const shot = await takeShot(page, url, null, { remaining, onLimited, siteHost });
+    const shot = await takeShot(page, url, null, { remaining, onLimited, siteHost, phone: t.rule.phone, allowErrorPage: Boolean(t.rule.errorPage) });
     if (!shot) continue;
-    const ref = register(shots, shot, url, "The page as a visitor sees it", 0);
-    plainByPage.set(url, ref);
+    const ref = register(shots, shot, url, t.rule.caption, 0);
+    plainByPage.set(cacheKey(url), ref);
     return ref;
   }
   return null;
@@ -189,21 +208,15 @@ async function shootHighlighted(page, t, { shots, plainByPage, remaining, onLimi
     if (shot.highlighted > 0) {
       return register(shots, shot, url, captionFor(shot), shot.highlighted);
     }
-    if (!fallback) fallback = { shot, url };
+    fallback = fallback || { shot, url };
   }
-  if (!fallback) return null;
-  // Nothing matched on the page; keep the picture as an ordinary view of that page.
-  const existing = plainByPage.get(fallback.url);
-  if (existing) return existing;
-  if (shots.length >= MAX_SHOTS) return null;
-  const ref = register(shots, fallback.shot, fallback.url, "The page as a visitor sees it", 0);
-  plainByPage.set(fallback.url, ref);
-  return ref;
+  void fallback; // nothing was outlined on any page, so no picture is kept: it would not show the problem
+  return null;
 }
 
 function register(shots, shot, url, caption, highlighted) {
   const key = "s" + (shots.length + 1);
-  shots.push({ key, page: url, caption, highlighted, mime: "image/jpeg", bytes: shot.bytes, width: VIEWPORT.width, height: VIEWPORT.height });
+  shots.push({ key, page: url, caption, highlighted, mime: "image/jpeg", bytes: shot.bytes, width: shot.width || VIEWPORT.width, height: shot.height || VIEWPORT.height });
   return { key, page: url, caption, highlighted };
 }
 
@@ -219,8 +232,11 @@ function captionFor(shot) {
  * Load one page and photograph it. marks = { links: [urls], images: [urls] } or null.
  * Resolves { bytes, highlighted, links, images } or null when the page could not be pictured.
  */
-async function takeShot(page, url, marks, { remaining, onLimited, siteHost }) {
+async function takeShot(page, url, marks, { remaining, onLimited, siteHost, phone = false, allowErrorPage = false }) {
   try {
+    const size = phone ? PHONE : VIEWPORT;
+    const cur = page.viewportSize();
+    if (!cur || cur.width !== size.width || cur.height !== size.height) await page.setViewportSize(size);
     const navTimeout = Math.max(1000, Math.min(PAGE_TIMEOUT_MS, remaining() - 1500));
     const res = await page.goto(url, { waitUntil: "domcontentloaded", timeout: navTimeout });
     const status = res ? res.status() : 0;
@@ -228,7 +244,10 @@ async function takeShot(page, url, marks, { remaining, onLimited, siteHost }) {
       onLimited();
       return null;
     }
-    if (status >= 400) return null; // an error page is not what the finding is about
+    if (status >= 400 && !allowErrorPage) return null; // an error page is not what the finding is about
+    // A script, stylesheet, or data file renders as a wall of text; only pages are pictured.
+    const ctype = res ? String((res.headers() || {})["content-type"] || "") : "";
+    if (ctype && !/text\/html|application\/xhtml/i.test(ctype)) return null;
     // A redirect may have carried the page off the site or onto a private address; that is not
     // a picture of the site's page, so it is not taken.
     if (!stayedOnSite(page.url(), siteHost)) return null;
@@ -245,7 +264,7 @@ async function takeShot(page, url, marks, { remaining, onLimited, siteHost }) {
       bytes = await page.screenshot({ type: "jpeg", quality: JPEG_QUALITY_RETRY, timeout: Math.max(1000, Math.min(8000, remaining())) });
     }
     if (bytes.length > MAX_BYTES) return null;
-    return { bytes, highlighted: hl.visible, links: hl.links, images: hl.images };
+    return { bytes, highlighted: hl.visible, links: hl.links, images: hl.images, width: size.width, height: size.height };
   } catch {
     return null;
   }

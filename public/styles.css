@@ -376,7 +376,8 @@ footer .brand{font-size:17px; color:var(--ink-soft);}
 .proof-shots{display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:12px;}
 .proof-shot{margin:0; background:var(--surface); border:1px solid var(--border); border-radius:10px; overflow:hidden;}
 .proof-shot img{display:block; width:100%; height:auto; background:var(--ground-2);}
-.proof-shot-link{display:block;}
+.proof-shot-link{display:block; width:100%; padding:0; border:0; background:none; cursor:zoom-in;}
+.proof-shot-link:focus-visible{outline:3px solid var(--glow); outline-offset:-3px;}
 .proof-shot figcaption{padding:8px 11px 10px; font-size:12.5px; color:var(--ink-soft); line-height:1.45;}
 .proof-shot figcaption .cap{color:var(--ink); font-weight:600;}
 
@@ -448,3 +449,15 @@ footer .brand{font-size:17px; color:var(--ink-soft);}
   .agent-pages a,.agent-replay{color:#111; text-decoration:none;}
   .agent-chip{background:none; color:#111; border-color:#999;}
 }
+
+
+/* ============ LIGHTBOX (enlarged proof pictures) ============ */
+.lightbox{position:fixed; inset:0; z-index:200; background:rgba(18,38,30,.82); display:grid; place-items:center; padding:24px; animation:fade .2s var(--step);}
+.lightbox-fig{margin:0; max-width:min(1100px,100%); max-height:100%; display:flex; flex-direction:column; gap:10px; align-items:center;}
+.lightbox-fig img{max-width:100%; max-height:calc(100vh - 110px); width:auto; height:auto; border-radius:12px; background:var(--surface); box-shadow:0 30px 80px rgba(0,0,0,.45);}
+.lightbox-fig figcaption{color:#fff; font-size:14px; text-align:center; max-width:70ch;}
+.lightbox-close{position:fixed; top:18px; right:18px; width:44px; height:44px; border-radius:50%; border:0; background:var(--surface); color:var(--ink); font-size:28px; line-height:1; cursor:pointer; display:grid; place-items:center; box-shadow:0 6px 18px rgba(0,0,0,.3);}
+.lightbox-close:hover{background:var(--ground-2);}
+.lightbox-close:focus-visible{outline:3px solid var(--glow);}
+body.has-lightbox{overflow:hidden;}
+@media print{.lightbox{display:none;}}

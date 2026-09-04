@@ -116,6 +116,15 @@ export async function runBrowser(ctx) {
 
     await page.close().catch(() => {});
 
+    // Errors caused by our headless environment, not by the site, and errors thrown inside
+    // other companies' scripts are not the site's code failing, so they are set aside.
+    const ENV_NOISE = /geolocation|GeolocationPositionError|User denied|permission (?:was )?denied|NotAllowedError|play\(\) (?:failed|request was interrupted)|autoplay|AudioContext was not allowed|Notification permission|ResizeObserver loop|ERR_BLOCKED_BY_CLIENT|net::ERR_|\[Violation\]|Tracking Prevention|third-party cookie/i;
+    for (let i = consoleErrors.length - 1; i >= 0; i--) {
+      const e = consoleErrors[i];
+      const thirdParty = e.url && !sameSite(e.url, siteHost);
+      if (ENV_NOISE.test(e.text) || thirdParty) consoleErrors.splice(i, 1);
+    }
+
     // ---- sort every failed request into broken / blocked for bots / not testable / limited ----
     // The homepage document itself is not "a file the homepage asked for"; the recon step
     // already speaks to how the homepage answered.
