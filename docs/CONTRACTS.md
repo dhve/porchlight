@@ -125,3 +125,175 @@ User JSON (public shape, used everywhere): `{ id, email, emailVerified, name, av
 - Express trusts only loopback and 172.16.0.0/12 (the Docker bridge where Caddy lives); `ip()` uses req.ip. Port 3300 is reachable only from that subnet.
 - Mail never prints message bodies (links) in production logs.
 - Report copy says "this site" / "the site", since the reader is often not the owner.
+
+# Round 3 (2026-09-04): accuracy, visible proof, feedback loop, anonymous use
+
+Why: a checkup of java.com reported "Seven links lead nowhere" and "One image is broken" while every one of those
+addresses works. The site had started answering 429 Too Many Requests to our checker partway through, and the links
+check counted every status of 400 or higher as broken. Round 3 makes findings verifiable and honest, shows the page
+where each problem was found, lets readers say when we got it wrong, and lets people use the tool without an account.
+
+## Ownership (round 3). Edit ONLY the files you own. Do not start the server; test your module with small node scripts.
+- agent LINKS:    server/checks/links.js, server/lib/http.js, server/retest.js (new), server/explain.js, server/checks/flows.js
+- agent BROWSER:  server/checks/browser.js, server/proof.js (new)
+- agent FEEDBACK: server/feedback.js (new), public/feedback-ui.js (new), public/feedback.css (new)
+- agent UI:       public/app.js, public/styles.css, public/index.html, public/auth-ui.js (login copy only)
+- agent PAGES:    server/checks/{disclosure,forms,security,reflection,modernization,exposedFiles,cookies,libraries}.js
+- INTEGRATOR:     server/pipeline.js, server/index.js, public/core.js, server/db.js, deploy. Already wiring the routers and
+                  pipeline calls named below, so export exactly these names.
+
+## Shared evidence shape (every check, every finding that has `evidence`)
+```
+evidence: {
+  lines: string[],            // as today: short human-readable observations, status first when there is one
+  note: string,               // as today
+  why, confirm: string,       // as today (explain.js fills them when missing)
+  method: string,             // NEW, 1 to 2 plain sentences: exactly how we tested this (what we requested, what we compared)
+  pages: string[],            // NEW, absolute URLs of the site pages where the problem was found (1 to 6, most relevant first)
+  items: [{                   // NEW, the concrete things we tested, so the UI can link them and re-test them live
+    url: string,              //   absolute URL
+    status: number,           //   HTTP status we got, 0 when the request never completed
+    statusText: string,       //   "Not Found", "Too Many Requests", "did not load" ...
+    page?: string,            //   absolute URL of the page that referenced it
+    text?: string,            //   link text / alt text, trimmed, max 60 chars
+    kind?: "link"|"image"|"resource"|"file"|"page"
+  }],
+  shots: [{ key, page, caption, highlighted }]  // set by proof.js only; never by checks
+}
+```
+Rules: never change a finding's id, severity, category, or title format. `lines` must stay the human summary. Use
+"this site" / "the site", not "your site", in any new copy. No analogies. No dashes as punctuation. Paths in lines are
+fine (`/en/download/`), but `items[].url` and `pages[]` are always absolute.
+
+## Status classification (LINKS and BROWSER must agree)
+- BROKEN (report it):  404, 410, 500, 502, 504, and connection errors that are NOT timeouts (DNS failure, refused, reset).
+- BLOCKED (never report as broken; the site refused OUR checker):  401, 403, 405, 406, 429, 503, and any 4xx/5xx that
+  turns into 2xx/3xx when retried with standard browser headers. 405/501 on HEAD simply means "use GET".
+- INCONCLUSIVE (never report): timeout, abort, request budget reached.
+Retry rule: on a BLOCKED status wait (Retry-After seconds, max 5, else 1.5 s) and GET once more with browser-like headers
+(`browserLike: true`). If the retry is 2xx/3xx the address WORKS. If the retry is still BLOCKED, it is "not testable".
+Throttle rule: after 2 responses of 429 from the same host, stop testing further addresses in that check, mark them
+untested, and set `ctx.facts.throttled = true` (INTEGRATOR reads it for `report.engine.throttled`).
+
+## LINKS (server/checks/links.js, server/lib/http.js, server/retest.js, server/explain.js, server/checks/flows.js)
+http.js: `request(url, { method, headers, browserLike })`. `browserLike: true` sends a current Chrome desktop User-Agent,
+`Accept-Language: en-US,en;q=0.9`, and a normal browser Accept. Returned object gains `discard()` (cancels the body
+stream) and `retryAfterMs` (parsed from Retry-After, null when absent). Keep the request budget and timeout.
+links.js: gather `<a href>` and `<img src|data-src>` from EVERY crawled page in `facts.pages` (each has `url` and `$`),
+same-origin links only, remembering the first page that referenced each URL and its trimmed link text or alt text.
+Sample as today (config.maxLinks, homepage first). Pause 250 ms between requests. Classify per the table above.
+Evidence for `broken-links` / `broken-images`: `lines` like `404 Not Found  /en/download/  (link "Download" on /)`,
+`items` (kind link/image, page, text), `pages` (distinct referencing pages, max 6), `method`, `note` like
+"3 broken of 18 links tested. 4 could not be tested because the site limited our checker." Titles count ONLY confirmed
+broken. When nothing is broken and at least one address worked, push the pass "The N links and M images we tested all
+work." plus ", K could not be tested because the site limited our checker" when K > 0. No finding at all for
+blocked-only results.
+flows.js: add `items` ({url,status,statusText,kind:"page"}), `pages` ([homepage]), `method` to its findings; apply the
+BLOCKED rule there too (a 403/429/503 on a flow link is not a broken flow).
+explain.js: update the `broken-links`, `broken-images`, `failed-resources`, `flow-*` entries to mention the retry with
+standard browser headers, and add a top-level `PROOF_PROMISE` export (a short paragraph: every finding comes from a
+direct scripted test, the AI only writes the wording and cannot add, remove, or change a finding, each proof shows the
+request, the response, and where on the site it was found).
+retest.js: `export const retestRouter` (express.Router()).
+  POST /api/reports/:id/retest  body { findingId }  ->  200 { findingId, checkedAt, items: [{ url, previous, status,
+  statusText, ok, changed }] }. Loads the report with `getReport` (db.js), finds the finding, takes up to 8 `items` that
+  have a url, requires each URL's host to equal the report host or end with "." + host, passes each through
+  `resolveTarget` (safety.js; skip with status 0 "not allowed" when it fails), GETs with `browserLike: true`, 8 s timeout,
+  200 ms apart, `discard()`s bodies. `ok` = status 2xx/3xx. `changed` = ok differs from (previous < 400 && previous > 0).
+  Limits: `consume("retest-ip", ip(req), 20, 3600000)` and `consume("retest-report", id, 6, 600000)`, 429 with a
+  plain sentence. 400 for a bad id/finding, 404 for a missing report, 422 when the finding has nothing to re-test.
+
+## BROWSER (server/checks/browser.js, server/proof.js)
+browser.js: after the homepage load, every failed sub-resource with a BLOCKED status is fetched again through
+`context.request.get(url)` from a SECOND context that uses a standard Chrome User-Agent. If that succeeds the resource is
+dropped from `failed-resources` (count it in `blockedForBots`). A 429 for the main document or for resources means the
+site is limiting us: set `ctx.facts.throttled = true`, do not report those, and if the main document itself was refused
+return `{ findings: [], passes: [], skipped: true, reason: "The site limited our checker" }`. If `ctx.facts.throttled` is
+already true when the check starts, wait 3 s before navigating. Add `items` (kind resource, status, statusText, page =
+homepage), `pages` ([homepage]), `method` to `failed-resources`, `console-errors`, `slow-load`, `broken-images-render`.
+proof.js exports:
+  `ensureProofSchema()` creates `report_shots(report_id TEXT, key TEXT, page_url TEXT, mime TEXT, bytes BYTEA,
+   width INT, height INT, created_at TIMESTAMPTZ DEFAULT now(), PRIMARY KEY (report_id, key))` via `sql` from db.js.
+  `captureProof({ facts, findings, onEvent })` -> `{ shots: [{ key, page, caption, highlighted, mime, bytes, width,
+   height }], skipped: string|null }`. Picks up to 6 (page, finding) targets: walk findings in order (urgent, serious,
+   watch, then minor), each finding's `evidence.pages` in order, one shot per finding, one shot per distinct page unless a
+   finding needs its own highlight. One Chromium instance for all shots, standard Chrome User-Agent, viewport 1100x760,
+   deviceScaleFactor 1, `goto` with waitUntil "domcontentloaded" + 800 ms settle, 12 s timeout per page, 25 s total
+   budget, JPEG quality 58, max 350 KB per shot (drop it otherwise). For findings with `items` of kind link or image,
+   outline every matching `a[href]` / `img` (resolved href equals an item url) with `3px solid #DC2626` plus a red
+   label "broken link" / "broken image", and scroll the first into view before shooting. Caption examples: "Broken links
+   outlined in red", "The page as a visitor sees it". Sets `finding.evidence.shots = [{ key, page, caption,
+   highlighted }]` on the findings it shot. Keys are "s1".."s6". Emits `onEvent("log", { mark: "📸", text })` once.
+   Never throws; returns `skipped` with a reason when Playwright is missing or nothing has pages.
+  `saveShots(reportId, shots)` inserts rows (ignores duplicates). `sweepOldShots(days = 60)` deletes shots whose report
+   is older than that many days; returns the count.
+  `export const proofRouter` : GET /api/reports/:id/shots/:key -> image bytes, `Cache-Control: public, max-age=31536000,
+   immutable`, 404 when missing; id and key validated with the same regexes as index.js (`^[A-Za-z0-9_-]{6,20}$`, `^s[1-9]$`).
+
+## FEEDBACK (server/feedback.js, public/feedback-ui.js, public/feedback.css)
+Table `finding_feedback(id TEXT PK, report_id TEXT NOT NULL, target_host TEXT NOT NULL, finding_id TEXT NOT NULL,
+user_id TEXT, voter_key TEXT NOT NULL, verdict TEXT NOT NULL CHECK (verdict IN ('right','wrong')), note TEXT,
+created_at TIMESTAMPTZ NOT NULL DEFAULT now(), UNIQUE (report_id, finding_id, voter_key))` with indexes on
+(target_host, finding_id) and (created_at). Created by `ensureFeedbackSchema()`.
+voter_key: the user id when signed in, else "anon:" + sha256Hex(SESSION_SECRET + "|" + ip(req) + "|" + user agent).slice(0, 32).
+Exports: `feedbackRouter`, `ensureFeedbackSchema()`, `disputesForHost(host, { sinceDays = 90 } = {})` ->
+`Map<findingId, { wrong, right, notes: [{ text, when }] }>` aggregated over every report whose target_host matches
+(notes: 3 most recent "wrong" notes).
+Routes (all under csrfGuard already):
+  GET  /api/reports/:id/feedback -> { findings: { [findingId]: { right, wrong, notes: [{ text, when, by }] } },
+       mine: { [findingId]: "right"|"wrong" } }. Notes are the 5 most recent with text; `by` is the voter's first name
+       when signed in, else null. Escape nothing server-side; the client escapes.
+  POST /api/reports/:id/feedback  body { findingId, verdict, note?, website? } -> { findingId, right, wrong, mine, notes }.
+       findingId must be a finding id in the saved report or "_report". note trimmed, max 400 chars, stripped of control
+       characters. Upsert on (report_id, finding_id, voter_key) so a person can change their mind. Honeypot: a non-empty
+       `website` answers 200 with the current counts and stores nothing. `consume("feedback", voterKey, 40, 3600000)` -> 429.
+  GET  /api/feedback/summary (req.user.role === "admin" only, else 403) -> { since, findings: [{ findingId, wrong, right,
+       hosts, latestNotes: [{ host, text, when }] }] } sorted by wrong desc, 90 days.
+feedback-ui.js (IIFE, loaded after community-ui.js): wraps the hook without replacing it:
+  `const prev = S.onReportRendered; S.onReportRendered = function (r) { prev(r); mount(r); };`
+  mount(r): if `!r.id` leave slots empty (sample report). Else GET feedback, then fill every `.f-slot[data-finding]` in
+  #findingsRoot and `#reportFeedbackSlot`. Widget copy: "Was this accurate?" [Yes] [No]. On No, show a textarea
+  "What did you see? (optional)" max 400 + "Send". After a vote: "Thanks. N people said this is right, M said it is
+  wrong." Show existing notes (max 3) as "A visitor wrote: ..." or "<name> wrote: ..." with time ago. Report-level widget
+  copy: "Was this checkup accurate overall?". Hidden honeypot input named `website`. Never require sign in.
+  Use `S.api` and `S.toast`. Everything the client renders is escaped.
+feedback.css: class prefix `fb-`; tokens from styles.css (--ink, --ink-soft, --ink-faint, --border, --surface,
+--surface-2, --brand, --good, --serious, --radius-sm, --font). Compact, quiet, one line when idle.
+
+## UI (public/app.js, public/styles.css, public/index.html, public/auth-ui.js login copy)
+index.html: add `<link rel="stylesheet" href="/feedback.css">` after styles.css and `<script src="/feedback-ui.js"></script>`
+after community-ui.js. Add a reassure chip "No account needed". Change nothing else structurally.
+app.js:
+  1. Above the findings (only when there is at least one finding), a `.proof-promise` block with the text from the
+     report (`r.proofPromise`, INTEGRATOR sets it from explain.js PROOF_PROMISE) or a built-in fallback of the same text.
+  2. Every finding card and every minor-note item ends with `<div class="f-slot" data-finding="<id>"></div>`. After all
+     findings, `<div id="reportFeedbackSlot"></div>` inside #findingsRoot.
+  3. Proof panel order: why; NEW `.proof-method` ("How we tested this." + ev.method) when present; "What we observed"
+     lines with URLs and site paths turned into links (absolute http(s) URLs, and tokens starting with "/" resolved
+     against the report's origin), target _blank rel noopener; NEW "Found on" list from ev.pages (show path, full URL on
+     hover); NEW screenshots from ev.shots when `r.id` (figure with lazy image `/api/reports/<id>/shots/<key>`, the page
+     link, and the caption; max 3 shown); NEW "Check this again right now" button when `r.id` and ev.items has urls,
+     which POSTs /api/reports/<id>/retest and renders one line per item like "Right now: 404 Not Found for /en/download/
+     (same as when we checked)" or "(this one works now)"; then confirm and note as today.
+  4. `f.disputed` (set by INTEGRATOR: `{ wrong, right, notes }`) renders a `.dispute-chip` next to the severity chip:
+     "Visitors disputed this on earlier checkups" and, in the proof panel, a "What visitors said" list (max 3 notes).
+  5. `r.engine.throttled` renders one quiet line under the summary: "The site limited our checker partway through, so
+     some checks were shortened."
+  6. Keep all copy rules. Style everything in styles.css (no inline styles beyond what exists).
+auth-ui.js: on the sign-in screen add one line under the heading: "An account is optional. It keeps your checkups
+together, lets you post to the bulletin, and helps keep out spam." Do not change behavior.
+
+## PAGES (server/checks/{disclosure,forms,security,reflection,modernization,exposedFiles,cookies,libraries}.js)
+Add `pages`, `items` (where there is a concrete URL that was requested: exposed files, source maps, directory listings,
+verbose-error pages, mixed-content resources, vulnerable library script URLs), and `method` to every finding in those
+files. Do not change ids, severities, titles, lines, or notes. Apply the BLOCKED rule wherever a status is interpreted
+(a 403/429/503 is never "exposed", "listing", or "error page"). `facts.pages[i].url` is the absolute page URL;
+`facts.finalUrl.href` is the homepage.
+
+## INTEGRATOR wiring (already being done; for reference)
+- pipeline.js: after explain(), `disputesForHost(host)` marks findings with wrong >= 2 and wrong > right as
+  `f.disputed`; `captureProof` runs alongside `writeReport`, shots are re-attached to the written findings by id, and
+  `saveShots(report.id, shots)` runs after `saveReport`. `report.engine.throttled = Boolean(ctx.facts.throttled)`.
+  `report.proofPromise = PROOF_PROMISE`.
+- index.js: mounts retestRouter, proofRouter, feedbackRouter; calls ensureProofSchema/ensureFeedbackSchema after initDb;
+  sweeps old shots daily. Anonymous checkups are allowed (REQUIRE_ACCOUNT=0): 30 per hour per IP.
