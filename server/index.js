@@ -57,6 +57,7 @@ app.get("/api/config", (_req, res) => {
     requireAccount: REQUIRE_ACCOUNT,
     providers: { google: Boolean(process.env.GOOGLE_CLIENT_ID), github: Boolean(process.env.GITHUB_CLIENT_ID) },
     mail: { configured: mailStatus().configured },
+    agent: llmEnabled() && process.env.AGENT_BROWSE !== "0",
   });
 });
 

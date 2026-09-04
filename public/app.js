@@ -65,7 +65,8 @@ function resetRun() {
 // The quiet line under the live log. Shown only while a checkup is running.
 function setAgentHint(show) {
   const hint = $("#runAgentHint");
-  if (hint) hint.hidden = !show;
+  const available = !(window.Sutros && Sutros.config && Sutros.config.agent === false);
+  if (hint) hint.hidden = !(show && available);
 }
 
 function onStep(data) {
@@ -159,7 +160,7 @@ const PLAY = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke
 
 // Shown above the findings. The server sends the same text as r.proofPromise; this
 // copy is the fallback for older saved reports and the offline sample.
-const PROOF_PROMISE_FALLBACK = "Every finding in this report comes from a direct, scripted test that we ran against this site. The AI only writes the wording. It cannot add, remove, or change a finding. Each proof shows the request we sent, the answer we received, and where on the site we found it.";
+const PROOF_PROMISE_FALLBACK = "Every finding in this report comes from a direct, scripted test that we ran against this site. The AI only writes the wording. It cannot add, remove, or change a finding. Notes from our browsing agent are the one exception: they are labeled, and they never change the grade. Each proof shows the request we sent, the answer we received, and where on the site we found it.";
 
 // Same shapes the server accepts for report ids and screenshot keys.
 const REPORT_ID_RE = /^[A-Za-z0-9_-]{6,20}$/;

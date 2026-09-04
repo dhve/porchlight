@@ -153,6 +153,7 @@ const BY_CATEGORY = {
 export const PROOF_PROMISE =
   "Every finding in this report comes from a direct, scripted test that we ran against this site. " +
   "The AI only writes the wording. It cannot add, remove, or change a finding. " +
+  "Notes from our browsing agent are the one exception: they are labeled, and they never change the grade. " +
   "Each proof shows the request we sent, the answer we received, and where on the site we found it.";
 
 /** Return { why, confirm } for a finding; empty strings if nothing applies. */
