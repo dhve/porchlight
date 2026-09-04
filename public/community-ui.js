@@ -144,7 +144,7 @@ a.back-btn{text-decoration:none}
 .cu-status{flex:none;font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:6px 11px;border-radius:100px;background:var(--ground-2);color:var(--ink-soft);white-space:nowrap}
 .cu-status-claimed{background:var(--watch-bg);color:var(--watch-text)}
 .cu-status-resolved{background:var(--good-bg);color:var(--good)}
-.cu-note{font-size:15.5px;color:var(--ink);background:var(--surface-2);border-left:3px solid var(--glow);padding:10px 14px;border-radius:0 10px 10px 0;white-space:pre-wrap;word-break:break-word}
+.cu-note{font-size:15.5px;color:var(--ink);background:var(--surface-2);border:1px solid var(--border);padding:12px 16px;border-radius:10px;white-space:pre-wrap;word-break:break-word}
 .cu-findings{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
 .cu-findings li{display:flex;gap:10px;align-items:center;font-size:15px;color:var(--ink-soft)}
 .cu .sev-chip.minor{background:var(--ground-2);color:var(--ink-faint)}
