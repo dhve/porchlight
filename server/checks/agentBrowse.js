@@ -571,6 +571,15 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session }) {
     const severity = args.severity === "minor" ? "minor" : "watch";
     const category = args.category === "modernization" ? "modernization" : "quality";
     const quote = clean(args.quote || "").slice(0, 200);
+    // The same widget, banner, or message seen again on another page is one problem, not two:
+    // the earlier note simply gains this page.
+    const hereNow = stripHash(page.url());
+    const twin = quote && state.notes.find((x) => x.quote && x.quote.toLowerCase() === quote.toLowerCase());
+    if (twin) {
+      twin.morePages = twin.morePages || [];
+      if (!sameAddress(twin.where, hereNow) && !twin.morePages.some((u) => sameAddress(u, hereNow))) twin.morePages.push(hereNow);
+      return { text: `That is the same thing you already noted ("${twin.title}"). This page was added to that note instead of making a second one. Move on to something different.` };
+    }
     // Only pages the agent actually opened can be named; anything else, or no address at
     // all, means the page it is on. The address is kept in the form we saw it.
     const here = stripHash(page.url());
@@ -1131,7 +1140,9 @@ function toFindings(notes) {
     let id = base;
     for (let i = 2; ids.has(id); i++) id = `${base}-${i}`;
     ids.add(id);
+    const more = Array.isArray(n.morePages) ? n.morePages.filter(Boolean) : [];
     const lines = [n.where, n.quote ? `Seen on the page: "${n.quote}"` : n.what];
+    if (more.length) lines.push(`Also seen on ${more.length === 1 ? "another page" : more.length + " other pages"}: ${more.map((u) => pathOf(u)).join(", ")}`);
     return {
       id,
       source: "agent",
@@ -1147,8 +1158,8 @@ function toFindings(notes) {
         why: n.why || "",
         confirm: CONFIRM,
         method: METHOD,
-        pages: [n.where],
-        items: [{ url: n.where, status: n.status || 0, statusText: statusText(n.status || 0), kind: "page" }],
+        pages: [n.where, ...more].slice(0, 6),
+        items: [n.where, ...more].slice(0, 6).map((u) => ({ url: u, status: u === n.where ? n.status || 0 : 0, statusText: u === n.where ? statusText(n.status || 0) : "seen", kind: "page" })),
         shots: n.shot ? [n.shot] : [],
       },
     };
@@ -1175,6 +1186,10 @@ function fitTitle(title) {
   const sp = t.lastIndexOf(" ");
   if (sp > 40) t = t.slice(0, sp);
   return t.replace(/[\s,;:]+$/, "");
+}
+
+function pathOf(u) {
+  try { const x = new URL(u); return (x.pathname + x.search) || "/"; } catch { return String(u || ""); }
 }
 
 function slug(s) {
