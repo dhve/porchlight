@@ -31,6 +31,9 @@ const { verifyRouter } = await import("./verify.js");
 const { bulletinRouter } = await import("./bulletin.js");
 const { consume } = await import("./ratelimit.js");
 const { mailStatus } = await import("./mail.js");
+const { retestRouter } = await import("./retest.js");
+const { proofRouter, ensureProofSchema, sweepOldShots } = await import("./proof.js");
+const { feedbackRouter, ensureFeedbackSchema } = await import("./feedback.js");
 
 const app = express();
 app.set("trust proxy", ["loopback", "172.16.0.0/12"]);
@@ -42,6 +45,9 @@ app.use(authRouter);
 app.use(oauthRouter);
 app.use(verifyRouter);
 app.use(bulletinRouter);
+app.use(retestRouter);
+app.use(proofRouter);
+app.use(feedbackRouter);
 
 const REQUIRE_ACCOUNT = process.env.REQUIRE_ACCOUNT === "1";
 const normHost = (h) => String(h || "").toLowerCase().replace(/^www\./, "");
@@ -85,9 +91,16 @@ async function checkupGate(req, host) {
     if (!req.user.emailVerified) return { status: 403, error: "Please confirm your email first.", code: "unverified" };
     const r = consume("checkups", req.user.id, 20, 24 * 60 * 60_000);
     if (!r.ok) return { status: 429, error: "You've reached today's limit of 20 checkups. Try again tomorrow." };
+  } else if (req.user) {
+    const r = consume("checkups", req.user.id, 30, 24 * 60 * 60_000);
+    if (!r.ok) return { status: 429, error: "You've reached today's limit of 30 checkups. Try again tomorrow." };
   } else {
-    const r = consume("checkups-ip", req.ip || "x", 30, 60 * 60_000);
-    if (!r.ok) return { status: 429, error: "Too many checkups from this connection. Please wait a bit." };
+    // No account needed. Anonymous checkups are paced per connection, and everyone shares a ceiling
+    // so a burst of bots cannot run up the bill.
+    const r = consume("checkups-ip", req.ip || "x", 12, 60 * 60_000);
+    if (!r.ok) return { status: 429, error: "That is a lot of checkups from one connection. Please wait a little, or sign in for a higher limit." };
+    const g = consume("checkups-anon-all", "all", 150, 60 * 60_000);
+    if (!g.ok) return { status: 429, error: "Sutros is busy right now. Please try again in a few minutes, or sign in." };
   }
   if (await optedOut(host)) return { status: 403, error: "This site's owner has asked not to be checked by Sutros." };
   try {
@@ -261,6 +274,13 @@ const dbOn = await initDb().catch((err) => {
   console.error("  database: " + err.message);
   return false;
 });
+if (dbOn) {
+  await ensureProofSchema().catch((err) => console.error("  proof schema: " + err.message));
+  await ensureFeedbackSchema().catch((err) => console.error("  feedback schema: " + err.message));
+  const sweep = () => sweepOldShots(60).then((n) => { if (n) console.log(`  swept ${n} old page pictures`); }).catch((err) => console.error("  sweep: " + err.message));
+  sweep();
+  setInterval(sweep, 24 * 60 * 60_000).unref();
+}
 app.listen(PORT, () => {
   console.log(`\n  Sutros is on at http://localhost:${PORT}`);
   console.log(`  LLM: ${llmEnabled() ? "enabled (" + modelName() + ")" : "off - using rule-based fallback (add OPENAI_API_KEY to .env to enable)"}`);

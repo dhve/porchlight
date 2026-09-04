@@ -17,7 +17,9 @@ import { writeReport } from "./reporter.js";
 import { scoreReport } from "./scoring.js";
 import { saveReport, newId } from "./db.js";
 import { signReport } from "./verify.js";
-import { explain } from "./explain.js";
+import { explain, PROOF_PROMISE } from "./explain.js";
+import { disputesForHost } from "./feedback.js";
+import { captureProof, saveShots } from "./proof.js";
 
 import { runRecon } from "./checks/recon.js";
 import { runTls } from "./checks/tls.js";
@@ -128,16 +130,41 @@ async function finish({ url, display, userId = null, facts, findings, passes, pl
     if (!f.evidence.confirm && e.confirm) f.evidence.confirm = e.confirm;
   }
 
+  // Feedback loop: readers of earlier checkups of this site may have said a finding was wrong.
+  try {
+    const disputes = await disputesForHost(hostOf(display));
+    for (const f of unique) {
+      const d = disputes.get(f.id);
+      if (d && d.wrong >= 2 && d.wrong > d.right) f.disputed = { wrong: d.wrong, right: d.right, notes: (d.notes || []).slice(0, 3) };
+    }
+  } catch (err) {
+    console.error("disputes lookup failed:", err.message);
+  }
+
   const { grade, gradeLabel, score, ringPercent, tally } = scoreReport(unique);
-  const written = await writeReport({
-    target: display,
-    facts: facts || {},
-    findings: unique,
-    passes: dedupe(passes),
-    grade,
-    gradeLabel,
-    tally,
-  });
+
+  // Pictures of the affected pages are taken while the write-up is produced; both are bounded.
+  const proofPromise = facts && facts.reachable
+    ? captureProof({ facts, findings: unique, onEvent }).catch((err) => ({ shots: [], skipped: `capture failed: ${String(err.message).slice(0, 100)}` }))
+    : Promise.resolve({ shots: [], skipped: "site unreachable" });
+  const [written, proof] = await Promise.all([
+    writeReport({
+      target: display,
+      facts: facts || {},
+      findings: unique,
+      passes: dedupe(passes),
+      grade,
+      gradeLabel,
+      tally,
+    }),
+    proofPromise,
+  ]);
+  // The writer may have copied evidence before the pictures were attached; re-attach by id.
+  const shotsById = new Map(unique.filter((f) => f.evidence && f.evidence.shots).map((f) => [f.id, f.evidence.shots]));
+  for (const f of written.findings || []) {
+    const s = shotsById.get(f.id);
+    if (s && f.evidence && !f.evidence.shots) f.evidence.shots = s;
+  }
 
   onEvent("step", { key: "report", status: "done" });
 
@@ -161,7 +188,10 @@ async function finish({ url, display, userId = null, facts, findings, passes, pl
       focus: plan.focus,
       checksRun,
       browser: browserInfo,
+      throttled: Boolean(facts && facts.throttled),
+      proof: { shots: (proof.shots || []).length, skipped: proof.skipped || null },
     },
+    proofPromise: PROOF_PROMISE,
   };
 
   // Identity, ownership, contact hints, and the signed attestation, then persist.
@@ -171,6 +201,7 @@ async function finish({ url, display, userId = null, facts, findings, passes, pl
   try { const att = signReport(report); if (att) report.attestation = att; } catch (err) { console.error("could not sign report:", err.message); }
   try {
     await saveReport(report); // a DB hiccup must never sink a checkup
+    if (proof.shots && proof.shots.length) await saveShots(report.id, proof.shots);
   } catch (err) {
     console.error("could not save report:", err.message);
   }
@@ -201,6 +232,9 @@ function logFindings(onEvent, list = []) {
 }
 function dedupe(arr) {
   return [...new Set(arr)];
+}
+function hostOf(display) {
+  return String(display || "").toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/^www\./, "");
 }
 function cap(s) {
   return String(s || "").replace(/\b\w/g, (c) => c.toUpperCase());

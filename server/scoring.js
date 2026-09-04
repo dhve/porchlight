@@ -11,6 +11,8 @@ export function scoreReport(findings) {
   for (const f of findings) {
     if (tally[f.severity] === undefined) continue;
     tally[f.severity]++;
+    // Notes from the browsing agent are the model's judgment, so they are shown but never move the grade.
+    if (f.source === "agent" || String(f.id || "").startsWith("agent-")) continue;
     penalty += WEIGHT[f.severity] || 0;
   }
 

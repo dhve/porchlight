@@ -297,3 +297,81 @@ files. Do not change ids, severities, titles, lines, or notes. Apply the BLOCKED
   `report.proofPromise = PROOF_PROMISE`.
 - index.js: mounts retestRouter, proofRouter, feedbackRouter; calls ensureProofSchema/ensureFeedbackSchema after initDb;
   sweeps old shots daily. Anonymous checkups are allowed (REQUIRE_ACCOUNT=0): 30 per hour per IP.
+
+# Round 3b (2026-09-04): the browsing agent and hosted browsers
+
+Vedh asked for the agent to have "FULL browser access": its own real browser, hosted if we want, that explores a site
+the way a visitor would and reports what it runs into. Integrator has already provided:
+- `server/lib/browserConnect.js`: `openBrowser({ purpose })` -> `{ browser, mode, close(), session? }`. Uses
+  BROWSER_WS_ENDPOINT (connectOverCDP, or chromium.connect when BROWSER_CONNECT=playwright), else Browserbase
+  (BROWSERBASE_API_KEY + BROWSERBASE_PROJECT_ID, one session per call, `session.replayUrl`), else local Chromium.
+  `browserMode()` returns "remote" | "browserbase" | "local". Throws with code NO_PLAYWRIGHT when Playwright is missing.
+- `server/llm.js`: `chatTools({ system, messages, tools, maxTokens, toolChoice })` -> `{ message, finishReason, usage }`
+  (OpenAI function calling; messages may include image_url parts with data: JPEG URLs).
+- `server/scoring.js`: findings with `source: "agent"` (or id starting "agent-") count in the tally but never move the grade.
+
+## Ownership (round 3b)
+- agent AGENT: server/checks/agentBrowse.js (new). Nothing else.
+- agent UI2:   public/app.js, public/styles.css (additions only), public/index.html (run-screen copy only).
+- agent BROWSER2: server/checks/browser.js, server/proof.js (switch both from chromium.launch to openBrowser(); keep behavior).
+- INTEGRATOR: pipeline.js (ctx.onEvent, STEP4 gets "agent" last, report.agent, saveShots for agent shots),
+  orchestrator.js (catalog entry `agent`), deploy.
+
+## AGENT (server/checks/agentBrowse.js)
+`export async function runAgentBrowse(ctx)` -> `{ findings, passes, skipped?: boolean, reason?: string,
+agent?: { ran, mode, steps, visited: string[], summary: string, replayUrl: string|null, shots: [...] } }`.
+ctx has: `url` (URL), `client`, `facts` (finalUrl, pages[{url,$,html,status}], cms, technologies, throttled), and
+`onEvent(type, data)` (INTEGRATOR adds it). Runs only when `llmEnabled()` (../llm.js), AGENT_BROWSE is not "0", and
+`openBrowser` succeeds; otherwise `{ findings: [], passes: [], skipped: true, reason }`. Never throws.
+Budget: AGENT_STEPS (default 12) model turns, AGENT_BUDGET_MS (default 90000) wall clock, 10 s per browser action,
+max 6 notes. Browser: one context, phone viewport 390x844, deviceScaleFactor 1, standard mobile Chrome User-Agent,
+`context.route` that aborts requests whose URL is off-origin AND is a document navigation (third-party scripts/images
+are fine), downloads refused (`acceptDownloads: false`), dialogs auto-dismissed.
+Observation given to the model after every action: `{ url, title, status, text (innerText trimmed, max 3500 chars),
+controls: [{ n, kind: "link"|"button", text, href? }] (first 40 visible), warnings: [...] }` as JSON text PLUS one JPEG
+screenshot of the viewport (quality 50) as an image part. The system prompt: the agent is a careful visitor exploring
+this site read-only for someone who is not technical; it looks for what a visitor would run into: pages that fail or
+are empty, placeholder or "coming soon" text, error messages on the page, navigation that goes nowhere, layout that is
+cut off, overlapping, or unreadable on a phone, popups or banners that cannot be closed, notices with old dates,
+contact details that are missing or clearly wrong, links to social pages that are gone, and anything else a visitor
+would find frustrating. It must be fair: only note things it actually saw, quote the text it saw, and prefer fewer,
+better notes. Copy rules as always ("this site", plain, warm, no analogies, no dashes, no exclamation marks).
+Tools (function calling): `open({url})` same origin or subdomain only; `click({n})` a control from the last
+observation; `back()`; `scroll({direction:"down"|"up"})`; `note({title, what, where, severity:"watch"|"minor",
+category:"quality"|"modernization", why, fix})`; `finish({summary})`.
+Safety: never type, fill, or submit; refuse `click` on controls whose text matches
+/\b(buy|pay|checkout|order|purchase|donate|subscribe|sign ?up|register|log ?in|sign ?in|delete|remove|cancel|unsubscribe|send|submit|apply|book|reserve|add to cart|confirm|accept|agree|download)\b/i
+and tell the model why; refuse mailto:, tel:, javascript:, and file downloads; stop early on 429 or when
+`ctx.facts.throttled` becomes true (set it when you see 429). Visits are logged through
+`ctx.onEvent("log", { mark: "🧭", text: "Browsing agent opened /contact" })` and a closing line with the step count.
+Findings from notes: `{ id: "agent-" + slug(title) (unique within the run), source: "agent", severity (watch|minor
+only), category, title (max 70 chars), meaning: what, fix: [fix], who: "The owner or their web person.",
+evidence: { lines: [where, quoted text seen], pages: [where], method: "Our browsing agent opened this page in a real
+browser on a phone-sized screen and read it the way a visitor would. It never typed or submitted anything.",
+note: "Seen by the browsing agent.", shots: [{ key, page, caption: "What the browsing agent saw", highlighted: 0 }] } }`.
+Screenshots at note time are returned in `agent.shots` as `[{ key: "s7"|"s8"|"s9", page, caption, highlighted: 0,
+mime: "image/jpeg", bytes: Buffer, width, height }]` (first 3 notes only, JPEG quality 58, max 350 KB); the finding's
+`evidence.shots` carries the same entries WITHOUT bytes. Pass when the run ends with no notes: "Our browsing agent
+tried N pages the way a visitor would and found nothing in the way." `agent.summary` is the model's finish summary
+(max 400 chars) or a template.
+Test for real: OPENAI_API_KEY and DATABASE_URL are in /Users/admin/porchlight/.env (load them with the same loadEnv
+logic or `export $(grep -v '^#' .env | xargs)` in a shell); run the check against https://example.com and one small
+real site through a throwaway node script that fakes ctx (facts.finalUrl, facts.pages from a fetch + cheerio load,
+onEvent that prints). Print the findings and the number of shots and their sizes. Do not start the Sutros server.
+
+## UI2 (public/app.js, public/styles.css additions, public/index.html run-screen copy)
+- Findings with `source === "agent"` show a small `.agent-chip` ("Browsing agent") beside the severity chip.
+- When `r.agent && r.agent.ran`, render a `.agent-card` under the scorecard summary (before the findings list):
+  eyebrow "Our browsing agent", the summary text, "Pages it opened:" as a compact list of paths (max 8), and when
+  `r.agent.replayUrl` a link "Watch the session". When `r.agent` exists but `ran` is false, nothing.
+- Run screen: the five step labels stay; add one quiet line under the log, "The browsing agent's visits show up here
+  as it goes", only while the run is live.
+- Engine badge title includes `agent: <steps> steps` when present.
+
+## BROWSER2 (server/checks/browser.js, server/proof.js)
+Replace `chromium.launch({ headless: true })` with `const { browser, mode, close } = await openBrowser({ purpose })`
+(import from "../lib/browserConnect.js" / "./lib/browserConnect.js"); always call `close()` in finally; keep every
+behavior from round 3. When mode is "remote" or "browserbase", `browser.contexts()` may already hold a default context;
+still create your own `newContext` with the same options as before. browser.js's skipped reason when NO_PLAYWRIGHT
+stays "Playwright not installed (run: npm run enable-browser)"; other connect failures use "Browser unavailable: <msg>".
+Record `mode` in the returned object as `browserMode` so the integrator can put it in report.engine.browser.mode.

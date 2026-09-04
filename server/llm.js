@@ -80,3 +80,53 @@ async function call(body) {
     clearTimeout(timer);
   }
 }
+
+/**
+ * One turn of a tool-using conversation (OpenAI function calling). The caller
+ * owns the message history and appends the assistant message plus any tool
+ * results before calling again. Messages may carry image parts
+ * ({type:"image_url", image_url:{url:"data:image/jpeg;base64,..."}}) so an
+ * agent can look at a page as well as read it.
+ * @param {{system:string, messages:object[], tools:object[], maxTokens?:number, toolChoice?:string|object}} opts
+ * @returns {Promise<{message:object, finishReason:string, usage:object|null}>}
+ */
+export async function chatTools({ system, messages, tools, maxTokens = 3000, toolChoice = "auto" }) {
+  if (!llmEnabled()) throw new Error("LLM is not configured (no OPENAI_API_KEY).");
+  const body = {
+    model: modelName(),
+    max_completion_tokens: Math.max(maxTokens, 1500),
+    messages: [{ role: "system", content: system }, ...messages],
+    tools,
+    tool_choice: toolChoice,
+  };
+  let lastErr;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 60_000);
+    try {
+      const res = await fetch(API_URL, {
+        method: "POST",
+        signal: controller.signal,
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const detail = await res.text().catch(() => "");
+        const err = new Error(`OpenAI API error ${res.status}: ${detail.slice(0, 400)}`);
+        if (res.status === 429 || res.status >= 500) { lastErr = err; continue; }
+        throw err;
+      }
+      const data = await res.json();
+      const choice = data?.choices?.[0];
+      if (!choice?.message) throw new Error("OpenAI returned no message.");
+      return { message: choice.message, finishReason: choice.finish_reason || "", usage: data.usage || null };
+    } catch (err) {
+      lastErr = err;
+      if (err.name === "AbortError") continue;
+      if (!/OpenAI API error (429|5\d\d)/.test(err.message)) throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastErr || new Error("OpenAI call failed.");
+}
