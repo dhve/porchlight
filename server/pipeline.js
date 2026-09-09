@@ -20,6 +20,7 @@ import { signReport } from "./verify.js";
 import { explain, PROOF_PROMISE } from "./explain.js";
 import { disputesForHost } from "./feedback.js";
 import { captureProof, saveShots } from "./proof.js";
+import { observeCheck, assessmentFor, bindArtifactHashes, SCANNER_VERSION, SCORING_VERSION, REPORTER_VERSION } from "./provenance.js";
 
 import { runRecon } from "./checks/recon.js";
 import { runTls } from "./checks/tls.js";
@@ -63,25 +64,31 @@ export async function runCheckup({ url, display, userId = null }, onEvent = () =
   const findings = [];
   const passes = [];
   const checksRun = [];
+  const coverage = [];
+  const requiredChecks = ["recon"];
   let browserInfo = { ran: false, skippedReason: null };
 
   // ---- Step 1: recon ----
   onEvent("step", { key: "recon", status: "start" });
-  const recon = await safe(() => runRecon(ctx), { facts: { reachable: false }, findings: [], passes: [] });
-  ctx.facts = recon.facts;
-  push(findings, passes, recon);
+  const observedRecon = await observeCheck("recon", runRecon, ctx);
+  const recon = observedRecon.out;
+  coverage.push(observedRecon.coverage);
+  ctx.facts = recon.facts || { reachable: false };
+  if (observedRecon.coverage.status === "completed") checksRun.push("recon");
+  push(findings, passes, recon, observedRecon.coverage.status === "completed");
   onEvent("step", {
     key: "recon",
     status: "done",
-    detail: recon.facts.reachable
-      ? `Built on ${recon.facts.cms ? cap(recon.facts.cms.name) : recon.facts.technologies?.[0] || "a custom stack"}`
-      : "Homepage did not respond",
+    detail: observedRecon.coverage.status === "completed"
+      ? `Built on ${ctx.facts.cms ? cap(ctx.facts.cms.name) : ctx.facts.technologies?.[0] || "a custom stack"}`
+      : observedRecon.coverage.reason,
   });
   logFindings(onEvent, recon.findings);
 
-  if (!recon.facts.reachable) {
+  if (!ctx.facts.reachable || observedRecon.coverage.status !== "completed") {
+    for (const check of [...STEP3, ...STEP4]) coverage.push({ check, status: "skipped", reason: "The homepage check did not complete." });
     for (const key of ["plan", "probe", "customer"]) onEvent("step", { key, status: "done", detail: "skipped" });
-    return finish({ url, display, userId, findings, passes, plan: { focus: "Site was unreachable.", llm: false }, checksRun, browserInfo, onEvent, client });
+    return finish({ url, display, userId, facts: ctx.facts, findings, passes, plan: { focus: "The homepage check did not complete.", llm: false }, checksRun, coverage, requiredChecks, browserInfo, onEvent, client });
   }
 
   // ---- Step 2: plan (orchestrator) ----
@@ -90,39 +97,52 @@ export async function runCheckup({ url, display, userId = null }, onEvent = () =
   onEvent("step", { key: "plan", status: "done", detail: plan.focus, llm: plan.llm });
   onEvent("log", { mark: "📋", text: plan.llm ? plan.focus : "Running the full checklist." });
 
-  const order = plan.checks?.length ? plan.checks.map((c) => c.id) : [...STEP3, ...STEP4];
+  const order = [...new Set(plan.checks?.length ? plan.checks.map((c) => c.id) : [...STEP3, ...STEP4])];
+  requiredChecks.push(...order.filter((id) => CHECK_FNS[id] && id !== "browser" && id !== "agent"));
+  for (const check of [...STEP3, ...STEP4]) {
+    if (!order.includes(check) && check !== "agent") coverage.push({ check, status: "skipped", reason: "This check was not included in the plan." });
+  }
 
   // ---- Step 3: probe (doors & windows) ----
-  await runStep(onEvent, "probe", order.filter((id) => STEP3.includes(id)), ctx, findings, passes, checksRun, browserInfo);
+  await runStep(onEvent, "probe", order.filter((id) => STEP3.includes(id)), ctx, findings, passes, checksRun, coverage, browserInfo);
 
   // ---- Step 4: customer ----
   const extra = {};
   const step4 = order.filter((id) => STEP4.includes(id));
   if (!step4.includes("agent") && STEP4.includes("agent")) step4.push("agent"); // the browsing agent always gets its turn
-  await runStep(onEvent, "customer", step4, ctx, findings, passes, checksRun, browserInfo, extra);
+  await runStep(onEvent, "customer", step4, ctx, findings, passes, checksRun, coverage, browserInfo, extra);
   agentInfo = extra.agent || null;
 
   // ---- Step 5: report ----
-  return finish({ url, display, userId, facts: recon.facts, findings, passes, plan, checksRun, browserInfo, agentInfo, onEvent, client });
+  return finish({ url, display, userId, facts: recon.facts, findings, passes, plan, checksRun, coverage, requiredChecks, browserInfo, agentInfo, onEvent, client });
 }
 
-async function runStep(onEvent, key, ids, ctx, findings, passes, checksRun, browserInfo, extra = {}) {
+async function runStep(onEvent, key, ids, ctx, findings, passes, checksRun, coverage, browserInfo, extra = {}) {
   onEvent("step", { key, status: "start" });
   for (const id of ids) {
     const fn = CHECK_FNS[id];
     if (!fn) continue;
     await respectThrottle(ctx, onEvent, "the next check");
-    const out = await safe(() => fn(ctx), { findings: [], passes: [] });
-    if (id === "browser") browserInfo = Object.assign(browserInfo, { ran: !out.skipped, skippedReason: out.skipped ? out.reason : null, mode: out.browserMode || null });
+    const observed = await observeCheck(id, fn, ctx);
+    const out = observed.out;
+    coverage.push(observed.coverage);
+    const completed = observed.coverage.status === "completed";
+    if (id === "browser") {
+      const { findings: _findings, passes: _passes, ...metadata } = out;
+      Object.assign(browserInfo, metadata, { ran: completed, skippedReason: completed ? null : observed.coverage.reason, mode: out.browserMode || null });
+    }
     if (id === "agent") extra.agent = out.agent || { ran: false, reason: out.reason || null };
-    checksRun.push(id);
-    push(findings, passes, out);
-    logFindings(onEvent, out.findings);
+    if (completed) checksRun.push(id);
+    // An incomplete browser render cannot support a negative layout finding.
+    if (completed || (id !== "browser" && id !== "agent")) {
+      push(findings, passes, out, completed);
+      logFindings(onEvent, out.findings);
+    }
   }
   onEvent("step", { key, status: "done" });
 }
 
-async function finish({ url, display, userId = null, facts, findings, passes, plan, checksRun, browserInfo, agentInfo = null, onEvent, client = null }) {
+async function finish({ url, display, userId = null, facts, findings, passes, plan, checksRun, coverage, requiredChecks, browserInfo, agentInfo = null, onEvent, client = null }) {
   onEvent("step", { key: "report", status: "start" });
 
   // De-duplicate by id, then sort most severe first.
@@ -144,19 +164,20 @@ async function finish({ url, display, userId = null, facts, findings, passes, pl
     const disputes = await disputesForHost(hostOf(display));
     for (const f of unique) {
       const d = disputes.get(f.id);
-      if (d && d.wrong >= 2 && d.wrong > d.right) f.disputed = { wrong: d.wrong, right: d.right, notes: (d.notes || []).slice(0, 3) };
+      if (d && d.wrong >= 2 && d.wrong > d.right) f.disputed = { wrong: d.wrong, right: d.right };
     }
   } catch (err) {
     console.error("disputes lookup failed:", err.message);
   }
 
-  const { grade, gradeLabel, score, ringPercent, tally } = scoreReport(unique);
+  const assessment = assessmentFor(coverage, requiredChecks);
+  const { grade, gradeLabel, score, ringPercent, tally } = scoreReport(unique, assessment);
 
   // Pictures of the affected pages are taken while the write-up is produced; both are bounded.
-  if (facts && facts.reachable) await respectThrottle({ facts, client }, onEvent, "taking pictures of the affected pages");
-  const proofPromise = facts && facts.reachable
+  if (facts?.reachable && !facts.challenged) await respectThrottle({ facts, client }, onEvent, "taking pictures of the affected pages");
+  const proofPromise = facts?.reachable && !facts.challenged
     ? captureProof({ facts, findings: unique, onEvent }).catch((err) => ({ shots: [], skipped: `capture failed: ${String(err.message).slice(0, 100)}` }))
-    : Promise.resolve({ shots: [], skipped: "site unreachable" });
+    : Promise.resolve({ shots: [], skipped: facts?.challenged ? "A verification challenge prevented page capture." : "site unreachable" });
   const [written, proof] = await Promise.all([
     writeReport({
       target: display,
@@ -166,6 +187,7 @@ async function finish({ url, display, userId = null, facts, findings, passes, pl
       grade,
       gradeLabel,
       tally,
+      assessment,
     }),
     proofPromise,
   ]);
@@ -187,10 +209,15 @@ async function finish({ url, display, userId = null, facts, findings, passes, pl
     score,
     ringPercent,
     tally,
+    assessment,
+    coverage,
     summary: written.summary,
     findings: written.findings,
     passes: written.passes,
     engine: {
+      version: SCANNER_VERSION,
+      scoringVersion: SCORING_VERSION,
+      reporterVersion: REPORTER_VERSION,
       llm: llmEnabled(),
       model: llmEnabled() ? modelName() : null,
       orchestrator: plan.llm ? "llm" : "rule-based",
@@ -199,6 +226,7 @@ async function finish({ url, display, userId = null, facts, findings, passes, pl
       checksRun,
       browser: browserInfo,
       throttled: Boolean(facts && (facts.throttled || facts.wasThrottled)),
+      challenged: typeof facts?.challenged === "string" ? facts.challenged : null,
       proof: { shots: (proof.shots || []).length, skipped: proof.skipped || null },
     },
     proofPromise: PROOF_PROMISE,
@@ -208,6 +236,7 @@ async function finish({ url, display, userId = null, facts, findings, passes, pl
     report.agent = rest;
     if (Array.isArray(agentShots) && agentShots.length) proof.shots = [...(proof.shots || []), ...agentShots];
   }
+  report.engine.proof.artifacts = bindArtifactHashes(report.findings, proof.shots);
 
   // Identity, ownership, contact hints, and the signed attestation, then persist.
   report.id = newId();
@@ -254,9 +283,9 @@ async function safe(fn, fallback) {
     return fallback;
   }
 }
-function push(findings, passes, out) {
+function push(findings, passes, out, completed = true) {
   if (out?.findings?.length) findings.push(...out.findings);
-  if (out?.passes?.length) passes.push(...out.passes);
+  if (completed && out?.passes?.length) passes.push(...out.passes);
 }
 function logFindings(onEvent, list = []) {
   for (const f of list) {

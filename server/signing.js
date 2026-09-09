@@ -25,9 +25,17 @@ export function signingEnabled() {
 
 /** Stable JSON: sorted keys, no whitespace, so the same object always yields the same bytes. */
 export function canonicalize(value) {
+  // Reports pass through JSON storage. Match that boundary (undefined, dates,
+  // nonfinite numbers) before sorting keys, so a stored report still verifies.
+  const json = JSON.stringify(value);
+  return json === undefined ? undefined : canonicalizeV1(JSON.parse(json));
+}
+
+/** The exact historical encoder remains available for v1 report signatures. */
+export function canonicalizeV1(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return "[" + value.map(canonicalize).join(",") + "]";
-  return "{" + Object.keys(value).sort().map((k) => JSON.stringify(k) + ":" + canonicalize(value[k])).join(",") + "}";
+  if (Array.isArray(value)) return "[" + value.map(canonicalizeV1).join(",") + "]";
+  return "{" + Object.keys(value).sort().map((k) => JSON.stringify(k) + ":" + canonicalizeV1(value[k])).join(",") + "}";
 }
 
 export function sha256Hex(text) {

@@ -1,0 +1,41 @@
+import test, { mock } from 'node:test';
+import assert from 'node:assert/strict';
+
+// Exercise every real planned checker with a bounded in-memory HTTP site.
+// Only the browser launch and outbound fetch are replaced. No DB or model runs.
+delete process.env.DATABASE_URL;
+delete process.env.OPENAI_API_KEY;
+delete process.env.SIGNING_PRIVATE_KEY;
+mock.module('../server/lib/browserConnect.js', { namedExports: {
+  openBrowser: async () => { throw Object.assign(new Error('Fixture browser unavailable'), { code: 'NO_PLAYWRIGHT' }); },
+  browserMode: () => 'local',
+} });
+const { runCheckup } = await import('../server/pipeline.js');
+
+for (const status of [200, 503]) {
+  test(`real pipeline with homepage HTTP ${status} reports only supported coverage`, async (t) => {
+    t.mock.method(globalThis, 'fetch', async (value) => {
+      const url = new URL(value);
+      assert.equal(url.hostname, 'fixture.test');
+      if (url.pathname !== '/') return new Response('', { status: 404 });
+      return new Response('<!doctype html><html><head><title>Fixture</title><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><h1>Fixture</h1></body></html>',
+        { status, headers: { 'content-type': 'text/html' } });
+    });
+    const result = await runCheckup({ url: new URL('http://fixture.test/'), display: 'fixture.test' });
+    if (status === 200) {
+      assert.equal(result.assessment.status, 'complete');
+      assert.equal(result.grade, 'B');
+      assert.equal(result.score, 84);
+      assert.equal(result.coverage.find((c) => c.check === 'exposedFiles').status, 'completed');
+      assert.equal(result.coverage.find((c) => c.check === 'browser').status, 'skipped');
+      assert.equal(result.coverage.find((c) => c.check === 'agent').status, 'skipped');
+      assert.equal(result.findings.find((f) => f.id === 'no-https').provenance.check, 'recon');
+    } else {
+      assert.equal(result.assessment.status, 'incomplete');
+      assert.equal(result.grade, '?');
+      assert.equal(result.score, null);
+      assert.equal(result.coverage.find((c) => c.check === 'recon').status, 'inconclusive');
+      assert.deepEqual(result.passes, []);
+    }
+  });
+}

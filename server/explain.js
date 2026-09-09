@@ -1,13 +1,12 @@
 // explain.js
-// Technical-proof explanations. For every finding, say WHY the evidence shows a
-// real problem (the mechanism, and what can go wrong) and HOW the owner or
+// Explain what an observation may mean and how the owner or
 // their web person can see it themselves. Deterministic, keyed by finding id
 // with category fallbacks, so proofs are in-depth even with no LLM configured.
 
 const BY_ID = {
   "site-unreachable": {
-    why: "The server did not answer within the timeout. That means visitors get nothing either: the site may be down, overloaded, or blocking connections at the firewall.",
-    confirm: "Open the site in a private browser window. If it spins and fails, it is down for everyone.",
+    why: "The checker could not get a response from the homepage. The site may be unavailable, or a network problem or access rule may have prevented this checker from connecting. This observation does not establish what every visitor sees.",
+    confirm: "Open the site in a private browser window and, if possible, from another network. Ask the host to compare the failed request with its logs.",
   },
   "no-https": {
     why: "Without HTTPS, everything between a visitor and your site travels as readable text. Anyone on the same network (public wifi, a compromised router) can read or alter it, including anything typed into a form. Browsers label these pages 'Not secure' and search engines rank them lower.",
@@ -90,8 +89,8 @@ const BY_ID = {
     confirm: "Open the login page: the address bar shows http:// or the form's destination address starts with http://.",
   },
   "form-missing-csrf": {
-    why: "Without a per-form secret token, a malicious page can submit this form using a logged-in visitor's browser, performing the action as them without their knowledge.",
-    confirm: "View the page source and look for a hidden input named like csrf, token, or nonce inside the form; there is none.",
+    why: "This is a heuristic: the checker did not find a recognizable token field in the captured form markup. It did not submit the form or test the server's defenses. Other protections may exist, so the missing field does not establish that a cross-site request would succeed.",
+    confirm: "Ask the maintainer to inspect how the server protects this form, including token validation and other request checks. Compare the live form with the captured markup before concluding that protection is missing.",
   },
   "password-autocomplete": {
     why: "Allowing the browser to store this password makes it available to the next person on a shared computer. Guidance is mixed here, since password managers are safer than password reuse, which is why this is a minor note.",
@@ -155,10 +154,10 @@ const BY_CATEGORY = {
  * know what a finding is and is not.
  */
 export const PROOF_PROMISE =
-  "Every finding in this report comes from a direct, scripted test that we ran against this site. " +
-  "The AI only writes the wording. It cannot add, remove, or change a finding. " +
-  "Notes from our browsing agent are the one exception: they are labeled, and they never change the grade. " +
-  "Each proof shows the request we sent, the answer we received, and where on the site we found it.";
+  "Scripted findings record what the checker observed under the conditions shown in the evidence. " +
+  "Some checks are heuristics and require human review. Coverage shows which checks completed or could not run. " +
+  "AI browsing observations and AI suggestions are labeled and do not change the grade or replace the original observations. " +
+  "Evidence and signatures help readers inspect a report; they do not guarantee that its interpretation is correct or that the whole site is safe.";
 
 /** Return { why, confirm } for a finding; empty strings if nothing applies. */
 export function explain(finding) {

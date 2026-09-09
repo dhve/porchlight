@@ -11,8 +11,9 @@
 import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { canonicalize, sha256Hex, sign, verify, signingEnabled, publicKeyInfo } from "./signing.js";
+import { canonicalize, canonicalizeV1, sha256Hex, sign, verify, signingEnabled, publicKeyInfo } from "./signing.js";
 import { sql } from "./db.js";
+import { publicReport } from "./publicReport.js";
 
 export const verifyRouter = express.Router();
 
@@ -23,12 +24,9 @@ const ID_RE = /^[A-Za-z0-9_-]{6,20}$/;
 /** Sign a finished report. Returns the attestation object or null when signing is off. */
 export function signReport(report) {
   if (!signingEnabled()) return null;
-  const payload = {
-    v: 1, id: report.id, target: report.target, url: report.url, grade: report.grade, score: report.score, scannedAt: report.scannedAt,
-    findingsDigest: sha256Hex(canonicalize((report.findings || []).map((f) => ({ id: f.id, severity: f.severity, title: f.title })))),
-  };
+  const payload = payloadFor(report, 2);
   const signature = sign(canonicalize(payload));
-  return { v: 1, keyId: publicKeyInfo().keyId, signature, signedAt: new Date().toISOString(), payload };
+  return { v: 2, keyId: publicKeyInfo().keyId, signature, signedAt: new Date().toISOString(), payload };
 }
 
 // ---------------------------------------------------------------------------
@@ -40,14 +38,28 @@ function appUrl() {
 }
 
 /**
- * Rebuild the canonical payload from a stored report, using exactly the same
- * rule as signReport. Any change to the target, url, grade, score, scan time,
- * or the list of findings changes this payload and breaks the signature.
+ * Bind public report sections after applying the same privacy boundary used by
+ * report routes. Ownership, contact hints, and viewer capabilities are not signed.
+ * Keep the narrower historical payload exactly as it was for version 1.
  */
-function payloadFor(report) {
-  return {
-    v: 1, id: report.id, target: report.target, url: report.url, grade: report.grade, score: report.score, scannedAt: report.scannedAt,
-    findingsDigest: sha256Hex(canonicalize((report.findings || []).map((f) => ({ id: f.id, severity: f.severity, title: f.title })))),
+function payloadFor(report, version) {
+  const core = { v: version, id: report.id, target: report.target, url: report.url,
+    grade: report.grade, score: report.score, scannedAt: report.scannedAt };
+  if (version === 1) {
+    return { ...core, findingsDigest: sha256Hex(canonicalizeV1((report.findings || []).map((f) => ({ id: f.id, severity: f.severity, title: f.title })))) };
+  }
+  if (version !== 2) return null;
+  const view = publicReport(report);
+  const digest = (value) => sha256Hex(canonicalize(value ?? null));
+  return { ...core,
+    findingsDigest: digest(view.findings || []),
+    passesDigest: digest(view.passes || []),
+    coverageDigest: digest(view.coverage),
+    assessmentDigest: digest(view.assessment),
+    summaryDigest: digest(view.summary),
+    engineDigest: digest(view.engine),
+    detailsDigest: digest({ gradeLabel: view.gradeLabel, ringPercent: view.ringPercent,
+      tally: view.tally, proofPromise: view.proofPromise, agent: view.agent }),
   };
 }
 
@@ -106,8 +118,10 @@ function assess(row) {
   const signature = (att && att.signature) || row.signature || null;
   const keyId = (att && att.keyId) || row.key_id || null;
   const signedAt = (att && att.signedAt) || row.signed_at || null;
-  const payload = payloadFor(report);
-  const canonical = canonicalize(payload);
+  const version = att?.v ?? att?.payload?.v ?? 1;
+  const payload = payloadFor(report, version);
+  const encode = version === 1 ? canonicalizeV1 : canonicalize;
+  const canonical = payload ? encode(payload) : null;
 
   let valid = false;
   let reason = null;
@@ -120,13 +134,15 @@ function assess(row) {
     publicKeySpkiBase64 = info.publicKeySpkiBase64;
   }
 
-  if (!signature) {
+  if (!payload) {
+    reason = "This report uses an unsupported signature version.";
+  } else if (!signature) {
     reason = "This report was saved without a signature, so there is nothing to check.";
   } else if (!currentKeyId) {
     reason = "Signing isn't set up on this server, so the signature can't be checked here.";
   } else if (verify(canonical, signature)) {
     valid = true;
-  } else if (att && att.payload && typeof att.payload === "object" && verify(canonicalize(att.payload), signature)) {
+  } else if (att && att.payload && typeof att.payload === "object" && verify(encode(att.payload), signature)) {
     // The signature checks out against the payload stored with it, so the key
     // is right and the report body is what changed. Check this before trusting
     // the key id written inside the same JSON.
@@ -140,6 +156,13 @@ function assess(row) {
   return {
     valid,
     reason,
+    version,
+    scope: version === 2
+      ? "Version 2 covers the public findings and their evidence, source, advice, artifact hashes, passes, coverage, assessment, summary, engine, and report metadata."
+      : "Version 1 covers the report identity, target, URL, grade, score, scan time, and finding IDs, severities, and titles.",
+    limits: version === 2
+      ? "A valid signature establishes the origin and integrity of the signed content. It does not establish factual correctness. Verification does not fetch current picture bytes or check whether saved pictures remain available."
+      : "Version 1 does not cover evidence, source, explanations, passes, summary, coverage, or engine metadata. A valid signature does not establish factual correctness.",
     // Name the key that verified the report, or the one the report claims.
     // Never fall back to the server's live key for a report it did not sign.
     keyId: valid ? currentKeyId : keyId,
@@ -152,7 +175,7 @@ function assess(row) {
       id: report.id,
       target: report.target || row.target,
       grade: report.grade || row.grade,
-      score: typeof report.score === "number" ? report.score : row.score,
+      score: report.score === null || typeof report.score === "number" ? report.score : row.score,
       scannedAt: report.scannedAt || row.created_at,
       gradeLabel: report.gradeLabel || null,
     },
