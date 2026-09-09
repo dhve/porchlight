@@ -81,7 +81,7 @@
     if (!box) return;
     try {
       const data = await S.api('/api/feedback/progress');
-      box.innerHTML = `<p>${count(data.signals?.total)} feedback responses received. ${count(data.cases?.reviewed)} finding${count(data.cases?.reviewed) === 1 ? '' : 's'} reviewed: ${count(data.cases?.confirmed)} confirmed, ${count(data.cases?.incorrect)} incorrect, ${count(data.cases?.inconclusive)} inconclusive.</p><p class="fb-policy">${esc(data.limitation || 'These are selected feedback cases, not a measure of overall model accuracy. Responses do not represent verified unique people.')}</p>`;
+      box.innerHTML = `<p>${count(data.signals?.total)} feedback response${count(data.signals?.total) === 1 ? '' : 's'} received. ${count(data.cases?.reviewed)} finding${count(data.cases?.reviewed) === 1 ? '' : 's'} reviewed: ${count(data.cases?.confirmed)} confirmed, ${count(data.cases?.incorrect)} incorrect, ${count(data.cases?.inconclusive)} inconclusive.</p><p class="fb-policy">${esc(data.limitation || 'These are selected feedback cases, not a measure of overall model accuracy. Responses do not represent verified unique people.')}</p>`;
     } catch { box.textContent = 'Review totals are unavailable right now.'; }
   }
   S.route(/^\/review\/?$/, () => loadReview());
