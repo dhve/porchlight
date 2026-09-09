@@ -215,3 +215,15 @@ test('finding identifiers cannot alter object prototypes or disappear from count
     assert.equal(Object.prototype.wrong, undefined);
   } finally { delete Object.prototype.wrong; delete Object.prototype.right; }
 });
+
+test('report-wide votes do not inflate pending individual finding reviews', async (t) => {
+  if (!available(t)) return;
+  await request(path, { body: { findingId: '_report', verdict: 'wrong' } });
+  const progress = await request('/api/feedback/progress');
+  assert.equal(progress.body.signals.total, 1);
+  assert.equal(progress.body.cases.submitted, 0);
+  assert.equal(progress.body.cases.pending, 0);
+  const queue = await request('/api/feedback/review-queue', { role: 'admin' });
+  assert.equal(queue.body.cases[0].findingId, '_report');
+  assert.equal(queue.body.cases[0].reviewable, false);
+});

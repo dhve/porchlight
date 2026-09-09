@@ -81,7 +81,7 @@ export async function reviewQueue({ limit = 50, offset = 0 } = {}) {
       const finding = (Array.isArray(report.findings) ? report.findings : []).find((f) => f?.id === row.finding_id);
       return { caseId: caseId(row.report_id, row.finding_id), reportId: row.report_id, findingId: row.finding_id,
         report: reportSnapshot(report), finding: finding ? findingSnapshot(finding) : null,
-        reviewable: Boolean(finding), counts: countsByKey.get(k) || { right: 0, wrong: 0 },
+        reviewable: row.finding_id !== '_report' && Boolean(finding), counts: countsByKey.get(k) || { right: 0, wrong: 0 },
         notes: notes.filter((n) => key(n.report_id, n.finding_id) === k).map((n) => ({ text: n.note, submittedAt: iso(n.updated_at) })),
         review: reviewsByKey.get(k) || null };
     }), pagination: { limit, offset, hasMore: selected.length > limit },
@@ -91,7 +91,7 @@ export async function feedbackProgress() {
   const [signals] = await sql(`SELECT count(*)::int AS total,
     count(*) FILTER (WHERE verdict='right')::int AS right,
     count(*) FILTER (WHERE verdict='wrong')::int AS wrong FROM finding_feedback`);
-  const [totals] = await sql(`WITH submitted AS (SELECT DISTINCT report_id,finding_id FROM finding_feedback),
+  const [totals] = await sql(`WITH submitted AS (SELECT DISTINCT report_id,finding_id FROM finding_feedback WHERE finding_id<>'_report'),
     latest AS (SELECT DISTINCT ON (report_id,finding_id) report_id,finding_id,status FROM finding_feedback_reviews ORDER BY report_id,finding_id,sequence DESC)
     SELECT (SELECT count(*)::int FROM submitted) AS submitted,
     (SELECT count(*)::int FROM latest) AS reviewed,
@@ -99,7 +99,7 @@ export async function feedbackProgress() {
     (SELECT count(*)::int FROM latest WHERE status='confirmed') AS confirmed,
     (SELECT count(*)::int FROM latest WHERE status='incorrect') AS incorrect,
     (SELECT count(*)::int FROM latest WHERE status='inconclusive') AS inconclusive`);
-  return { signals, cases: totals, signalsBasis: 'Current saved votes. Changing an answer replaces its previous vote.',
+  return { signals, cases: totals, signalsBasis: 'Current saved votes. Changing an answer replaces its previous vote. Review progress covers individual findings; report-wide votes remain separate signals.',
     limitation: 'These totals describe submitted feedback and human review, not overall model accuracy. Feedback does not automatically train a model or change production prompts.' };
 }
 export async function evaluationCases() {
