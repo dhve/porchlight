@@ -39,3 +39,21 @@ for (const status of [200, 403, 404, 503]) {
     }
   });
 }
+
+test('real pipeline preserves a secondary recon challenge and skips all later work', async t => {
+  const paths = [];
+  t.mock.method(globalThis, 'fetch', async value => {
+    const path = new URL(value).pathname; paths.push(path);
+    if (path === '/') return new Response('<html><a href="/first">First</a><a href="/later">Later</a></html>', { status: 200, headers: { 'content-type': 'text/html' } });
+    if (path === '/robots.txt') return new Response('User-agent: *\n', { status: 200, headers: { 'content-type': 'text/plain' } });
+    return new Response('<html><meta http-equiv="refresh" content="0;/.well-known/sgcaptcha/?check=1"></html>', { status: 202, headers: { 'content-type': 'text/html' } });
+  });
+  const report = await runCheckup({ url: new URL('http://fixture.test/'), display: 'fixture.test' });
+  assert.equal(report.grade, '?');
+  assert.equal(report.score, null);
+  assert.match(report.engine.challenged, /bot check/i);
+  assert.match(report.coverage.find(c => c.check === 'recon').reason, /bot check/i);
+  assert.ok(report.coverage.filter(c => c.check !== 'recon').every(c => c.status === 'skipped'));
+  assert.deepEqual(report.passes, []);
+  assert.deepEqual(paths, ['/', '/robots.txt', '/first']);
+});

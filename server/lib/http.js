@@ -222,12 +222,18 @@ export function classifyStatus(status) {
   return "blocked";
 }
 
-/** Inspect only challenge-shaped HTML responses. The caller then discards the
- * body; ordinary documents, images and exposed-file samples are not read here. */
+function mayContainChallenge(response) {
+  const status = Number(response?.status);
+  const type = response?.contentType || response?.headers?.get?.('content-type') || '';
+  return ((status >= 200 && status < 300) || status === 403 || status === 503) &&
+    (!type || /text\/html|application\/xhtml/i.test(type));
+}
+
+/** Inspect a bounded HTML prefix, including successful interstitial responses.
+ * This consumes the body; callers that need its content should use text() instead. */
 export async function inspectChallenge(response) {
   let found = response?.challenge || isChallenge({status:response?.status,headers:response?.headers,url:response?.finalUrl});
-  const type = response?.contentType || response?.headers?.get?.('content-type') || '';
-  if (!found && [202, 403, 503].includes(Number(response?.status)) && (!type || /text\/html|application\/xhtml/i.test(type)) && typeof response?.text === 'function') {
+  if (!found && mayContainChallenge(response) && typeof response?.text === 'function') {
     const body = await response.text(8193);
     found = response.challenge || isChallenge({status:response.status,headers:response.headers,url:response.finalUrl,bodyStart:body});
   }
@@ -307,7 +313,8 @@ export function createThrottleGuard(facts, limit = 2) {
 
 /**
  * Test one address the honest way.
- *  1. HEAD (or GET when headFirst is false); 405/501 on HEAD means "use GET".
+ *  1. HEAD (or GET when headFirst is false); 405/501 or possible HTML on a
+ *     successful HEAD requires GET so a challenge body cannot appear working.
  *  2. 2xx/3xx: works. Otherwise wait (Retry-After, max 5 s, else 1.5 s for a
  *     blocked status) and GET once more with standard browser headers.
  *  3. If the retry is 2xx/3xx the address works. If it is 404/410/500/502/504
@@ -340,7 +347,9 @@ export async function probeAddress(client, url, { headFirst = true, throttle = n
   }
 
   let first = await send(headFirst ? "HEAD" : "GET");
-  if (!first.error && headFirst && [202, 405, 501].includes(first.res.status)) first = await send("GET");
+  if (!first.error && headFirst && !first.res?.challenge &&
+      ([202, 405, 501].includes(first.res.status) ||
+       (classifyStatus(first.res.status) === 'ok' && mayContainChallenge(first.res)))) first = await send("GET");
   if (first.res?.challenge) return {verdict:'blocked',status:first.res.status,statusText:statusText(first.res.status),retried:false,firstStatus:first.res.status,reason:'challenge'};
   if (first.error) {
     const c = classifyError(first.error);

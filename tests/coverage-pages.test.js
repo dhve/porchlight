@@ -95,7 +95,7 @@ test('links: a safety-refused image stays unrequested and makes the sample incon
   assertIncomplete(out, /safety|guard|private/i);
   assert.match(out.reason, /1.*2|2.*1/);
   assert.deepEqual(out.findings, []);
-  assert.deepEqual(client.requests.map((r) => r.path), ['/contact']);
+  assert.deepEqual([...new Set(client.requests.map((r) => r.path))], ['/contact']);
 });
 
 test('links: the time budget cannot silently omit a selected sample', async (t) => {
@@ -104,7 +104,7 @@ test('links: the time budget cannot silently omit a selected sample', async (t) 
   const client = fixtureClient({ '/one': () => { now += 61_000; return 200; } });
   const out = await runLinks({ facts: factsFor('<a href="/one">One</a><a href="/two">Two</a>'), client });
   assertIncomplete(out, /time|budget|limit/i);
-  assert.deepEqual(client.requests.map((r) => r.path), ['/one']);
+  assert.deepEqual([...new Set(client.requests.map((r) => r.path))], ['/one']);
 });
 
 test('flows: complete bounded samples describe only the sampled customer pages', async () => {
@@ -127,6 +127,6 @@ test('links: the configured sample limit does not make a complete bounded check 
     facts: factsFor('<a href="/one">One</a><a href="/two">Two</a><a href="/three">Three</a>'), client,
   });
   assert.equal(result.coverage.status, 'completed');
-  assert.equal(client.requests.length, 2);
+  assert.equal(new Set(client.requests.map((r) => r.path)).size, 2, 'HEAD plus HTML inspection still samples only two addresses');
   assert.match(result.out.passes[0], /2.*link/i);
 });

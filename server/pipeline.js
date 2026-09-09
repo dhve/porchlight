@@ -138,7 +138,12 @@ async function runStep(onEvent, key, ids, ctx, findings, passes, checksRun, cove
       const { findings: _findings, passes: _passes, ...metadata } = out;
       Object.assign(browserInfo, metadata, { ran: completed, skippedReason: completed ? null : observed.coverage.reason, mode: out.browserMode || null });
     }
-    if (id === "agent") extra.agent = out.agent || { ran: false, reason: out.reason || null };
+    if (id === "agent") {
+      extra.agent = out.agent || { ran: false, reason: out.reason || null };
+      if (!completed && out.agent) extra.agent = { ...out.agent,
+        status: observed.coverage.status, reason: observed.coverage.reason,
+        summary: `The browsing agent's observations are incomplete. ${observed.coverage.reason}` };
+    }
     if (completed) checksRun.push(id);
     // An incomplete browser render cannot support a negative layout finding.
     if (completed || (id !== "browser" && id !== "agent")) {

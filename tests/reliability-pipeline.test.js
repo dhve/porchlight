@@ -45,7 +45,15 @@ mock.module('../server/checks/browser.js', { namedExports: {
   CHROME_USER_AGENT: 'fixture',
 } });
 mock.module('../server/checks/agentBrowse.js', { namedExports: {
-  runAgentBrowse: async () => ({ findings: [], passes: [], skipped: true, reason: 'AI is disabled.' }),
+  runAgentBrowse: async ctx => {
+    if (scenario === 'agent-challenged') {
+      ctx.facts.challenged = 'The hosting put a bot check in front of our checker.';
+      return { findings: [{id:'agent-note',source:'agent',severity:'serious'}], passes: ['Unsafe agent pass'],
+        agent: {ran:true,steps:2,visited:['https://fixture.test/'],challenged:ctx.facts.challenged,unreliablePages:1,
+          summary:'Our browsing agent opened 1 page and found nothing in the way.'} };
+    }
+    return { findings: [], passes: [], skipped: true, reason: 'AI is disabled.' };
+  },
 } });
 // These modules are imported by the pipeline but not scheduled in this fixture.
 for (const [file, name] of [['tls', 'runTls'], ['cookies', 'runCookies'], ['exposedFiles', 'runExposedFiles'],
@@ -113,4 +121,19 @@ test('optional incomplete browser rendering stays inconclusive with its metadata
   assert.equal(report.assessment?.status, 'complete');
   assert.equal(report.coverage.find((c) => c.check === 'browser').status, 'inconclusive');
   assert.deepEqual(report.engine.browser.render, { usable: false });
+});
+
+test('an inconclusive agent retains run facts with a limitation instead of reassurance', async () => {
+  const report = await scan('agent-challenged');
+  assert.equal(report.assessment.status, 'complete', 'the optional agent does not invalidate required coverage');
+  assert.equal(report.coverage.find(c => c.check === 'agent').status, 'inconclusive');
+  assert.equal(report.agent.ran, true);
+  assert.equal(report.agent.steps, 2);
+  assert.deepEqual(report.agent.visited, ['https://fixture.test/']);
+  assert.match(report.agent.challenged, /bot check/);
+  assert.doesNotMatch(report.agent.summary, /found nothing in the way/);
+  assert.match(report.agent.summary, /incomplete|inconclusive/i);
+  assert.match(report.agent.summary, /bot check/i);
+  assert.ok(!report.findings.some(f => f.id === 'agent-note'));
+  assert.ok(!report.passes.includes('Unsafe agent pass'));
 });

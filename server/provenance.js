@@ -10,7 +10,12 @@ const STATUSES = new Set(["completed", "skipped", "failed", "inconclusive"]);
 /** Capture a checker result without converting an exception into success. */
 export async function observeCheck(check, fn, ctx = {}) {
   const unresolvedRequests = new Set();
-  const observedCtx = ctx.client ? { ...ctx, client: observingClient(ctx.client, unresolvedRequests, ctx.facts) } : ctx;
+  let requestChallenge = null;
+  const noteChallenge = reason => {
+    requestChallenge ||= reason;
+    if (ctx.facts) ctx.facts.challenged ||= reason;
+  };
+  const observedCtx = ctx.client ? { ...ctx, client: observingClient(ctx.client, unresolvedRequests, noteChallenge) } : ctx;
   let out;
   try {
     out = await fn(observedCtx);
@@ -20,10 +25,11 @@ export async function observeCheck(check, fn, ctx = {}) {
   if (!out || !Array.isArray(out.findings) || !Array.isArray(out.passes)) {
     return { out: { findings: [], passes: [] }, coverage: { check, status: "failed", reason: "The checker returned no usable result." } };
   }
+  if (requestChallenge && out.facts) out = { ...out, facts: { ...out.facts, challenged: out.facts.challenged || requestChallenge } };
   let status = STATUSES.has(out.status) ? out.status : "completed";
   if (out.skipped) status = "skipped";
   if (out.inconclusive || out.partial) status = "inconclusive";
-  if (out.challenged || out.agent?.challenged) status = 'inconclusive';
+  if (out.challenged || out.agent?.challenged || requestChallenge) status = 'inconclusive';
   const missingCertificate = check === "tls" && ctx.facts?.isHttps && !out.findings.length && !out.passes.length;
   if (status === "completed" && (unresolvedRequests.size || missingCertificate)) status = "inconclusive";
   if (check === "recon" && !out.facts?.reachable) status = "inconclusive";
@@ -32,8 +38,10 @@ export async function observeCheck(check, fn, ctx = {}) {
     (out.facts.statusCode < 200 || out.facts.statusCode >= 300);
   if (unusableHomepage) status = "inconclusive";
   const coverage = { check, status };
+  const challengeReason = out.challengeReason || out.agent?.challenged || requestChallenge || out.facts?.challenged;
   if (status !== "completed") coverage.reason = typeof out.reason === "string" && out.reason.trim()
     ? out.reason.trim().slice(0, 500)
+    : typeof challengeReason === 'string' && challengeReason.trim() ? challengeReason.trim().slice(0, 500)
     : missingCertificate ? "The TLS check did not return usable certificate evidence."
       : unresolvedRequests.size ? "Some requests needed for this check did not complete."
       : check === "recon" && out.facts?.challenged ? "A verification challenge prevented the homepage check."
@@ -52,8 +60,8 @@ export async function observeCheck(check, fn, ctx = {}) {
 
 // Several existing checks catch request errors themselves. Record unresolved
 // failures at the client boundary so an empty result cannot imply full coverage.
-// A later response to the same method/address clears a transient failure.
-function observingClient(client, unresolved, facts) {
+// A later response to the same address clears a transient failure.
+function observingClient(client, unresolved, noteChallenge) {
   const observed = { ...client };
   for (const method of ["get", "head", "request"]) {
     if (typeof client[method] !== "function") continue;
@@ -62,7 +70,7 @@ function observingClient(client, unresolved, facts) {
       const markChallenge = response => {
         if (!response?.challenge) return;
         unresolved.add(key);
-        if (facts) facts.challenged = response.challenge.reason;
+        noteChallenge(response.challenge.reason);
       };
       try {
         const response = await client[method](...args);

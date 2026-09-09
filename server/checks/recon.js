@@ -9,6 +9,7 @@
 import * as cheerio from "cheerio";
 import { config } from "../safety.js";
 import { isChallenge } from '../lib/challenge.js';
+import { inspectChallenge } from '../lib/http.js';
 
 const LATEST_MAJOR = { wordpress: 6, joomla: 5, drupal: 10 };
 
@@ -89,7 +90,8 @@ export async function runRecon(ctx) {
   await fetchRobots(ctx, facts);
 
   // ---- crawl a few same-origin pages ----
-  await crawl(ctx, facts);
+  if (!facts.challenged) await crawl(ctx, facts);
+  if (facts.challenged) return { facts, findings, passes, status: 'inconclusive', reason: facts.challenged };
 
   // ---- findings derived from recon itself ----
   if (url.protocol === "http:" && finalUrl.protocol === "http:") {
@@ -199,8 +201,11 @@ function collectFrom(facts, $, pageUrl, headers) {
 function safeOrigin(u) { try { return new URL(u).origin; } catch { return null; } }
 
 async function fetchRobots(ctx, facts) {
+  let res;
   try {
-    const res = await ctx.client.get(facts.baseOrigin + "/robots.txt");
+    res = await ctx.client.get(facts.baseOrigin + "/robots.txt");
+    const challenge = await inspectChallenge(res);
+    if (challenge) { facts.challenged = challenge.reason; return; }
     if (res.status === 200 && /text\/plain/i.test(res.contentType || "")) {
       const body = await res.text(20000);
       if (!/<html/i.test(body)) {
@@ -210,6 +215,7 @@ async function fetchRobots(ctx, facts) {
       }
     }
   } catch {}
+  finally { try { res?.discard?.(); } catch {} }
 }
 
 async function crawl(ctx, facts) {
@@ -237,6 +243,12 @@ async function crawl(ctx, facts) {
     let html = "";
     if (/text\/html/i.test(res.contentType || "")) {
       try { html = await res.text(); } catch { html = ""; }
+    }
+    const challenge = res.challenge || isChallenge({ status: res.status, headers: res.headers, bodyStart: html, url: res.finalUrl || href });
+    if (challenge) {
+      facts.challenged = challenge.reason;
+      try { res.discard?.(); } catch {}
+      break;
     }
     const $page = cheerio.load(html || "");
     facts.pages.push({ url: res.finalUrl || href, status: res.status, html, $: $page, headers: res.headers, contentType: res.contentType });
