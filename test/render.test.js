@@ -13,6 +13,7 @@ import { runAgentBrowse } from "../server/checks/agentBrowse.js";
 import { runBrowser } from "../server/checks/browser.js";
 import { runModernization } from "../server/checks/modernization.js";
 import { captureProof, stayedOnSite, shotHeaders, SHOT_CACHE_CONTROL } from "../server/proof.js";
+import { observeCheck } from "../server/provenance.js";
 
 const appearanceNote = (where) => ({
   title: "The page appears unstyled on a phone",
@@ -46,6 +47,26 @@ async function agentRun(path, note, { opens = [] } = {}) {
   return { out, facts, model };
 }
 const STYLE_WARNING = /did not load|had not loaded|Do not judge|when our browser asked/;
+
+test("agent: an incomplete styling observation cannot become completed coverage or a healthy pass", async (t) => {
+  const isolated = await startFixture();
+  t.after(() => isolated.close());
+  const facts = await factsFor(isolated.origin, '/broken');
+  const model = scriptedModel(appearanceNote(isolated.origin + '/broken'));
+  const observed = await observeCheck('agent', runAgentBrowse, {
+    url: new URL('/broken', isolated.origin), facts, agentModel: model, onEvent: () => {},
+  });
+  assert.equal(observed.coverage.status, 'inconclusive');
+  assert.match(observed.coverage.reason, /render|styling/i);
+  assert.deepEqual(observed.out.passes, []);
+  assert.doesNotMatch(observed.out.agent.summary, /found nothing in the way/);
+  assert.match(observed.out.agent.summary, /inconclusive|incomplete/i);
+  const limitation = observed.out.agent.renderLimitations.find(item => item.page === isolated.origin + '/broken');
+  assert.equal(limitation.linked, 1);
+  // Chromium can retain a sheet object after an error answer. The recorded HTTP
+  // failure must still keep the assessment inconclusive.
+  assert.ok(limitation.failed.some(item => item.url.endsWith('/missing.css') && item.status === 404));
+});
 
 test("agent: a stylesheet answered by a hosting bot check never becomes an appearance note", async () => {
   const { out, facts, model } = await agentRun("/sgcss", appearanceNote(fx.origin + "/sgcss"));

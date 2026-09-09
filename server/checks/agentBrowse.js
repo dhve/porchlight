@@ -34,7 +34,7 @@
 
 import { openBrowser } from "../lib/browserConnect.js";
 import { chatTools, llmEnabled, modelName } from "../llm.js";
-import { isChallenge, isChallengeUrl, CHALLENGE_REASON, headerValue } from "../lib/challenge.js";
+import { isChallenge, CHALLENGE_REASON, headerValue } from "../lib/challenge.js";
 import { classifyStylesheetResponse, assessStyling, noteRefusal, statusWords } from "../lib/styling.js";
 import { resolveTarget } from "../safety.js";
 
@@ -487,9 +487,8 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session, model = 
   }
 
   /**
-   * Did this page render for our browser? Counts linked vs applied stylesheets (waiting a
-   * little for slow ones), confirms a failing stylesheet with an independent request that
-   * carries standard browser headers, and turns the ledger into warnings for the model.
+   * Count linked and applied stylesheets, wait briefly for slow ones, and turn
+   * recorded failures into warnings. No independent resource requests are made.
    */
   async function judgeStyling(data, obsLeft) {
     const out = { linked: 0, applied: 0, failed: [], warnings: [], unreliable: false, challenged: "" };
@@ -952,9 +951,11 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session, model = 
   }
   const pages = state.visited.length;
   const notes = state.notes.length;
+  const renderIncomplete = state.unreliablePages.size > 0;
+  const renderReason = "Some pages did not fully render, so the browsing agent's observations are inconclusive.";
   // The model or the browser gave out, so the agent did not get to look properly.
   const failed = /^(model|browser)/.test(state.stopReason);
-  let summary = state.summary;
+  let summary = renderIncomplete ? renderReason : state.summary;
   if (!summary) {
     let ending = "";
     if (failed) ending = " before it had to stop early";
@@ -976,12 +977,13 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session, model = 
   const findings = toFindings(state.notes);
   // No notes means a pass, unless the site cut the visit short by limiting us, or the
   // run broke down before the agent had looked at more than the homepage.
-  const passes = notes || state.stopReason === "limited" || (failed && pages < 2)
+  const passes = notes || renderIncomplete || state.stopReason === "limited" || (failed && pages < 2)
     ? []
     : [`Our browsing agent tried ${pages} page${pages === 1 ? "" : "s"} the way a visitor would and found nothing in the way.`];
   return {
     findings,
     passes,
+    ...(renderIncomplete ? { inconclusive: true, reason: renderReason } : {}),
     agent: {
       ran: true,
       mode,
@@ -992,6 +994,11 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session, model = 
       shots: state.shots,
       challenged: state.challenged || null,
       unreliablePages: state.unreliablePages.size,
+      renderLimitations: [...state.assessments.entries()]
+        .filter(([, value]) => value.unreliable || value.challenged)
+        .slice(0, MAX_VISITED)
+        .map(([page, value]) => ({ page, linked: value.linked, applied: value.applied,
+          failed: value.failed, reason: value.challenged || value.warnings[0] || renderReason })),
     },
   };
   } // exploreWith
