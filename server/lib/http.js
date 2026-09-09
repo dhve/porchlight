@@ -348,8 +348,8 @@ export function createThrottleGuard(facts, limit = 2, { connectionLimit = 3 } = 
  *     successful HEAD requires GET so a challenge body cannot appear working.
  *  2. 2xx/3xx: works. Otherwise wait (Retry-After, max 5 s, else 1.5 s for a
  *     blocked status) and GET once more with standard browser headers.
- *  3. If the retry is 2xx/3xx the address works. If it is 404/410/500/502/504
- *     it is broken. Anything else is blocked (the site refused our checker).
+ *  3. A 2xx/3xx retry loaded. Two matching supported error statuses are broken;
+ *     an inconsistent pair is inconclusive. Other error statuses stay blocked.
  * A refused or reset connection also gets the second try (servers close idle
  * keep-alive sockets, which looks like a reset on the next request). A
  * connection that fails without an answer is NEVER broken: it is inconclusive
