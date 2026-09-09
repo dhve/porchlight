@@ -14,9 +14,10 @@ read-only, and detects issues rather than exploiting them.
 ## What it does
 
 You give it a URL and confirm you have permission. It runs a checkup in five
-steps and produces a report graded A to F, with each problem explained in real
-terms ("customers can't check out", "a private file with customer info is
-visible to anyone") plus a simple fix and the technical proof behind it.
+steps and produces a report graded A to F, or Not rated when required checks
+cannot finish. Each finding includes the recorded observation, an explanation,
+and steps to confirm it. The report covers the sampled checks, not every possible
+problem on a website.
 
 ## How the engine works
 
@@ -38,8 +39,11 @@ and the plain-language write-up use the model.
                                    deterministically, never by the model.
 ```
 
-The grade and every finding's severity come from the deterministic layer, so
-the model can rewrite wording but can never invent or hide a problem.
+Scripted findings and the grade remain separate from AI advice. The writer can
+add advice to a known finding but cannot replace its recorded observation,
+evidence, or severity. Optional browsing-agent notes are labeled and cannot
+change the grade. Scripted checks can also be wrong; a signature verifies the
+report's origin and integrity, not whether its conclusions are correct.
 
 **It runs without an API key.** With no key, the orchestrator runs every check
 and the report uses built-in plain-language templates. Add a key and the smart
@@ -83,8 +87,9 @@ deep, read-only analysis across these areas:
 - With the optional browser agent: JavaScript errors, load speed on a phone,
   and images that fail to render
 
-**Detection, not exploitation.** Exposed files are confirmed reachable and then
-left alone (never downloaded or stored). The reflected-input check uses a
+**Detection, not exploitation.** A possible exposed file is identified from a
+sample of up to 4,000 response bytes. The remaining response is canceled and
+the sampled content is not stored in the report. The reflected-input check uses a
 harmless marker and never injects anything that executes. No form is ever
 submitted and nothing on the site is changed.
 
@@ -153,6 +158,29 @@ the safety guards before any request is made.
 - `GET /api/reports` lists recent saved reports (needs a database).
 - `GET /api/reports/:id` returns one saved report; `/r/:id` is its share link.
 
+## Evidence and reviewed feedback
+
+Reports list completed, failed, skipped, and inconclusive checks. A hosting bot
+check or incomplete browser render cannot establish a visual defect. Supported
+address rechecks test availability only; they cannot validate layout, headers,
+or exposed-secret claims.
+
+No account is required for checkups or feedback when `REQUIRE_ACCOUNT=0`.
+Public reports omit submitter identity. Feedback notes are private to authorized
+reviewers, while response totals and separate review explanations are public.
+Anonymous use does not hide the connection address from the service.
+
+Reviewers use `/review` to adjudicate findings and export conclusive cases.
+The offline evaluation command compares explicit candidate decisions with those
+cases and an optional baseline. Votes never train a model or change prompts
+automatically. See [the review and evaluation guide](docs/feedback-validation.md)
+for the workflow, input format, and limits.
+
+Run `npm test` to check privacy, coverage, signatures, feedback, evaluation, and
+browser rendering. The tests use a disposable local PostgreSQL cluster and
+Chromium; they do not scan production websites or invoke a model. The suite was
+verified on Node 25.6.1 and needs Node's experimental module-mock support.
+
 ## Deploying to a VPS
 
 `deploy/` holds a re-runnable install for an Ubuntu box (used for the live
@@ -181,8 +209,8 @@ Anyone can check any public website: the checks only read what a visitor's brows
   contents of exposed files or secret values.
 - **Read-only.** It makes ordinary GET requests and one read-only TLS handshake.
   It does not submit forms, complete purchases, or change anything on the site.
-- **Detection, not exploitation.** When it finds an exposed file it confirms the
-  file is reachable and stops. It does not download or keep sensitive contents.
+- **Detection, not exploitation.** Possible exposed files are checked using a
+  bounded response sample. The report does not keep those file contents.
 - **Polite.** Requests are capped per checkup, time-limited, and sent with an
   honest `SutrosBot` user agent.
 - **No internal targets.** The scanner refuses localhost, private networks, and
