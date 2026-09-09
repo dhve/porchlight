@@ -23,7 +23,8 @@
     const form = finding && item.reviewable !== false ? `<form class="review-form" data-index="${index}"><label for="reviewStatus${index}">Decision</label><select id="reviewStatus${index}" name="status" required><option value="">Select a decision</option><option value="confirmed">Confirmed by the evidence</option><option value="incorrect">Incorrect finding</option><option value="inconclusive">Cannot confirm</option></select><label for="reviewReason${index}">Public explanation of the evidence</label><textarea id="reviewReason${index}" name="reason" rows="3" minlength="20" maxlength="2000" required></textarea><p class="fb-policy">This explanation will be public. Do not copy private notes or personal details into it. State the observations that support the decision and any limits.</p><button class="btn btn-primary" type="submit">Publish this review</button><p class="review-error" role="status"></p></form>` : '<p>Overall report feedback helps prioritize investigation. Review decisions and evaluation labels apply to individual findings.</p>';
     return `<article class="review-case"><h2>${esc(finding?.title || 'Overall checkup feedback')}</h2><p><a href="/r/${encodeURIComponent(item.reportId)}" target="_blank" rel="noopener">Open original report</a> · ${esc(item.findingId)}</p><p>${count(item.counts?.right)} responses say right; ${count(item.counts?.wrong)} say wrong.</p>${reason}<details><summary>Recorded finding and evidence</summary><pre>${esc(JSON.stringify(finding || item.report, null, 2))}</pre></details><details><summary>Private notes (${count(item.notes?.length)})</summary>${notes ? `<ul class="review-notes">${notes}</ul>` : '<p>No private notes.</p>'}</details>${form}</article>`;
   }
-  async function loadReview() {
+  async function loadReview(offset = 0) {
+    if (!Number.isInteger(offset) || offset < 0) offset = 0;
     const token = ++request;
     S.showScreen('screen-review');
     frame('<p role="status">Loading review access…</p>');
@@ -34,11 +35,14 @@
       return;
     }
     try {
-      const data = await S.api('/api/feedback/review-queue');
+      const data = await S.api(`/api/feedback/review-queue?limit=50&offset=${offset}`);
       if (token !== request || S.user?.role !== 'admin') return;
       const cases = Array.isArray(data.cases) ? data.cases : [];
-      frame(`<div class="review-actions"><button type="button" class="btn btn-ghost" id="exportCases">Download reviewed test cases</button><button type="button" class="btn btn-ghost" id="refreshReviews">Refresh</button><p id="reviewStatus" role="status"></p></div>${cases.length ? cases.map(card).join('') : '<p>No feedback is waiting in the review queue.</p>'}`);
-      screen.querySelector('#refreshReviews').addEventListener('click', loadReview);
+      const pagination = data.pagination || {limit:50,offset,hasMore:false};
+      frame(`<div class="review-actions"><button type="button" class="btn btn-ghost" id="exportCases">Download reviewed test cases</button><button type="button" class="btn btn-ghost" id="refreshReviews">Refresh</button><p id="reviewStatus" role="status"></p></div>${cases.length ? cases.map(card).join('') : '<p>No cases on this page.</p>'}<div class="review-actions" aria-label="Review queue pages">${offset > 0 ? '<button type="button" class="btn btn-ghost" id="previousReviews">Previous cases</button>' : ''}${pagination.hasMore ? '<button type="button" class="btn btn-ghost" id="nextReviews">Next cases</button>' : ''}</div>`);
+      screen.querySelector('#refreshReviews').addEventListener('click', () => loadReview(offset));
+      screen.querySelector('#previousReviews')?.addEventListener('click', () => loadReview(Math.max(0, offset - 50)));
+      screen.querySelector('#nextReviews')?.addEventListener('click', () => loadReview(offset + 50));
       screen.querySelector('#exportCases').addEventListener('click', exportCases);
       screen.querySelectorAll('.review-form').forEach(form => form.addEventListener('submit', async event => {
         event.preventDefault();
@@ -58,10 +62,12 @@
     } catch (error) { if (token === request) frame(`<p role="alert">${esc(error.message || 'The review queue could not be loaded.')}</p>`); }
   }
   async function exportCases(event) {
+    const token = request;
     const button = event.currentTarget, status = screen.querySelector('#reviewStatus');
     button.disabled = true; status.textContent = 'Preparing reviewed cases…';
     try {
       const data = await S.api('/api/feedback/evaluation-cases');
+      if (token !== request || S.user?.role !== 'admin') return;
       const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
       const url = URL.createObjectURL(blob), a = document.createElement('a');
       a.href = url; a.download = 'sutros-reviewed-cases.json'; a.click();
@@ -78,11 +84,11 @@
       box.innerHTML = `<p>${count(data.signals?.total)} feedback responses received. ${count(data.cases?.reviewed)} finding${count(data.cases?.reviewed) === 1 ? '' : 's'} reviewed: ${count(data.cases?.confirmed)} confirmed, ${count(data.cases?.incorrect)} incorrect, ${count(data.cases?.inconclusive)} inconclusive.</p><p class="fb-policy">${esc(data.limitation || 'These are selected feedback cases, not a measure of overall model accuracy. Responses do not represent verified unique people.')}</p>`;
     } catch { box.textContent = 'Review totals are unavailable right now.'; }
   }
-  S.route(/^\/review\/?$/, loadReview);
+  S.route(/^\/review\/?$/, () => loadReview());
   S.onUser(user => {
     link.hidden = user?.role !== 'admin';
     if (user?.role !== 'admin') { ++request; screen.innerHTML = ''; }
     if (location.pathname.replace(/\/$/, '') === '/review') loadReview();
   });
-  S.ready.then(loadProgress);
+  S.ready.then(() => { link.hidden = S.user?.role !== 'admin'; loadProgress(); });
 })();

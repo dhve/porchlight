@@ -13,7 +13,7 @@ test('longest aliases win and matching respects word boundaries', () => {
   assert.deepEqual(findGlossaryTerms(text).map(m => text.slice(m.start, m.end)), ['Content Security Policy', 'HTTP headers', 'HTTP']);
 });
 test('raw addresses and email addresses remain intact', () => {
-  const text = 'https://example.com/robots.txt?api=1 /robots.txt help@api.example CSS in words.';
+  const text = 'https://example.com/robots.txt?api=1 /robots.txt help@api.example api.example.com CSS in words.';
   assert.deepEqual(findGlossaryTerms(text).map(m => text.slice(m.start, m.end)), ['CSS']);
 });
 test('repeated matching is stable and covers terms in minor notes', () => {

@@ -164,7 +164,7 @@ export async function runExposedFiles(ctx) {
           `<- 200 OK   content-type: ${h.contentType || "unknown"}`,
           `matched the shape of a real ${h.label} (contents redacted, not stored)`,
         ],
-        note: "Sutros confirmed the file is reachable and stopped. It did not download, keep, or read the contents.",
+        note: "We read a short sample to identify the file type, then discarded it. The report does not include the file contents.",
         method: `We requested ${h.path} on this site with a plain GET, exactly what a browser does, and checked that the answer was a 200 whose first few lines matched the shape of a real ${h.label}. We stopped there and did not keep the contents.`,
         pages: [homepage],
         items: [{ url: fileUrl, status: h.status, statusText: h.statusText, kind: "file" }],

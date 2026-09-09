@@ -74,7 +74,8 @@ const word = /[\p{L}\p{N}_]/u;
 
 export function findGlossaryTerms(value) {
   const text = String(value ?? '');
-  const protectedSpans = [...text.matchAll(/(?:https?:\/\/|www\.)[^\s<>]+|\/[\w.][^\s<>]*|[\w.+-]+@[\w.-]+\.[\w-]+/gi)]
+  const protectedSpans = [...text.matchAll(/(?:https?:\/\/|www\.)[^\s<>]+|\/[\w.][^\s<>]*|[\w.+-]+@[\w.-]+\.[\w-]+|\b(?:[a-z0-9-]+\.)+[a-z]{2,63}(?::\d+)?(?:\/[^\s<>]*)?/gi)]
+    .filter(m => !keyByAlias.has(m[0].toLowerCase()))
     .map(m => [m.index, m.index + m[0].length]);
   const matches = [];
   for (const m of text.matchAll(new RegExp(pattern))) {
