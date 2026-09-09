@@ -1,12 +1,16 @@
 (function (root) {
   function assessment(report = {}) {
-    const incomplete = report.assessment?.status === 'incomplete' || report.grade === '?' || report.score === null;
-    const headline = incomplete ? 'This checkup is incomplete' : ({
+    const networkLimited = (Array.isArray(report.findings) ? report.findings : []).some(connectionLimitation);
+    const incomplete = networkLimited || report.assessment?.status === 'incomplete' || report.grade === '?' || report.score === null;
+    const headline = networkLimited ? 'This report needs verification' : incomplete ? 'This checkup is incomplete' : ({
       A: 'No major issues found in these checks', B: 'A few issues need a look',
       C: 'These checks found issues to address', D: 'These checks found serious issues',
       F: 'These checks found urgent issues',
     }[report.grade] || 'Website checkup results');
-    return { incomplete, headline, reason: report.assessment?.reason || (incomplete ? 'Some observations could not be completed. The results below are partial.' : '') };
+    const reason = networkLimited
+      ? 'Some saved findings counted requests with no HTTP response as confirmed website problems. The original grade therefore needs verification. The recorded evidence and original explanations remain available below.'
+      : report.assessment?.reason || (incomplete ? 'Some observations could not be completed. The results below are partial.' : '');
+    return { incomplete, headline, reason, networkLimited };
   }
   function recheckState(item = {}) {
     if (!['working', 'broken'].includes(item.classification)) {
@@ -26,5 +30,14 @@
       try { return /^https?:$/.test(new URL(item.url).protocol); } catch { return false; }
     });
   }
-  root.SutrosEvidence = { assessment, recheckState, retestSupported };
+  function connectionLimitation(finding = {}) {
+    if (!retestSupported(finding)) return null;
+    const failures = finding.evidence.items.filter(item => item && item.status === 0);
+    if (!failures.length) return null;
+    const title = finding.id === 'broken-images' ? 'Image connections need verification'
+      : finding.id === 'broken-links' ? 'Link connections need verification' : 'The page connection needs verification';
+    return { title, count: failures.length,
+      message: `Sutros recorded no HTTP response for ${failures.length} address${failures.length === 1 ? '' : 'es'}. A failed connection can reflect network conditions or access restrictions. It does not establish an HTTP error or show whether other visitors could load the page.` };
+  }
+  root.SutrosEvidence = { assessment, recheckState, retestSupported, connectionLimitation };
 })(globalThis);

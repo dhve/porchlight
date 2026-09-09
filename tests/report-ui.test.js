@@ -34,3 +34,22 @@ test('only supported HTTP availability findings offer a recheck', () => {
   assert.equal(view.retestSupported({id:'broken-links',source:'agent',evidence}), false);
   assert.equal(view.retestSupported({id:'broken-links',evidence:{items:[{url:'javascript:alert(1)'}]}}), false);
 });
+
+test('stored transport-only failures make the old grade unverified without changing the report', () => {
+  const report = {grade:'D',score:56,findings:[{id:'flow-error-contact',severity:'urgent',
+    evidence:{items:[{url:'https://fixture.example/contact',status:0,statusText:'connection refused'}]}}]};
+  const original = structuredClone(report);
+  const result = view.assessment(report);
+  assert.equal(result.networkLimited, true);
+  assert.equal(result.incomplete, true);
+  assert.deepEqual(report, original);
+});
+
+test('actual HTTP errors keep their ordinary assessment and separate security findings are unaffected', () => {
+  const report = {grade:'D',score:56,findings:[
+    {id:'flow-error-contact',severity:'urgent',evidence:{items:[{url:'https://fixture.example/contact',status:500}]}},
+    {id:'tls-error',severity:'serious',evidence:{items:[{url:'https://fixture.example/',status:0}]}},
+  ]};
+  assert.equal(Boolean(view.assessment(report).networkLimited), false);
+  assert.equal(view.assessment(report).incomplete, false);
+});

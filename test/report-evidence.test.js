@@ -1,0 +1,94 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
+import { readFile } from 'node:fs/promises';
+import { chromium } from 'playwright';
+
+const publicRoot = new URL('../public/', import.meta.url);
+const addresses = Array.from({length:13}, (_, i) => ({url:`https://fixture.example/picture-${i+1}.png`,
+  status:0, statusText:'connection refused', page:'https://fixture.example/', kind:'image',
+  text:i === 12 ? '<img src=x onerror=alert(1)>' : ''}));
+const report = {id:'evidence13',target:'fixture.example',url:'https://fixture.example/',
+  scannedAt:'2026-09-09T16:23:53.000Z',grade:'D',score:56,ringPercent:56,gradeLabel:'Needs care',
+  summary:'The old report claimed an urgent server failure.',tally:{urgent:1,watch:1},passes:[],
+  findings:[{id:'flow-error-contact',severity:'urgent',category:'broken-flow',title:'The contact page leads to an error',
+    meaning:'The page returned a server error.',fix:['Repair the server.'],evidence:{
+      why:'The server returned a 5xx error for every visitor.',method:'Requested twice.',
+      lines:['connection refused /contact'],items:[{url:'https://fixture.example/contact',status:0,statusText:'connection refused',kind:'page'}]}},
+    {id:'broken-images',severity:'watch',category:'quality',title:'13 images do not load',meaning:'Visitors see broken images.',
+      evidence:{lines:[...addresses.slice(0,8).map(it=>`${it.statusText} ${new URL(it.url).pathname}`),'and 5 more'],items:addresses,
+        why:'The images are broken for every visitor.',method:'Requested twice.'}}],engine:{reporter:'template'}};
+
+let server, browser, origin;
+test.before(async () => {
+  server = createServer(async (req,res) => {
+    const pathname = new URL(req.url, 'http://127.0.0.1').pathname;
+    const json = value => {res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify(value));};
+    if (pathname === '/api/reports/evidence13') return json(report);
+    if (pathname === '/api/me') return json({user:null});
+    if (pathname === '/api/config') return json({requireAccount:false,google:false,github:false});
+    if (pathname === '/api/reports') return json({db:true,reports:[]});
+    if (pathname === '/api/reports/evidence13/feedback') return json({findings:{},mine:{},policy:{}});
+    if (pathname === '/api/feedback/progress') return json({signals:{total:0},cases:{reviewed:0,confirmed:0,incorrect:0,inconclusive:0},limitation:'Synthetic fixture'});
+    const file = pathname === '/r/evidence13' || pathname === '/' ? 'index.html' : pathname.slice(1);
+    if (!/^[a-z0-9.-]+$/i.test(file)) {res.writeHead(404);res.end();return;}
+    try {
+      const body = await readFile(new URL(file, publicRoot));
+      const type = file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html';
+      res.writeHead(200,{'content-type':type});res.end(body);
+    } catch {res.writeHead(404);res.end();}
+  });
+  server.listen(0,'127.0.0.1'); await once(server,'listening');
+  origin = `http://127.0.0.1:${server.address().port}`;
+  browser = await chromium.launch({headless:true});
+});
+test.after(async () => {
+  await browser?.close();
+  if (server) {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+});
+async function openReport(t) {
+  const page = await browser.newPage({viewport:{width:390,height:844}});
+  t.after(()=>page.close());
+  await page.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
+  await page.goto(origin+'/r/evidence13');
+  await page.locator('#screen-report.is-active').waitFor();
+  await page.locator('.finding').first().waitFor();
+  return page;
+}
+
+test('all recorded image addresses are available beyond the old eight-line cutoff', async t => {
+  const page = await openReport(t);
+  const card = page.locator('.finding').filter({has:page.locator('[data-finding="broken-images"]')});
+  await card.locator('details.proof > summary').click();
+  const expansion = card.getByText('Show all 13 recorded addresses',{exact:true});
+  assert.equal(await expansion.count(),1);
+  await expansion.click();
+  assert.equal(await card.locator('.proof-addresses a').count(),13);
+  assert.equal(await card.getByRole('link',{name:'/picture-13.png',exact:true}).isVisible(),true);
+  assert.equal(await card.locator('.proof-addresses img').count(),0);
+  assert.equal(await card.locator('.proof-addresses').getByText('<img src=x onerror=alert(1)>',{exact:true}).isVisible(),true);
+  assert.equal(await card.getByText('and 5 more',{exact:true}).count(),0);
+  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
+});
+
+test('an old refused connection is clarified before its original urgent claim and grade', async t => {
+  const page = await openReport(t);
+  assert.equal(await page.getByRole('heading',{name:'This report needs verification',exact:true}).isVisible(),true);
+  assert.match(await page.locator('#scorecard .glabel').innerText(),/original grade/i);
+  assert.equal(await page.locator('#scorecard .letter').innerText(),'D');
+  assert.equal(await page.locator('#scorecard .tally.urgent').count(),0);
+  assert.equal(await page.locator('.finding.urgent').count(),0);
+  const contact = page.locator('.finding').filter({has:page.locator('[data-finding="flow-error-contact"]')});
+  assert.match(await contact.locator('.sev-chip').innerText(),/needs verification/i);
+  assert.match(await contact.locator('.f-mean').innerText(),/no HTTP response/i);
+  const original = contact.getByText('Original finding and suggested fixes',{exact:true});
+  assert.equal(await original.count(),1);
+  await original.click();
+  assert.equal(await contact.getByText('The contact page leads to an error',{exact:true}).isVisible(),true);
+  await contact.locator('details.proof > summary').click();
+  assert.equal(await contact.locator('.proof-why').isVisible(),false);
+  await contact.getByText('Original interpretation and testing notes',{exact:true}).click();
+  assert.equal(await contact.locator('.proof-why').isVisible(),true);
+  assert.match(await contact.locator('.proof-why').innerText(),/The server returned a 5xx error for every visitor\./);
+});

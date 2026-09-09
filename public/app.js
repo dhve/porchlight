@@ -171,7 +171,11 @@ function renderReport(r) {
   const color = assessment.incomplete ? 'var(--ink-soft)' : GRADE_COLOR[r.grade] || "var(--watch)";
   ringTarget = RING_CIRC * (1 - (assessment.incomplete ? 0 : Math.max(0, Math.min(100, r.ringPercent || 0))) / 100);
   const findings = Array.isArray(r.findings) ? r.findings : [];
-  const tally = r.tally || {};
+  const uncertain = findings.filter(f => SutrosEvidence.connectionLimitation(f));
+  const assessed = findings.filter(f => !SutrosEvidence.connectionLimitation(f));
+  const tally = assessment.networkLimited ? assessed.reduce((counts, f) => {
+    counts[f.severity] = (counts[f.severity] || 0) + 1; return counts;
+  }, {}) : r.tally || {};
 
   const chips = [];
   if (tally.urgent) chips.push(chip("urgent", tally.urgent, "urgent"));
@@ -180,6 +184,7 @@ function renderReport(r) {
   const goodCount = (r.passes || []).length;
   if (goodCount) chips.push(chip("good", goodCount, "looking good"));
   if (tally.minor) chips.push(chip("minor", tally.minor, "minor"));
+  if (uncertain.length) chips.push(chip('unverified', uncertain.length, 'need verification'));
 
   const throttled = r.engine && (r.engine.throttled || r.engine.challenged)
     ? `<p class="sc-throttled">The site limited our checker${r.engine.challenged ? ' with a bot challenge' : ''}. Some observations could not be completed; the site may work normally for visitors.</p>`
@@ -194,13 +199,14 @@ function renderReport(r) {
           stroke-dasharray="${RING_CIRC.toFixed(1)}" stroke-dashoffset="${RING_CIRC.toFixed(1)}"
           style="transition:stroke-dashoffset 1.1s var(--step);"/>
       </svg>
-      <span class="letter" style="color:${color};">${esc(assessment.incomplete ? '?' : r.grade)}</span>
-      <span class="glabel">${esc(assessment.incomplete ? 'Not rated' : r.gradeLabel || "")}</span>
+      <span class="letter" style="color:${color};">${esc(assessment.networkLimited ? r.grade : assessment.incomplete ? '?' : r.grade)}</span>
+      <span class="glabel">${esc(assessment.networkLimited ? 'Original grade' : assessment.incomplete ? 'Not rated' : r.gradeLabel || "")}</span>
     </div>
     <div class="sc-body">
       <h1>${esc(gradeHeadline(r))}</h1>
       <p class="host">${esc(r.target)} &middot; checked ${esc(whenText(r.scannedAt))}</p>
       <p class="sc-summary">${esc(assessment.incomplete ? assessment.reason : r.summary || "")}</p>
+      ${assessment.networkLimited ? `<details class="original-report"><summary>Original summary and grade</summary><p>Recorded grade: ${esc(r.grade)}${typeof r.score === 'number' ? ` (${esc(r.score)}/100)` : ''}. The stored report and its signature have not been rewritten.</p><p>${esc(r.summary || '')}</p></details>` : ''}
       ${throttled}
       <div class="sc-tally">${chips.join("")}</div>
     </div>`;
@@ -228,9 +234,9 @@ function renderReport(r) {
   }
 
   // Findings, ordered by what the owner should do first.
-  const fixFirst = findings.filter((f) => f.severity === "urgent" || f.severity === "serious");
-  const watchList = findings.filter((f) => f.severity === "watch");
-  const minorList = findings.filter((f) => f.severity === "minor");
+  const fixFirst = assessed.filter((f) => f.severity === "urgent" || f.severity === "serious");
+  const watchList = assessed.filter((f) => f.severity === "watch");
+  const minorList = assessed.filter((f) => f.severity === "minor");
   const hasMajor = fixFirst.length > 0;
   const promise = proofPromise(r);
   // What the browsing agent did, when it ran. Nothing when it did not.
@@ -244,6 +250,7 @@ function renderReport(r) {
     html += (assessment.incomplete ? '' : reassureBanner(watchList.length > 0)) + promise;
     if (watchList.length) html += `<p class="eyebrow" style="margin-top:14px;">Optional improvements (nice to have, not urgent)</p>` + watchList.map((f) => findingCard(f, r)).join("");
   }
+  if (uncertain.length) html += `<p class="eyebrow" style="margin-top:14px;">Connection results to verify</p>` + uncertain.map(f => findingCard(f, r)).join('');
   if (goodCount) {
     html += `<p class="eyebrow" style="margin-top:14px;">Looking good</p>` + goodCard(r.passes);
   }
@@ -285,22 +292,25 @@ function aiAdviceBlock(f) {
 }
 
 function findingCard(f, r) {
-  const meta = SEV[f.severity] || SEV.watch;
+  const limitation = SutrosEvidence.connectionLimitation(f);
+  const severity = limitation ? 'unverified' : f.severity;
+  const meta = limitation ? {icon:PROOF_ICON, label:'Needs verification'} : SEV[f.severity] || SEV.watch;
   const fixes = (f.fix || []).map((step) => `<li>${esc(step)}</li>`).join("");
+  const fixBlock = fixes ? `<div class="f-fix"><div class="fx-label">${WRENCH}How to fix it</div><ol>${fixes}</ol>${f.who ? `<div class="who">${PERSON} ${esc(f.who)}</div>` : ""}</div>` : '';
   return `
-    <div class="finding ${esc(f.severity)}">
+    <div class="finding ${esc(severity)}">
       <div class="f-head">
         <div class="f-chips">
-          <span class="sev-chip ${esc(f.severity)}">${meta.icon}${esc(meta.label)}</span>
+          <span class="sev-chip ${esc(severity)}">${meta.icon}${esc(meta.label)}</span>
           ${agentChip(f)}
           ${disputeChip(f)}
         </div>
         <div class="f-main">
-          <h3>${esc(f.title)}</h3>
-          <p class="f-mean">${esc(f.meaning)}</p>
+          <h3>${esc(limitation ? limitation.title : f.title)}</h3>
+          <p class="f-mean">${esc(limitation ? limitation.message : f.meaning)}</p>
         </div>
       </div>
-      ${fixes ? `<div class="f-fix"><div class="fx-label">${WRENCH}How to fix it</div><ol>${fixes}</ol>${f.who ? `<div class="who">${PERSON} ${esc(f.who)}</div>` : ""}</div>` : ""}
+      ${limitation ? `<p class="observation-source connection-clarification">Clarification from the saved evidence, not a new check or a reviewer decision.</p><details class="original-finding"><summary>Original finding and suggested fixes</summary><p class="observation-source">The original ${esc(f.severity)} label and explanation are unverified.</p><h4>${esc(f.title)}</h4><p>${esc(f.meaning)}</p>${fixBlock}</details>` : fixBlock}
       ${proofPanel(f, r)}
       ${aiAdviceBlock(f)}
       <div class="f-slot" data-finding="${esc(f.id)}"></div>
@@ -314,23 +324,42 @@ function proofPanel(f, r) {
   const said = disputeBlock(f);
   if (!ev && !said) return "";
   const e = ev || {};
-  const lines = cleanLines(e.lines);
+  const limitation = SutrosEvidence.connectionLimitation(f);
+  const addresses = evidenceAddresses(f, r);
+  const lines = cleanLines(e.lines).filter(line => !addresses || !/^and \d+ more\s*$/i.test(line.trim()));
+  const interpretation =
+    (e.why ? `<p class="proof-why"><b>${limitation ? 'Original interpretation.' : 'Why this is a problem.'}</b> ${esc(e.why)}</p>` : '') +
+    (e.method ? `<p class="proof-method"><b>${limitation ? 'Recorded testing method.' : 'How we tested this.'}</b> ${esc(e.method)}</p>` : '');
+  const confirmation =
+    (e.confirm ? `<p class="proof-confirm"><b>${limitation ? 'Original confirmation suggestion.' : 'See it yourself.'}</b> ${esc(e.confirm)}</p>` : '') +
+    (e.note ? `<p class="proof-note">${esc(e.note)}</p>` : '');
   const body =
     observationMeta(f) +
-    (e.why ? `<p class="proof-why"><b>Why this is a problem.</b> ${esc(e.why)}</p>` : "") +
-    (e.method ? `<p class="proof-method"><b>How we tested this.</b> ${esc(e.method)}</p>` : "") +
+    (limitation ? '' : interpretation) +
     (lines.length ? `<p class="proof-k">What we observed</p><pre>${lines.map((l) => linkifyLine(l, r)).join("\n")}</pre>` : "") +
+    addresses +
     pagesList(e, r) +
     shotsBlock(e, r) +
     retestBlock(f, e, r) +
-    (e.confirm ? `<p class="proof-confirm"><b>See it yourself.</b> ${esc(e.confirm)}</p>` : "") +
-    (e.note ? `<p class="proof-note">${esc(e.note)}</p>` : "") +
+    (limitation ? `<p class="proof-confirm"><b>How to verify.</b> Open the recorded addresses in your browser and, if possible, from another network. If a difference persists, ask the host to compare the requests with its logs.</p><details class="original-context"><summary>Original interpretation and testing notes</summary><p class="observation-source">The original text below may overstate what a connection failure establishes.</p>${interpretation}${confirmation}</details>` : confirmation) +
     said;
   return `<details class="proof"><summary>${PROOF_ICON} Show the technical proof ${CHEV}</summary><div class="proof-body">${body}</div></details>`;
 }
 
 function cleanLines(lines) {
   return (Array.isArray(lines) ? lines : []).filter((l) => l != null && String(l).trim() !== "").map(String);
+}
+
+function evidenceAddresses(f, r) {
+  if (!SutrosEvidence.retestSupported(f)) return '';
+  const items = f.evidence.items.filter(item => item && isHttpUrl(item.url));
+  const rows = items.map(item => {
+    const status = typeof item.status === 'number' && item.status >= 100 && item.status <= 599
+      ? `HTTP ${item.status}${item.statusText ? ` ${item.statusText}` : ''}`
+      : item.status === 0 ? `No HTTP response${item.statusText ? ` (${item.statusText})` : ''}` : 'Status not recorded';
+    return `<li><span class="address-status">${esc(status)}</span>${pageLink(isHttpUrl(item.url), r)}${item.text ? `<span class="address-context">${esc(item.text)}</span>` : ''}${item.page ? `<span class="address-context">Found on ${esc(pathLabel(item.page, r))}</span>` : ''}</li>`;
+  });
+  return `<details class="proof-all-addresses"><summary>Show all ${items.length} recorded address${items.length === 1 ? '' : 'es'}</summary><ul class="proof-addresses">${rows.join('')}</ul></details>`;
 }
 
 // Base for resolving site paths: the report's final URL, else https:// plus the target host.
