@@ -168,6 +168,7 @@ export function buildIntro({ post, report, writerName }) {
   const target = String(report?.target || post?.report?.target || "there").trim();
   const findings = Array.isArray(report?.findings) ? report.findings : [];
   const top = findings.filter((f) => f && PROBLEM_SEVERITIES.includes(f.severity)).slice(0, 3);
+  const incomplete = report?.assessment?.status === 'incomplete' || report?.grade === '?' || report?.score === null;
 
   const lines = [];
   lines.push(`Hello ${target} team,`);
@@ -178,6 +179,11 @@ export function buildIntro({ post, report, writerName }) {
   );
   lines.push("");
 
+  if (incomplete) {
+    lines.push('This checkup was incomplete. Its observations need investigation; it cannot establish that the site is in good condition.');
+    lines.push('The report explains what could and could not be checked.');
+    lines.push('');
+  }
   if (top.length) {
     lines.push(top.length === 1 ? "The checkup found one thing worth your attention:" : "The checkup found a few things worth your attention:");
     lines.push("");
@@ -199,8 +205,8 @@ export function buildIntro({ post, report, writerName }) {
       "I would be glad to help with any of these, or to walk through the report with you if that is useful. " +
         "If you already have someone who looks after the site, feel free to pass this along to them."
     );
-  } else {
-    lines.push("The checkup came back in good shape, with nothing that needs fixing right now.");
+  } else if (!incomplete) {
+    lines.push("The completed checks did not identify a major issue. This limited checkup cannot guarantee that the whole site is safe or working.");
     lines.push("");
     lines.push("If you ever want a hand keeping the site in good shape, I would be glad to help.");
   }

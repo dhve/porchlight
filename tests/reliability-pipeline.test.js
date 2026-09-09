@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 // simulate checker exceptions at the same boundary where the pipeline sees them.
 let scenario = 'recon-throws';
 let persisted;
+let browserRuns = 0;
 const fixtureFinding = {
   id: 'mobile-observation', severity: 'minor', category: 'modernization',
   title: 'Measured mobile layout', meaning: 'The captured page has this measurement.',
@@ -31,15 +32,16 @@ mock.module('../server/checks/recon.js', { namedExports: { runRecon: async () =>
   if (scenario === 'unreachable') return { facts: { reachable: false }, findings: [], passes: [] };
   return { facts: { reachable: true, finalUrl: new URL('https://fixture.test/'), pages: [] }, findings: [], passes: ['Homepage responded.'] };
 } } });
-mock.module('../server/checks/security.js', { namedExports: { runSecurity: async () => {
+mock.module('../server/checks/security.js', { namedExports: { runSecurity: async ctx => {
+  if (scenario === 'required-challenge') { ctx.facts.challenged = 'Hosting bot challenge'; return {findings:[],passes:[],inconclusive:true,reason:'Hosting bot challenge'}; }
   if (scenario === 'required-throws') throw new Error('required checker failed');
   if (scenario === 'required-inconclusive') return { findings: [], passes: ['Must not claim success'], inconclusive: true, reason: 'Page was blocked.' };
   return { findings: [structuredClone(fixtureFinding)], passes: ['Measured security check completed.'] };
 } } });
 mock.module('../server/checks/browser.js', { namedExports: {
-  runBrowser: async () => scenario === 'browser-inconclusive'
+  runBrowser: async () => { browserRuns++; return scenario === 'browser-inconclusive'
     ? { findings: [], passes: [], inconclusive: true, reason: 'Page was not usable.', render: { usable: false } }
-    : { findings: [], passes: ['Must not claim success'], skipped: true, reason: 'Browser unavailable.', browserMode: 'local' },
+    : { findings: [], passes: ['Must not claim success'], skipped: true, reason: 'Browser unavailable.', browserMode: 'local' }; },
   CHROME_USER_AGENT: 'fixture',
 } });
 mock.module('../server/checks/agentBrowse.js', { namedExports: {
@@ -57,6 +59,7 @@ const { runCheckup } = await import('../server/pipeline.js');
 
 async function scan(next) {
   scenario = next;
+  browserRuns = 0;
   return runCheckup({ url: new URL('https://fixture.test/'), display: 'fixture.test', userId: 'private-owner' });
 }
 
@@ -95,6 +98,14 @@ test('optional skipped checks preserve a completed assessment without adding fal
   assert.deepEqual(report.findings[0].evidence.render, fixtureFinding.evidence.render);
   assert.equal(report.findings[0].evidence.observedAt, '2026-09-09T12:00:00.000Z');
   assert.equal(report.findings[0].evidence.shots[0].sha256, '18a45744b2c7bf3544d5bb6996742036621236448cf5c835e1cd3dfd86fe05a2');
+});
+
+test('a known hosting challenge stops later checks and remains visible in coverage', async () => {
+  const report = await scan('required-challenge');
+  assert.equal(browserRuns, 0);
+  assert.equal(report.grade, '?');
+  assert.equal(report.coverage.find(c=>c.check === 'browser').status,'skipped');
+  assert.match(report.coverage.find(c=>c.check === 'browser').reason,/challenge/i);
 });
 
 test('optional incomplete browser rendering stays inconclusive with its metadata intact', async () => {

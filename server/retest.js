@@ -2,7 +2,7 @@
 // originals and from human review decisions.
 import express from 'express';
 import { getReport, dbEnabled, sql, newId } from './db.js';
-import { createClient, statusText, classifyError, sleep, BROKEN_STATUSES } from './lib/http.js';
+import { createClient, statusText, classifyError, sleep, BROKEN_STATUSES, inspectChallenge } from './lib/http.js';
 import { resolveTarget } from './safety.js';
 import { consume, ip } from './ratelimit.js';
 
@@ -115,9 +115,13 @@ async function fetchStatus(client, target, resolve) {
       const failure = classifyError(error);
       return { status: 0, statusText: failure.statusText, classification: 'inconclusive', reason: failure.reason || 'request-failed', finalUrl: current.href };
     }
-    try { response?.discard?.(); } catch {}
+    let challenge;
+    try { challenge = await inspectChallenge(response); }
+    catch { return {status:Number(response?.status) || 0,statusText:'response could not be read',classification:'inconclusive',reason:'response-read-failed',finalUrl:current.href}; }
+    finally { try { response?.discard?.(); } catch {} }
     const status = Number(response?.status) || 0;
     const observed = { status, statusText: statusText(status), finalUrl: current.href };
+    if (challenge) return {...observed,classification:'inconclusive',reason:'challenge'};
     if (status < 300 || status >= 400) return { ...observed, classification: classify(status), ...(classify(status) === 'inconclusive' ? { reason: 'access-or-service-refusal' } : {}) };
     const location = response?.headers?.get?.('location');
     let next;

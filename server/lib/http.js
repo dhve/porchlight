@@ -19,6 +19,7 @@
 //   INCONCLUSIVE timeouts, aborts, and the request budget being reached
 
 import { config, normalizeUrl, resolveTarget } from "../safety.js";
+import { isChallenge } from './challenge.js';
 
 export const USER_AGENT =
   "SutrosBot/0.1 (+https://sutros.org; friendly website checkup)";
@@ -78,7 +79,7 @@ export function createClient() {
       if (res.status === 429) throttle = { at: Date.now(), retryAfterMs: parseRetryAfter(res.headers.get("retry-after")), url: String(url).slice(0, 200) };
       handedOff = true;
       if (!res.body) clearTimeout(timer);
-      return {
+      const response = {
         ok: res.ok,
         status: res.status,
         finalUrl: res.url,
@@ -87,10 +88,13 @@ export function createClient() {
         ms: Date.now() - started,
         contentType: res.headers.get("content-type") || "",
         retryAfterMs: parseRetryAfter(res.headers.get("retry-after")),
+        challenge: isChallenge({ status: res.status, headers: res.headers, url: res.url }),
         async text(limitBytes = 600_000) {
           try {
             if (timedOut) throw timeoutError();
-            return await readBoundedBody(res, limitBytes);
+            const body = await readBoundedBody(res, limitBytes);
+            response.challenge ||= isChallenge({ status: res.status, headers: res.headers, url: res.url, bodyStart: body });
+            return body;
           } catch (err) {
             if (timedOut) throw timeoutError();
             throw err;
@@ -107,6 +111,7 @@ export function createClient() {
           } catch {}
         },
       };
+      return response;
     } catch (err) {
       if (timedOut) {
         throw timeoutError();
@@ -217,6 +222,18 @@ export function classifyStatus(status) {
   return "blocked";
 }
 
+/** Inspect only challenge-shaped HTML responses. The caller then discards the
+ * body; ordinary documents, images and exposed-file samples are not read here. */
+export async function inspectChallenge(response) {
+  let found = response?.challenge || isChallenge({status:response?.status,headers:response?.headers,url:response?.finalUrl});
+  const type = response?.contentType || response?.headers?.get?.('content-type') || '';
+  if (!found && [202, 403, 503].includes(Number(response?.status)) && (!type || /text\/html|application\/xhtml/i.test(type)) && typeof response?.text === 'function') {
+    const body = await response.text(8193);
+    found = response.challenge || isChallenge({status:response.status,headers:response.headers,url:response.finalUrl,bodyStart:body});
+  }
+  return found;
+}
+
 /**
  * Read a thrown request error.
  * Returns { verdict: "broken"|"inconclusive", statusText, reason }.
@@ -311,7 +328,9 @@ export async function probeAddress(client, url, { headFirst = true, throttle = n
     } catch (err) {
       return { error: err };
     }
-    try { if (res && typeof res.discard === "function") res.discard(); } catch {}
+    try { if (method !== 'HEAD') res.challenge = await inspectChallenge(res); }
+    catch (error) { return {error}; }
+    finally { try { res?.discard?.(); } catch {} }
     if (throttle && res) throttle.record(url, res.status);
     return { res };
   }
@@ -321,7 +340,8 @@ export async function probeAddress(client, url, { headFirst = true, throttle = n
   }
 
   let first = await send(headFirst ? "HEAD" : "GET");
-  if (!first.error && headFirst && (first.res.status === 405 || first.res.status === 501)) first = await send("GET");
+  if (!first.error && headFirst && [202, 405, 501].includes(first.res.status)) first = await send("GET");
+  if (first.res?.challenge) return {verdict:'blocked',status:first.res.status,statusText:statusText(first.res.status),retried:false,firstStatus:first.res.status,reason:'challenge'};
   if (first.error) {
     const c = classifyError(first.error);
     const transient = c.verdict === "broken" && (c.reason === "refused" || c.reason === "reset");
@@ -330,6 +350,7 @@ export async function probeAddress(client, url, { headFirst = true, throttle = n
     const again = await send("GET", { browserLike: true });
     if (again.error) return fromError(again.error, true, null);
     const status = again.res.status;
+    if (again.res.challenge) return {verdict:'blocked',status,statusText:statusText(status),retried:true,firstStatus:null,reason:'challenge'};
     const verdict = classifyStatus(status);
     return { verdict, status, statusText: statusText(status), retried: true, firstStatus: null, reason: verdict === "blocked" && throttle && throttle.stopped ? "throttled" : undefined };
   }
@@ -348,6 +369,7 @@ export async function probeAddress(client, url, { headFirst = true, throttle = n
   if (second.error) return fromError(second.error, true, firstStatus);
 
   const status = second.res.status;
+  if (second.res.challenge) return {verdict:'blocked',status,statusText:statusText(status),retried:true,firstStatus,reason:'challenge'};
   const verdict = classifyStatus(status);
   return { verdict, status, statusText: statusText(status), retried: true, firstStatus, reason: verdict === "blocked" && throttle && throttle.stopped ? "throttled" : undefined };
 }

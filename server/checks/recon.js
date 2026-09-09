@@ -8,6 +8,7 @@
 
 import * as cheerio from "cheerio";
 import { config } from "../safety.js";
+import { isChallenge } from '../lib/challenge.js';
 
 const LATEST_MAJOR = { wordpress: 6, joomla: 5, drupal: 10 };
 
@@ -43,6 +44,13 @@ export async function runRecon(ctx) {
   }
 
   const html = await res.text().catch(() => "");
+  const challenge = res.challenge || isChallenge({status:res.status,headers:res.headers,bodyStart:html,url:res.finalUrl || url.href});
+  if (challenge) {
+    return {status:'inconclusive',reason:challenge.reason,findings:[],passes:[],facts:{reachable:true,statusCode:res.status,finalUrl:new URL(res.finalUrl || url.href),challenged:challenge.reason}};
+  }
+  if (!html.trim() || (res.contentType && !/text\/html|application\/xhtml\+xml/i.test(res.contentType))) {
+    return {status:'inconclusive',reason:'The homepage did not return usable HTML to inspect.',findings:[],passes:[],facts:{reachable:true,statusCode:res.status,finalUrl:new URL(res.finalUrl || url.href)}};
+  }
   const $ = cheerio.load(html || "");
   const finalUrl = new URL(res.finalUrl || url.href);
 

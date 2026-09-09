@@ -122,6 +122,13 @@ async function runStep(onEvent, key, ids, ctx, findings, passes, checksRun, cove
   for (const id of ids) {
     const fn = CHECK_FNS[id];
     if (!fn) continue;
+    if (ctx.facts?.challenged) {
+      const reason = 'A hosting bot challenge prevented further checks.';
+      coverage.push({check:id,status:'skipped',reason});
+      if (id === 'browser') Object.assign(browserInfo,{ran:false,skippedReason:reason});
+      if (id === 'agent') extra.agent = {ran:false,reason};
+      continue;
+    }
     await respectThrottle(ctx, onEvent, "the next check");
     const observed = await observeCheck(id, fn, ctx);
     const out = observed.out;

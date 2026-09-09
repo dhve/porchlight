@@ -9,6 +9,8 @@
     "node": ">=18"
   },
   "scripts": {
+    "test": "node --experimental-test-module-mocks --test tests/*.test.js && node --test --test-concurrency=1 test/*.test.js",
+    "evaluate-feedback": "node scripts/evaluate-feedback.js",
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "enable-browser": "npm install playwright && npx playwright install chromium"

@@ -10,7 +10,7 @@ const STATUSES = new Set(["completed", "skipped", "failed", "inconclusive"]);
 /** Capture a checker result without converting an exception into success. */
 export async function observeCheck(check, fn, ctx = {}) {
   const unresolvedRequests = new Set();
-  const observedCtx = ctx.client ? { ...ctx, client: observingClient(ctx.client, unresolvedRequests) } : ctx;
+  const observedCtx = ctx.client ? { ...ctx, client: observingClient(ctx.client, unresolvedRequests, ctx.facts) } : ctx;
   let out;
   try {
     out = await fn(observedCtx);
@@ -23,6 +23,7 @@ export async function observeCheck(check, fn, ctx = {}) {
   let status = STATUSES.has(out.status) ? out.status : "completed";
   if (out.skipped) status = "skipped";
   if (out.inconclusive || out.partial) status = "inconclusive";
+  if (out.challenged || out.agent?.challenged) status = 'inconclusive';
   const missingCertificate = check === "tls" && ctx.facts?.isHttps && !out.findings.length && !out.passes.length;
   if (status === "completed" && (unresolvedRequests.size || missingCertificate)) status = "inconclusive";
   if (check === "recon" && !out.facts?.reachable) status = "inconclusive";
@@ -52,22 +53,33 @@ export async function observeCheck(check, fn, ctx = {}) {
 // Several existing checks catch request errors themselves. Record unresolved
 // failures at the client boundary so an empty result cannot imply full coverage.
 // A later response to the same method/address clears a transient failure.
-function observingClient(client, unresolved) {
+function observingClient(client, unresolved, facts) {
   const observed = { ...client };
   for (const method of ["get", "head", "request"]) {
     if (typeof client[method] !== "function") continue;
     observed[method] = async (...args) => {
-      const verb = method === "request" ? String(args[1]?.method || "GET").toUpperCase() : method.toUpperCase();
-      const key = `${verb} ${String(args[0])}`;
+      const key = String(args[0]);
+      const markChallenge = response => {
+        if (!response?.challenge) return;
+        unresolved.add(key);
+        if (facts) facts.challenged = response.challenge.reason;
+      };
       try {
         const response = await client[method](...args);
         if (response?.status === 429 || response?.status === 503) unresolved.add(key);
         else unresolved.delete(key);
+        markChallenge(response);
         if (typeof response?.text !== "function") return response;
-        return { ...response, text: async (...textArgs) => {
-          try { return await response.text(...textArgs); }
+        const wrapped = { ...response, text: async (...textArgs) => {
+          try {
+            const body = await response.text(...textArgs);
+            wrapped.challenge = response.challenge;
+            markChallenge(response);
+            return body;
+          }
           catch (err) { unresolved.add(key); throw err; }
         } };
+        return wrapped;
       } catch (err) {
         unresolved.add(key);
         throw err;
