@@ -102,11 +102,14 @@ export async function runLinks(ctx) {
       id: "broken-images",
       category: "quality",
       severity: "watch",
-      title: `${n} image${n > 1 ? "s are" : " is"} broken`,
+      title: `${n} image${n > 1 ? "s" : ""} answered with an error`,
       meaning:
-        "Some images on this site don't load, so visitors see a broken-image icon instead. Most people browse on phones, and a missing photo is often the first thing they notice.",
-      fix: ["Re-upload the missing images, or fix the addresses pointing to them."],
-      who: "You can often do this yourself.",
+        `When Sutros asked for ${n === 1 ? "this image address" : "these image addresses"}, the server answered with an error status both times, once with standard browser headers. That usually means a picture is missing at that address, but it is what our checker received, not a measurement of every visitor's screen.`,
+      fix: [
+        "Open the page listed and look at that spot, then open the image address directly in a browser to see what it returns for you.",
+        "If it is missing for you too, re-upload the image or fix the address pointing to it.",
+      ],
+      who: "You can often check and fix this yourself.",
       evidence: buildEvidence(imgStats, "image", origin),
     });
   }
@@ -116,10 +119,13 @@ export async function runLinks(ctx) {
       id: "broken-links",
       category: "quality",
       severity: "watch",
-      title: `${n} link${n > 1 ? "s lead" : " leads"} nowhere`,
+      title: `${n} link${n > 1 ? "s" : ""} answered with an error`,
       meaning:
-        "Some links on this site point to pages that no longer exist. Visitors who click them get an error page instead, and a site with links that go nowhere looks unattended.",
-      fix: ["Update or remove the broken links so every one goes somewhere real."],
+        `When Sutros followed ${n === 1 ? "this link" : "these links"}, the destination answered with an error status both times, once with standard browser headers. That usually means the page is missing or failing at that address, but it is what our checker received, not a measurement of every visitor's experience.`,
+      fix: [
+        "Select each link on the page listed and see what it opens for you.",
+        "If it reaches an error for you too, update or remove the link.",
+      ],
       who: "You or your web person.",
       evidence: buildEvidence(linkStats, "link", origin),
     });
