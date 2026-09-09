@@ -102,3 +102,20 @@ test('an old refused connection is clarified before its original urgent claim an
   assert.equal(await contact.locator('.proof-why').isVisible(),true);
   assert.match(await contact.locator('.proof-why').innerText(),/The server returned a 5xx error for every visitor\./);
 });
+
+test('a successful recheck of an old connection failure says loaded without claiming a fix', async t => {
+  const page = await openReport(t);
+  await page.route(origin+'/api/reports/evidence13/retest', route => route.fulfill({json:{
+    checkedAt:new Date().toISOString(),scope:'http-availability',items:[{
+      url:'https://fixture.example/contact',status:200,statusText:'OK',
+      classification:'working',changed:null,comparisonReason:'unknown-baseline'}]}}));
+  const contact = page.locator('.finding').filter({has:page.locator('[data-finding="flow-error-contact"]')});
+  await contact.locator('details.proof > summary').click();
+  await contact.getByRole('button',{name:'Recheck these addresses',exact:true}).click();
+  await contact.locator('.retest-line').waitFor();
+  const text = await contact.locator('.retest-line').innerText();
+  assert.match(text,/Address loaded/);
+  assert.match(text,/200 OK/);
+  assert.match(text,/does not establish a change/);
+  assert.doesNotMatch(text,/unknown-baseline|same as|fixed|Could not confirm/);
+});

@@ -22,7 +22,7 @@ test('an old boolean result, timeout, or unknown baseline stays inconclusive', (
 });
 test('explicit working and broken observations keep their limited scope', () => {
   assert.equal(view.recheckState({classification:'working',changed:true}).label, 'Address loaded');
-  assert.equal(view.recheckState({classification:'broken',changed:false}).label, 'Address still failed');
+  assert.equal(view.recheckState({classification:'broken',changed:false}).label, 'This request received an error');
 });
 test('only supported HTTP availability findings offer a recheck', () => {
   const evidence = {items:[{url:'https://example.com/page',status:404}]};
@@ -60,5 +60,13 @@ test('malformed legacy evidence cannot stop report assessment', () => {
     assert.equal(view.retestSupported(finding), false);
     assert.equal(view.connectionLimitation(finding), null);
     assert.equal(view.assessment({grade:'B',score:85,findings:[finding]}).networkLimited, false);
+  }
+});
+
+test('recheck limitations explain the result without internal reason codes', () => {
+  for (const reason of ['unknown-baseline','response-read-failed','redirect-loop','not-allowed']) {
+    const state = view.recheckState({classification:'inconclusive',reason});
+    assert.notEqual(state.detail, reason);
+    assert.match(state.detail,/\s/);
   }
 });

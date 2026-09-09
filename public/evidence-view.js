@@ -14,13 +14,27 @@
   }
   function recheckState(item = {}) {
     if (!['working', 'broken'].includes(item.classification)) {
-      return { classification: 'inconclusive', label: 'Could not confirm', detail: item.reason || 'This request could not establish whether the address works or whether it changed.' };
+      const details = {
+        timeout: 'The request timed out before the checker could confirm the result.',
+        dns: 'The checker could not look up the website address from its network.',
+        refused: 'The connection was refused before an HTTP response arrived.',
+        reset: 'The connection closed before the checker could confirm the result.',
+        challenge: 'The response asked the checker to pass an access check.',
+        'response-read-failed': 'The checker received a response but could not finish reading it.',
+        'access-or-service-refusal': 'The response may reflect an access restriction or a temporary service limit.',
+        'not-allowed': 'The address was not requested because it did not pass the public-address check.',
+        'invalid-redirect': 'The response did not provide a usable address to follow.',
+        'redirect-loop': 'The response sent the checker through a repeating chain of addresses.',
+        'redirect-limit': 'The checker reached its limit for following redirected addresses.',
+        'unknown-baseline': 'The original check did not establish a result that can be compared with this request.',
+      };
+      return { classification: 'inconclusive', label: 'Could not confirm', detail: details[item.reason] || 'This request could not establish whether the address works or whether it changed.' };
     }
     const working = item.classification === 'working';
     return {
       classification: item.classification,
-      label: working ? 'Address loaded' : (item.changed === false ? 'Address still failed' : 'Address failed'),
-      detail: item.changed === true ? 'The availability result changed since the original check.' : item.changed === false ? 'The availability result is unchanged.' : 'The original result is not comparable.',
+      label: working ? 'Address loaded' : 'This request received an error',
+      detail: item.changed === true ? 'The availability result changed since the original check.' : item.changed === false ? 'The availability result is unchanged.' : 'This does not establish a change from the original check.',
     };
   }
   function evidenceItems(finding) {

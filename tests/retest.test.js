@@ -54,12 +54,28 @@ test('a timeout does not claim the original problem persisted', async () => {
   assert.equal(body.items[0].changed, null);
 });
 
-test('an unknown original status cannot produce a change verdict', async () => {
+test('a loaded address with an unknown original status cannot produce a change verdict', async () => {
   const f = finding({ evidence: { items: [{ url: address, status: 0, kind: 'link' }] } });
   const { body } = await run(f, { status: 200 });
-  assert.equal(body.items[0].classification, 'inconclusive');
+  assert.equal(body.items[0].classification, 'working');
+  assert.equal(body.items[0].ok, true);
   assert.equal(body.items[0].changed, null);
   assert.equal(body.items[0].status, 200);
+  assert.equal(body.items[0].comparisonReason, 'unknown-baseline');
+  assert.equal(body.verifierVersion, 'http-availability-v2');
+});
+
+test('an unknown original status preserves current HTTP errors and connection failure reasons', async () => {
+  const f = finding({evidence:{items:[{url:address,status:0,kind:'link'}]}});
+  const error = (await run(f, {status:404})).body.items[0];
+  assert.equal(error.classification, 'broken');
+  assert.equal(error.changed, null);
+  assert.equal(error.status, 404);
+  const timedOut = (await run(f, Object.assign(new Error('fixture timeout'),{code:'TIMEOUT'}))).body.items[0];
+  assert.equal(timedOut.classification, 'inconclusive');
+  assert.equal(timedOut.changed, null);
+  assert.equal(timedOut.reason, 'timeout');
+  assert.equal(timedOut.comparisonReason, 'unknown-baseline');
 });
 
 test('a redirect cycle cannot produce a working verdict', async () => {

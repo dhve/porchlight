@@ -10,7 +10,8 @@ const ID_RE = /^[A-Za-z0-9_-]{6,20}$/;
 const MAX_ITEMS = 8;
 const MAX_HOPS = 5;
 const SCOPE = 'http-availability';
-const VERSION = 'http-availability-v1';
+// Version 2 keeps the current measurement separate from comparison with the original.
+const VERSION = 'http-availability-v2';
 
 export function retestCapability(finding) {
   const id = String(finding?.id || '');
@@ -80,11 +81,11 @@ export function createRetestRouter({
         const previous = Number.isInteger(item.status) && item.status > 0 ? item.status : 0;
         const baseline = classify(previous);
         const unknownBaseline = baseline === 'inconclusive';
-        const classification = unknownBaseline ? 'inconclusive' : observation.classification;
-        const changed = classification === 'inconclusive' ? null : classification !== baseline;
+        const classification = observation.classification;
+        const changed = unknownBaseline || classification === 'inconclusive' ? null : classification !== baseline;
         items.push({ url: target.href, previous, ...observation, classification, changed,
           ok: classification === 'inconclusive' ? null : classification === 'working',
-          ...(unknownBaseline ? { reason: 'unknown-baseline' } : {}) });
+          ...(unknownBaseline ? { comparisonReason: 'unknown-baseline' } : {}) });
       }
       const result = { findingId, scope: SCOPE, checkedAt: new Date().toISOString(), verifierVersion: VERSION, items };
       let attemptId = null;
