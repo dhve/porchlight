@@ -179,7 +179,7 @@ for the workflow, input format, and limits.
 Run `npm test` to check privacy, coverage, signatures, feedback, evaluation, and
 browser rendering. The tests use a disposable local PostgreSQL cluster and
 Chromium; they do not scan production websites or invoke a model. The suite was
-verified on Node 25.6.1 and needs Node's experimental module-mock support.
+verified on Node 22.23.2 and needs Node's experimental module-mock support.
 
 ## Deploying to a VPS
 
