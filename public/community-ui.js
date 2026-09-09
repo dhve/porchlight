@@ -77,20 +77,10 @@
     const s = STATUS_LABEL[status] ? status : "open";
     return `<span class="cu-status cu-status-${esc(s)}">${esc(STATUS_LABEL[s])}</span>`;
   }
-  function personName(by) {
-    return (by && by.name && String(by.name).trim()) || "A Sutros member";
-  }
-  function avatar(by) {
-    const url = by && safeUrl(by.avatarUrl);
-    if (url) return `<img class="cu-avatar" src="${esc(url)}" alt="" referrerpolicy="no-referrer">`;
-    const initial = personName(by).trim().charAt(0).toUpperCase() || "S";
-    return `<span class="cu-avatar-fallback" aria-hidden="true">${esc(initial)}</span>`;
-  }
   function plural(n, one, many) {
     n = Number(n) || 0;
     return n + " " + (n === 1 ? one : many);
   }
-  function isAdmin() { return Boolean(S.user && S.user.role === "admin"); }
   function isVerified() { return Boolean(S.user && S.user.emailVerified); }
   async function copyText(text, btn, doneLabel) {
     const label = btn ? btn.textContent : "";
@@ -296,7 +286,7 @@ a.back-btn{text-decoration:none}
     const r = p.report || {};
     const findings = Array.isArray(r.topFindings) ? r.topFindings.slice(0, 3) : [];
     const note = p.note && String(p.note).trim();
-    const score = Number.isFinite(Number(r.score)) ? Number(r.score) : null;
+    const score = r.score != null && Number.isFinite(Number(r.score)) ? Number(r.score) : null;
     return `
       <article class="cu-card">
         <div class="cu-card-top">
@@ -305,7 +295,7 @@ a.back-btn{text-decoration:none}
             <h3><a href="/b/${esc(p.id)}" data-spa>${esc(r.target || "Unknown site")}</a></h3>
             <div class="cu-meta">
               ${score !== null ? `<span>Score ${esc(score)} of 100</span><span>&middot;</span>` : ""}
-              <span>Posted ${esc(ago(p.createdAt))} by ${esc(personName(p.by))}</span>
+              <span>Posted ${esc(ago(p.createdAt))}</span>
             </div>
           </div>
           ${statusPill(p.status)}
@@ -395,12 +385,13 @@ a.back-btn{text-decoration:none}
 
   /* ================= BULLETIN POST ================= */
   let currentPost = null; // { id, post, report, offers, intro }
+  let postRequest = 0;
 
   function canManagePost(post) {
-    return Boolean(S.user && post && post.by && (post.by.id === S.user.id || isAdmin()));
+    return Boolean(S.user && post && post.canManage);
   }
   function canDeleteOffer(offer, post) {
-    return Boolean(S.user && ((offer.by && offer.by.id === S.user.id) || canManagePost(post)));
+    return Boolean(S.user && offer && offer.canDelete);
   }
   function fallbackIntro(post, report) {
     const target = report.target || (post.report && post.report.target) || "your website";
@@ -439,7 +430,7 @@ a.back-btn{text-decoration:none}
       ? `<a href="mailto:${esc(email)}">${esc(email)}</a>`
       : url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(clip(url, 70))}</a>` : esc(clip(offer.contact, 70));
     return `<div class="cu-offer" data-offer="${esc(offer.id)}">
-      <div class="cu-offer-head">${avatar(offer.by)}<b>${esc(personName(offer.by))}</b><span>${esc(ago(offer.createdAt))}</span>
+      <div class="cu-offer-head"><b>Offer to help</b><span>${esc(ago(offer.createdAt))}</span>
         ${canDeleteOffer(offer, post) ? `<button type="button" class="cu-link-btn" data-remove-offer="${esc(offer.id)}">Remove</button>` : ""}
       </div>
       <p>${esc(offer.message)}</p>
@@ -464,12 +455,13 @@ a.back-btn{text-decoration:none}
     if (post.status === "resolved") {
       return `<p class="cu-inline-msg" style="margin:0">This one is marked resolved, so it does not need more offers right now.</p>`;
     }
-    const contactDefault = S.user.contact && (safeEmail(S.user.contact) || safeUrl(S.user.contact)) ? S.user.contact : (S.user.email || "");
+    const contactDefault = S.user.contact && (safeEmail(S.user.contact) || safeUrl(S.user.contact)) ? S.user.contact : "";
     return `<form class="cu-form" id="cuOfferForm" novalidate>
       <label class="field-label" for="cuOfferMsg">Your message</label>
       <textarea class="cu-textarea" id="cuOfferMsg" maxlength="1500" placeholder="Say what you can help with and roughly how. Keep it short and friendly." required></textarea>
-      <label class="field-label" for="cuOfferContact">How the site owner can reach you</label>
+      <label class="field-label" for="cuOfferContact">Public contact details</label>
       <input class="cu-input" id="cuOfferContact" type="text" maxlength="200" placeholder="Email or website link" value="${esc(contactDefault)}" required>
+      <p class="cu-hint">Your message and contact details will be public. Use an address or link you want to share with everyone.</p>
       <p class="err" id="cuOfferErr"></p>
       <div><button class="btn btn-primary" type="submit">Offer to help</button></div>
     </form>`;
@@ -486,6 +478,7 @@ a.back-btn{text-decoration:none}
   }
 
   function renderPost(id) {
+    const request = ++postRequest;
     currentPost = null;
     postScreen.innerHTML = shell(`
       <div class="report-top">${backLink("/bulletin", "Bulletin")}<span class="eyebrow" style="margin:0;">Community bulletin</span></div>
@@ -493,7 +486,7 @@ a.back-btn{text-decoration:none}
     S.showScreen("screen-bulletin-post");
     S.api("/api/bulletin/" + encodeURIComponent(id))
       .then((d) => {
-        if (!isActive(postScreen) || !location.pathname.startsWith("/b/" + id)) return;
+        if (request !== postRequest || !isActive(postScreen) || !location.pathname.startsWith("/b/" + id)) return;
         if (!d || !d.post) throw new Error("We couldn't find that post.");
         currentPost = { id, post: d.post, report: d.report || {}, offers: Array.isArray(d.offers) ? d.offers : [], intro: d.intro || "" };
         drawPost();
@@ -522,7 +515,7 @@ a.back-btn{text-decoration:none}
     if (tally.watch) chips.push(`<span class="tally watch"><span class="n">${esc(tally.watch)}</span> worth a look</span>`);
     const intro = data.intro || fallbackIntro(post, r);
     const note = post.note && String(post.note).trim();
-    const score = Number.isFinite(Number(r.score)) ? Number(r.score) : null;
+    const score = r.score != null && Number.isFinite(Number(r.score)) ? Number(r.score) : null;
 
     postScreen.innerHTML = shell(`
       <div class="report-top">
@@ -537,7 +530,7 @@ a.back-btn{text-decoration:none}
             <div class="cu-meta">
               ${score !== null ? `<span>Score ${esc(score)} of 100</span><span>&middot;</span>` : ""}
               ${r.scannedAt || r.created_at ? `<span>Checked ${esc(fmtDate(r.scannedAt || r.created_at))}</span><span>&middot;</span>` : ""}
-              <span>Posted ${esc(ago(post.createdAt))} by ${esc(personName(post.by))}</span>
+              <span>Posted ${esc(ago(post.createdAt))}</span>
             </div>
           </div>
           <div id="cuStatusWrap">${canManagePost(post) ? statusControlHtml(post) : statusPill(post.status)}</div>
@@ -707,7 +700,8 @@ a.back-btn{text-decoration:none}
         const reason = d.reason && String(d.reason);
         const target = rep.target || payload.target || "";
         const grade = rep.grade || payload.grade || "";
-        const score = Number.isFinite(Number(rep.score ?? payload.score)) ? Number(rep.score ?? payload.score) : null;
+        const rawScore = rep.score === undefined ? payload.score : rep.score;
+        const score = rawScore != null && Number.isFinite(Number(rawScore)) ? Number(rawScore) : null;
         const scannedAt = rep.scannedAt || payload.scannedAt || "";
         verifyScreen.innerHTML = shell(`
           <div class="report-top">${backLink("/", "Home")}<span class="eyebrow" style="margin:0;">Verify a checkup</span></div>
@@ -741,7 +735,10 @@ a.back-btn{text-decoration:none}
             <div class="cu-panel">
               <p class="eyebrow">How this works</p>
               <h3>What the badge means</h3>
-              <p>When a checkup finishes, Sutros signs the site name, grade, score, date, and the list of findings with its private key. This page checks that signature against the Sutros public key. If anything in the report changed after signing, the check fails.</p>
+              <p>${esc(d.scope || (Number(payload.v) >= 2
+                ? "Version 2 signs the public findings and evidence, summary, passes, coverage, assessment, and checker details, along with the site, result, and date."
+                : "Version 1 signs the site address, result, date, and finding IDs, severities, and titles. It does not cover evidence, screenshots, or explanatory text."))}</p>
+              <p>${esc(d.limits || "A valid signature confirms the origin and integrity of the signed fields. It does not establish that a finding is correct, and verification does not fetch current picture bytes.")}</p>
               <p>The public key is published at <a href="/.well-known/sutros-signing-key.json" target="_blank" rel="noopener" style="color:var(--brand);font-weight:600;">/.well-known/sutros-signing-key.json</a>, so anyone can run the same check.</p>
               ${valid ? `<a class="cu-badge-preview" href="/badge/${esc(rep.id || id)}.svg" target="_blank" rel="noopener"><img alt="Checked by SUTROS" src="/badge/${esc(rep.id || id)}.svg"></a>` : ""}
             </div>
@@ -779,7 +776,7 @@ a.back-btn{text-decoration:none}
       ${gradeChip(r.grade, true)}
       <div class="rb">
         <div class="t">${esc(r.target || "Unknown site")}</div>
-        <div class="m">${esc(ago(r.created_at || r.scannedAt))}${r.by && r.by.name ? ` &middot; by ${esc(r.by.name)}` : ""}</div>
+        <div class="m">${esc(ago(r.created_at || r.scannedAt))}</div>
       </div>
     </a>`;
   }
@@ -838,7 +835,7 @@ a.back-btn{text-decoration:none}
           : " You can read the latest checkup or run a fresh one."}</div>
         <div class="cu-dedup-row">
           ${gradeChip(latest.grade, true)}
-          <span class="cu-meta">Latest: grade ${esc(gradeLetter(latest.grade))}${Number.isFinite(Number(latest.score)) ? `, score ${esc(latest.score)}` : ""} &middot; ${esc(ago(latest.scannedAt))}${latest.by && latest.by.name ? ` by ${esc(latest.by.name)}` : ""}</span>
+          <span class="cu-meta">Latest: grade ${esc(gradeLetter(latest.grade))}${latest.score != null && Number.isFinite(Number(latest.score)) ? `, score ${esc(latest.score)}` : ""} &middot; ${esc(ago(latest.scannedAt))}</span>
         </div>
         <div class="cu-actions" style="margin-top:6px;">
           <button type="button" class="btn btn-primary btn-sm" data-dedup="view">View latest</button>
@@ -875,6 +872,9 @@ a.back-btn{text-decoration:none}
     if (!isVerified()) {
       return `<p class="cu-inline-msg" style="margin-top:0;">Please confirm your email first, then you can post. Check your inbox for the link from Sutros.</p>`;
     }
+    if (!report.canPostToBulletin) {
+      return `<p class="cu-inline-msg" style="margin-top:0;">Only the account that ran this checkup can post it to the bulletin. You can still share the public report link.</p>`;
+    }
     return `<form class="cu-form" id="cuPostForm" novalidate>
       <textarea class="cu-textarea" id="cuPostNote" maxlength="500" style="min-height:84px;" placeholder="Optional note, for example who runs this site or why it matters to you" aria-label="Note for the bulletin"></textarea>
       <p class="err" id="cuPostErr"></p>
@@ -894,7 +894,7 @@ a.back-btn{text-decoration:none}
       <div class="cu-panel" id="cuPostPanel">
         <p class="eyebrow">Community bulletin</p>
         <h3>Post this checkup to the community bulletin</h3>
-        <p>People who fix websites read the bulletin and offer to help. Posting shares this report and the public contact details found on the site.</p>
+        <p>People who fix websites read the bulletin and offer to help. Your note, this report, and the public contact details found on the site will be visible to everyone. Your account identity stays private.</p>
         <div id="cuPostBody">${postPanelBody(report)}</div>
       </div>
       <div class="cu-panel">
@@ -955,10 +955,22 @@ a.back-btn{text-decoration:none}
   };
 
   /* ---------------- react to sign in / sign out ---------------- */
+  let reportPermissionsRequest = 0;
   S.onUser(() => {
+    const request = ++reportPermissionsRequest;
     const reportScreen = document.getElementById("screen-report");
-    if (lastReport && reportScreen && isActive(reportScreen)) renderExtras(lastReport);
-    if (currentPost && isActive(postScreen)) drawPost();
+    if (lastReport && reportScreen && isActive(reportScreen)) {
+      const id = lastReport.id;
+      lastReport = { ...lastReport, canPostToBulletin: false };
+      renderExtras(lastReport);
+      if (id) S.api("/api/reports/" + encodeURIComponent(id)).then((report) => {
+        if (request !== reportPermissionsRequest || lastReport?.id !== id || !isActive(reportScreen)) return;
+        lastReport = report;
+        renderExtras(report);
+      }).catch(() => {});
+    }
+    const postPath = isActive(postScreen) && location.pathname.match(/^\/b\/([A-Za-z0-9_-]+)\/?$/);
+    if (postPath) renderPost(postPath[1]);
   });
 
   /* ---------------- boot ---------------- */

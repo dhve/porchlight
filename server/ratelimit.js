@@ -6,20 +6,19 @@
 // Usage:
 //   app.post("/api/auth/login", limit({ name: "login", max: 10, windowMs: 15 * 60_000, key: (req) => ip(req) }), handler)
 
-const buckets = new Map(); // `${name}:${key}` -> number[] (timestamps)
+const buckets = new Map(); // `${name}:${key}` -> { times: number[], windowMs }
 
 setInterval(() => {
   const now = Date.now();
-  for (const [k, times] of buckets) {
-    while (times.length && now - times[0] > 60 * 60_000) times.shift();
+  for (const [k, { times, windowMs }] of buckets) {
+    while (times.length && now - times[0] >= windowMs) times.shift();
     if (!times.length) buckets.delete(k);
   }
 }, 5 * 60_000).unref();
 
-/** Client IP, honoring the first X-Forwarded-For hop when behind Caddy. */
+/** Client IP resolved by Express under the server's configured trusted proxies. */
 export function ip(req) {
-  // Express resolves req.ip from the proxy chain under app.set("trust proxy", 1),
-  // so a client cannot pick its own bucket by sending X-Forwarded-For.
+  // Express resolves the address under index.js's trusted proxy configuration.
   return req.ip || req.socket?.remoteAddress || "unknown";
 }
 
@@ -33,14 +32,14 @@ export function ip(req) {
 export function consume(name, key, max, windowMs) {
   const id = `${name}:${key}`;
   const now = Date.now();
-  const times = buckets.get(id) || [];
-  while (times.length && now - times[0] > windowMs) times.shift();
+  const times = buckets.get(id)?.times || [];
+  while (times.length && now - times[0] >= windowMs) times.shift();
   if (times.length >= max) {
-    buckets.set(id, times);
+    buckets.set(id, { times, windowMs });
     return { ok: false, remaining: 0, retryAfterMs: windowMs - (now - times[0]) };
   }
   times.push(now);
-  buckets.set(id, times);
+  buckets.set(id, { times, windowMs });
   return { ok: true, remaining: max - times.length, retryAfterMs: 0 };
 }
 
@@ -48,7 +47,7 @@ export function consume(name, key, max, windowMs) {
 export function remaining(name, key, max, windowMs) {
   const id = `${name}:${key}`;
   const now = Date.now();
-  const times = (buckets.get(id) || []).filter((t) => now - t <= windowMs);
+  const times = (buckets.get(id)?.times || []).filter((t) => now - t < windowMs);
   return Math.max(0, max - times.length);
 }
 

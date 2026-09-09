@@ -4,8 +4,7 @@
 //  - GET  /api/checkup/stream  live progress + report over Server-Sent Events
 //  - POST /api/checkup         the same checkup, returned as one JSON response
 //
-// Both endpoints require an explicit consent flag and pass every target through
-// the safety guards before any request is made.
+// Both endpoints validate public input and pass targets through the safety guards.
 
 import express from "express";
 import dns from "node:dns/promises";
@@ -19,7 +18,8 @@ const ROOT = path.resolve(__dirname, "..");
 loadEnv(path.join(ROOT, ".env"));
 
 // Imported after env is loaded so the modules see OPENAI_API_KEY.
-const { normalizeUrl, resolveTarget } = await import("./safety.js");
+const { normalizePublicUrl, resolveTarget } = await import("./safety.js");
+const { publicReport } = await import("./publicReport.js");
 const { runCheckup } = await import("./pipeline.js");
 const { llmEnabled, modelName } = await import("./llm.js");
 const { initDb, dbEnabled, getReport, listReports, saveNomination, addHelper, listHelpers } = await import("./db.js");
@@ -38,6 +38,8 @@ const { feedbackRouter, ensureFeedbackSchema } = await import("./feedback.js");
 const app = express();
 app.set("trust proxy", ["loopback", "172.16.0.0/12"]);
 app.use(express.json({ limit: "16kb" }));
+// Account state and viewer-specific capabilities must never enter shared caches.
+app.use("/api", (_req, res, next) => { res.set("Cache-Control", "private, no-store"); next(); });
 app.use(setupRouter(ROOT));
 app.use(attachUser);
 app.use(["/api", "/auth"], csrfGuard);
@@ -91,23 +93,23 @@ async function checkupGate(req, host) {
     if (!req.user) return { status: 401, error: "Please sign in to run a checkup." };
     if (!req.user.emailVerified) return { status: 403, error: "Please confirm your email first.", code: "unverified" };
     const r = consume("checkups", req.user.id, 20, 24 * 60 * 60_000);
-    if (!r.ok) return { status: 429, error: "You've reached today's limit of 20 checkups. Try again tomorrow." };
+    if (!r.ok) return { status: 429, error: "This account has reached its limit of 20 checkups in 24 hours. Please wait before trying again.", retryAfterMs: r.retryAfterMs };
   } else if (req.user) {
     const r = consume("checkups", req.user.id, 30, 24 * 60 * 60_000);
-    if (!r.ok) return { status: 429, error: "You've reached today's limit of 30 checkups. Try again tomorrow." };
+    if (!r.ok) return { status: 429, error: "This account has reached its limit of 30 checkups in 24 hours. Please wait before trying again.", retryAfterMs: r.retryAfterMs };
   } else {
     // No account needed. Anonymous checkups are paced per connection, and everyone shares a ceiling
     // so a burst of bots cannot run up the bill.
     const r = consume("checkups-ip", req.ip || "x", 12, 60 * 60_000);
-    if (!r.ok) return { status: 429, error: "That is a lot of checkups from one connection. Please wait a little, or sign in for a higher limit." };
+    if (!r.ok) return { status: 429, error: "This connection has reached its limit of 12 checkups in an hour. Please wait before trying again.", retryAfterMs: r.retryAfterMs };
     const g = consume("checkups-anon-all", "all", 150, 60 * 60_000);
-    if (!g.ok) return { status: 429, error: "Sutros is busy right now. Please try again in a few minutes, or sign in." };
+    if (!g.ok) return { status: 429, error: "Sutros has reached its shared limit for checkups without an account. Please wait before trying again.", retryAfterMs: g.retryAfterMs };
   }
   if (await optedOut(host)) return { status: 403, error: "This site's owner has asked not to be checked by Sutros." };
   try {
     const latest = (await reportsForHost(host, 1))[0];
     if (latest && Date.now() - new Date(latest.created_at).getTime() < 10 * 60_000) {
-      return { status: 429, error: "This site was checked less than 10 minutes ago. Here is the latest report.", latestReportId: latest.id };
+      return { status: 429, error: "This site was checked less than 10 minutes ago. Here is the latest report.", latestReportId: latest.id, retryAfterMs: 10 * 60_000 - (Date.now() - new Date(latest.created_at).getTime()) };
     }
   } catch {}
   return null;
@@ -134,14 +136,15 @@ app.get("/api/checkup/stream", async (req, res) => {
 
   res.set({
     "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
+    "Cache-Control": "private, no-store",
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
   });
   res.flushHeaders?.();
 
   const send = (event, data) => {
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    const payload = event === "report" ? publicReport(data, req.user) : data;
+    res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
   };
 
   if (!target.ok) {
@@ -149,7 +152,7 @@ app.get("/api/checkup/stream", async (req, res) => {
     return res.end();
   }
   const gate = await checkupGate(req, target.display);
-  if (gate) { send("error", { message: gate.error, code: gate.code, latestReportId: gate.latestReportId }); return res.end(); }
+  if (gate) { send("error", { message: gate.error, code: gate.code, latestReportId: gate.latestReportId, retryAfterSeconds: gate.retryAfterMs == null ? undefined : Math.ceil(gate.retryAfterMs / 1000) }); return res.end(); }
   target.userId = req.user ? req.user.id : null;
 
   let closed = false;
@@ -171,11 +174,15 @@ app.post("/api/checkup", async (req, res) => {
   const target = await prepare(req.body?.url, req.body?.consent);
   if (!target.ok) return res.status(400).json({ error: target.error });
   const gate = await checkupGate(req, target.display);
-  if (gate) return res.status(gate.status).json({ error: gate.error, code: gate.code, latestReportId: gate.latestReportId });
+  if (gate) {
+    const retryAfterSeconds = gate.retryAfterMs == null ? undefined : Math.ceil(gate.retryAfterMs / 1000);
+    if (retryAfterSeconds != null) res.set("Retry-After", String(retryAfterSeconds));
+    return res.status(gate.status).json({ error: gate.error, code: gate.code, latestReportId: gate.latestReportId, retryAfterSeconds });
+  }
   target.userId = req.user ? req.user.id : null;
   try {
     const report = await runCheckup(target, () => {});
-    res.json(report);
+    res.json(publicReport(report, req.user));
   } catch (err) {
     console.error("checkup error:", err);
     res.status(500).json({ error: "Something went wrong during the checkup. Please try again." });
@@ -188,7 +195,7 @@ app.get("/api/checks", async (req, res) => {
   if (!host) return res.status(400).json({ error: "Missing host." });
   try {
     const rows = await reportsForHost(host, 10);
-    res.json({ host, count: rows.length, reports: rows.map((r) => ({ id: r.id, grade: r.grade, score: r.score, scannedAt: r.created_at, by: { name: r.by_name || null } })) });
+    res.json({ host, count: rows.length, reports: rows.map((r) => publicReport({ id: r.id, grade: r.grade, score: r.score, scannedAt: r.created_at, user_id: r.user_id }, req.user)) });
   } catch (err) {
     console.error("checks:", err);
     res.status(500).json({ error: "Could not look up that site." });
@@ -201,7 +208,7 @@ app.get("/api/reports", async (req, res) => {
     if (req.query.host) opts.host = normHost(req.query.host);
     if (req.query.mine === "1") { if (!req.user) return res.status(401).json({ error: "Please sign in." }); opts.userId = req.user.id; }
     const rows = await listReports(parseInt(req.query.limit, 10) || 20, opts);
-    res.json({ db: dbEnabled(), reports: rows.map((r) => ({ id: r.id, target: r.target, grade: r.grade, score: r.score, created_at: r.created_at, by: { name: r.by_name || null } })) });
+    res.json({ db: dbEnabled(), reports: rows.map((r) => publicReport(r, req.user)) });
   } catch (err) {
     console.error("list reports:", err);
     res.status(500).json({ error: "Could not list reports." });
@@ -213,7 +220,7 @@ app.get("/api/reports/:id", async (req, res) => {
   try {
     const report = await getReport(req.params.id);
     if (!report) return res.status(404).json({ error: "We couldn't find that report." });
-    res.json(report);
+    res.json(publicReport(report, req.user));
   } catch (err) {
     console.error("get report:", err);
     res.status(500).json({ error: "Could not load that report." });
@@ -222,13 +229,13 @@ app.get("/api/reports/:id", async (req, res) => {
 
 // Share links render the app, which then fetches the saved report by id.
 app.get("/r/:id", (_req, res) => res.sendFile(path.join(ROOT, "public", "index.html")));
-app.get(["/login", "/signup", "/forgot", "/reset", "/account", "/bulletin", "/b/:id", "/verify/:id", "/auth-error"], (_req, res) => res.sendFile(path.join(ROOT, "public", "index.html")));
+app.get(["/login", "/signup", "/forgot", "/reset", "/account", "/bulletin", "/b/:id", "/verify/:id", "/review", "/auth-error"], (_req, res) => res.sendFile(path.join(ROOT, "public", "index.html")));
 app.get("/privacy", (_req, res) => res.sendFile(path.join(ROOT, "public", "privacy.html")));
 app.get("/terms", (_req, res) => res.sendFile(path.join(ROOT, "public", "terms.html")));
 
 // ---- nominate a local business (records it, returns a shareable invite) ----
 app.post("/api/nominate", async (req, res) => {
-  const norm = normalizeUrl(req.body?.url);
+  const norm = normalizePublicUrl(req.body?.url);
   if (!norm.ok) return res.status(400).json({ error: norm.error });
   const note = String(req.body?.note || "").slice(0, 500) || null;
   try {
@@ -293,7 +300,7 @@ app.listen(PORT, () => {
 /** Validate consent + URL + scope. Returns {ok, url, display} or {ok:false, error}. */
 async function prepare(rawUrl, consent) {
   void consent; // accepted for compatibility; checkups are public and read-only, no ownership claim is required
-  const norm = normalizeUrl(rawUrl);
+  const norm = normalizePublicUrl(rawUrl);
   if (!norm.ok) return norm;
   const scope = await resolveTarget(norm.url);
   if (!scope.ok) return scope;

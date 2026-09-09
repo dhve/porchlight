@@ -2,7 +2,7 @@
 // The community bulletin: people post a finished checkup so others can offer
 // to help fix what came up. Posts point at a saved report; offers hang off a
 // post. List views only carry severity and title for each finding, never the
-// evidence. The detail view returns the stored report as is.
+// evidence. Detail views use the same public report projection as report routes.
 //
 // Routes (all JSON):
 //   GET    /api/bulletin?sort=new|worst&page=1
@@ -15,6 +15,7 @@
 import express from "express";
 import { sql, newId, dbEnabled } from "./db.js";
 import { requireAuth, requireVerified, csrfGuard } from "./auth.js";
+import { publicReport } from "./publicReport.js";
 
 export const bulletinRouter = express.Router();
 
@@ -38,9 +39,9 @@ function appUrl() {
 // severity and title only, so evidence never leaves the database for list views.
 const POST_FIELDS = `
   p.id, p.note, p.status, p.created_at, p.updated_at, p.user_id,
-  u.name AS by_name, u.avatar_url AS by_avatar,
-  r.id AS report_id, r.target, r.grade, r.score,
+  r.id AS report_id, r.user_id AS report_user_id, r.target, r.grade, r.score,
   r.report->'tally' AS tally,
+  r.report->'assessment' AS assessment,
   r.report->>'summary' AS summary,
   COALESCE(r.contact, r.report->'contact') AS contact,
   (SELECT COALESCE(jsonb_agg(jsonb_build_object('severity', f.value->>'severity', 'title', f.value->>'title') ORDER BY f.ord), '[]'::jsonb)
@@ -54,8 +55,7 @@ const POST_FIELDS = `
 
 const POST_FROM = `
   FROM bulletin_posts p
-  JOIN reports r ON r.id = p.report_id
-  LEFT JOIN users u ON u.id = p.user_id`;
+  JOIN reports r ON r.id = p.report_id`;
 
 /**
  * Select posts with the shared projection. `$POSTFIELDS_SEV` is replaced with
@@ -109,39 +109,37 @@ function shapeTopFindings(list) {
     .slice(0, 3);
 }
 
-function shapeBy(id, name, avatarUrl) {
-  return { id: id || null, name: name || null, avatarUrl: avatarUrl || null };
-}
-
-function shapePost(row) {
+function shapePost(row, viewer = null) {
   return {
     id: row.id,
     note: row.note || null,
     status: row.status,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
-    by: shapeBy(row.user_id, row.by_name, row.by_avatar),
+    canManage: Boolean(viewer?.id && (row.user_id === viewer.id || isAdmin(viewer))),
     offersCount: Number(row.offers_count) || 0,
-    report: {
+    report: publicReport({
       id: row.report_id,
+      userId: row.report_user_id || null,
       target: row.target,
       grade: row.grade,
-      score: Number(row.score),
+      score: row.score == null ? null : Number(row.score),
       tally: shapeTally(row.tally),
+      assessment: row.assessment || undefined,
       summary: row.summary || "",
       topFindings: shapeTopFindings(row.top_findings),
       contact: shapeContact(row.contact),
-    },
+    }, viewer),
   };
 }
 
-function shapeOffer(row) {
+function shapeOffer(row, viewer = null, postUserId = null) {
   return {
     id: row.id,
     message: row.message,
     contact: row.contact,
     createdAt: iso(row.created_at),
-    by: shapeBy(row.user_id, row.by_name, row.by_avatar),
+    canDelete: Boolean(viewer?.id && (row.user_id === viewer.id || postUserId === viewer.id || isAdmin(viewer))),
   };
 }
 
@@ -314,7 +312,7 @@ bulletinRouter.get(
     const order = sort === "worst" ? "r.score ASC, p.created_at DESC, p.id" : "p.created_at DESC, p.id";
     const rows = await selectPosts({ order, limit: PAGE_SIZE + 1, offset: (page - 1) * PAGE_SIZE });
     const hasMore = rows.length > PAGE_SIZE;
-    res.json({ posts: rows.slice(0, PAGE_SIZE).map(shapePost), page, hasMore, sort, db: true });
+    res.json({ posts: rows.slice(0, PAGE_SIZE).map((row) => shapePost(row, req.user)), page, hasMore, sort, db: true });
   })
 );
 
@@ -328,18 +326,19 @@ bulletinRouter.get(
     const row = await loadPost(id, true);
     if (!row) return res.status(404).json({ error: "We couldn't find that bulletin post." });
 
-    const post = shapePost(row);
-    const report = row.full_report && typeof row.full_report === "object" ? { ...row.full_report, id: row.report_id } : null;
+    const post = shapePost(row, req.user);
+    const report = row.full_report && typeof row.full_report === "object"
+      ? publicReport({ ...row.full_report, id: row.report_id, userId: row.report_user_id || null }, req.user) : null;
     const offerRows = await sql(
-      `SELECT o.id, o.message, o.contact, o.created_at, o.user_id, u.name AS by_name, u.avatar_url AS by_avatar
-         FROM bulletin_offers o LEFT JOIN users u ON u.id = o.user_id
+      `SELECT o.id, o.message, o.contact, o.created_at, o.user_id
+         FROM bulletin_offers o
         WHERE o.post_id = $1
         ORDER BY o.created_at ASC, o.id
         LIMIT $2`,
       [id, OFFERS_SHOWN]
     );
-    const intro = buildIntro({ post, report, writerName: req.user ? req.user.name : null });
-    res.json({ post, report, offers: offerRows.map(shapeOffer), intro });
+    const intro = buildIntro({ post, report, writerName: null });
+    res.json({ post, report, offers: offerRows.map((offer) => shapeOffer(offer, req.user, row.user_id)), intro });
   })
 );
 
@@ -393,7 +392,7 @@ bulletinRouter.post(
     }
 
     const row = await loadPost(id);
-    res.status(201).json({ post: shapePost(row) });
+    res.status(201).json({ post: shapePost(row, req.user) });
   })
 );
 
@@ -419,7 +418,7 @@ bulletinRouter.patch(
 
     await sql(`UPDATE bulletin_posts SET status = $2, updated_at = now() WHERE id = $1`, [id, status]);
     const row = await loadPost(id);
-    res.json({ post: shapePost(row) });
+    res.json({ post: shapePost(row, req.user) });
   })
 );
 
@@ -444,7 +443,7 @@ bulletinRouter.post(
       return res.status(400).json({ error: "Contact should be an email address or a link that starts with http." });
     }
 
-    const posts = await sql(`SELECT id FROM bulletin_posts WHERE id = $1`, [id]);
+    const posts = await sql(`SELECT id, user_id FROM bulletin_posts WHERE id = $1`, [id]);
     if (!posts.length) return res.status(404).json({ error: "We couldn't find that bulletin post." });
 
     // One offer per person per post. They can remove theirs and write a new one.
@@ -469,12 +468,12 @@ bulletinRouter.post(
       [offerId, id, req.user.id, message, contact]
     );
     const rows = await sql(
-      `SELECT o.id, o.message, o.contact, o.created_at, o.user_id, u.name AS by_name, u.avatar_url AS by_avatar
-         FROM bulletin_offers o LEFT JOIN users u ON u.id = o.user_id
+      `SELECT o.id, o.message, o.contact, o.created_at, o.user_id
+         FROM bulletin_offers o
         WHERE o.id = $1`,
       [offerId]
     );
-    res.status(201).json({ offer: shapeOffer(rows[0]) });
+    res.status(201).json({ offer: shapeOffer(rows[0], req.user, posts[0].user_id) });
   })
 );
 

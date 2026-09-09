@@ -268,10 +268,10 @@
       <p class="au-links"><a href="/forgot" data-link>Forgot your password?</a></p>
     </form>
     <form class="au-form" id="auSignupForm" novalidate hidden>
-      <div><label for="auSignupName">Name <span class="au-fine">(optional, shown next to your checkups)</span></label><input id="auSignupName" type="text" autocomplete="name" maxlength="80"></div>
+      <div><label for="auSignupName">Name <span class="au-fine">(optional, private account detail)</span></label><input id="auSignupName" type="text" autocomplete="name" maxlength="80"></div>
       <div><label for="auSignupEmail">Email</label><input id="auSignupEmail" type="email" autocomplete="email" inputmode="email" required></div>
       ${pwFieldHtml("auSignupPw", "new-password", "Password")}
-      <p class="au-fine">Use at least 10 characters. Your email stays private; only your name appears on checkups you run.</p>
+      <p class="au-fine">Use at least 10 characters. Your account name and email are not published with checkups or bulletin posts.</p>
       <input class="au-hp" name="website" type="text" tabindex="-1" autocomplete="off" aria-hidden="true">
       <p class="err" id="auSignupErr"></p>
       <button class="btn btn-primary" type="submit" id="auSignupBtn">Create account</button>
@@ -637,11 +637,11 @@
               </div>
             </div>
             <h3>Profile</h3>
-            <p class="au-sub">Your name shows next to checkups you run and posts you make. The rest is optional.</p>
+            <p class="au-sub">These are private account details. When you offer help, you choose which contact details to make public.</p>
             <form class="au-form au-inline" id="auProfileForm" novalidate>
               <div><label for="auPName">Name</label><input id="auPName" type="text" maxlength="80" autocomplete="name" value="${esc(user.name || "")}"></div>
               <div><label for="auPAbout">About <span class="au-fine">(optional)</span></label><textarea id="auPAbout" maxlength="400" placeholder="A line or two about you or your organization">${esc(user.about || "")}</textarea></div>
-              <div><label for="auPContact">Contact <span class="au-fine">(optional, shown when you offer help)</span></label><input id="auPContact" type="text" maxlength="200" placeholder="Email or website link" value="${esc(user.contact || "")}"></div>
+              <div><label for="auPContact">Contact <span class="au-fine">(optional, suggested when you offer help)</span></label><input id="auPContact" type="text" maxlength="200" placeholder="Email or website link" value="${esc(user.contact || "")}"></div>
               <p class="err" id="auProfileErr"></p>
               <button class="btn btn-primary" type="submit" id="auProfileBtn">Save profile</button>
             </form>

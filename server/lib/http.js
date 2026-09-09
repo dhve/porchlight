@@ -62,6 +62,7 @@ export function createClient() {
 
     const controller = new AbortController();
     let timedOut = false;
+    let handedOff = false;
     const timer = setTimeout(() => {
       timedOut = true;
       controller.abort();
@@ -75,6 +76,8 @@ export function createClient() {
         headers: { ...(browserLike ? BROWSER_HEADERS : BOT_HEADERS), ...headers },
       });
       if (res.status === 429) throttle = { at: Date.now(), retryAfterMs: parseRetryAfter(res.headers.get("retry-after")), url: String(url).slice(0, 200) };
+      handedOff = true;
+      if (!res.body) clearTimeout(timer);
       return {
         ok: res.ok,
         status: res.status,
@@ -85,12 +88,19 @@ export function createClient() {
         contentType: res.headers.get("content-type") || "",
         retryAfterMs: parseRetryAfter(res.headers.get("retry-after")),
         async text(limitBytes = 600_000) {
-          const buf = await res.arrayBuffer();
-          const slice = buf.byteLength > limitBytes ? buf.slice(0, limitBytes) : buf;
-          return new TextDecoder("utf-8").decode(slice);
+          try {
+            if (timedOut) throw timeoutError();
+            return await readBoundedBody(res, limitBytes);
+          } catch (err) {
+            if (timedOut) throw timeoutError();
+            throw err;
+          } finally {
+            clearTimeout(timer);
+          }
         },
         /** Cancel the body stream so the connection is released without reading it. */
         discard() {
+          clearTimeout(timer);
           try {
             const p = res.body && !res.bodyUsed ? res.body.cancel() : null;
             if (p && typeof p.catch === "function") p.catch(() => {});
@@ -99,10 +109,7 @@ export function createClient() {
       };
     } catch (err) {
       if (timedOut) {
-        const e = new Error("The request timed out.");
-        e.code = "TIMEOUT";
-        e.name = "TimeoutError";
-        throw e;
+        throw timeoutError();
       }
       // Surface the low-level reason (ENOTFOUND, ECONNREFUSED, ...) so callers can classify it.
       if (err && !err.code) {
@@ -113,7 +120,8 @@ export function createClient() {
       }
       throw err;
     } finally {
-      clearTimeout(timer);
+      // A successful response keeps its deadline until its body is read or discarded.
+      if (!handedOff) clearTimeout(timer);
     }
   }
 
@@ -125,6 +133,40 @@ export function createClient() {
     /** The most recent 429 answer seen by this client, or null. */
     throttleInfo: () => throttle,
   };
+}
+
+function timeoutError() {
+  const error = new Error("The request timed out.");
+  error.code = "TIMEOUT";
+  error.name = "TimeoutError";
+  return error;
+}
+
+/** Read only the requested prefix, then cancel the remainder of the response. */
+async function readBoundedBody(response, limitBytes) {
+  if (!response.body) return "";
+  const size = Number(limitBytes);
+  const limit = Number.isFinite(size) ? Math.max(0, Math.floor(size)) : 600_000;
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  let done = false;
+  try {
+    while (total < limit) {
+      const next = await reader.read();
+      if (next.done) { done = true; break; }
+      const chunk = next.value.slice(0, limit - total);
+      chunks.push(chunk);
+      total += chunk.byteLength;
+    }
+  } finally {
+    if (!done) await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return new TextDecoder("utf-8").decode(bytes);
 }
 
 /** Retry-After as milliseconds: seconds or an HTTP date. Null when absent or unreadable. */

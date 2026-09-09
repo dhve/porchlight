@@ -58,6 +58,22 @@ export function normalizeUrl(input) {
   return { ok: true, url, display: url.hostname.replace(/^www\./, "") };
 }
 
+/** Public entry points must not publish a pasted login or private query URL.
+ * Internal crawls still use normalizeUrl so normal site query links can be tested. */
+export function normalizePublicUrl(input) {
+  const result = normalizeUrl(input);
+  if (!result.ok) return result;
+  const { url } = result;
+  if (url.username || url.password) {
+    return { ok: false, error: "Use a public website address without a username or password. Checkup addresses are public." };
+  }
+  if (url.search) {
+    return { ok: false, error: "Use a public website address without the query after ?. Queries can contain private information, and checkup addresses are public." };
+  }
+  url.hash = "";
+  return result;
+}
+
 /**
  * Resolve the hostname and confirm every address it points to is public.
  * Prevents the scanner from being aimed at localhost, the local network, or

@@ -28,7 +28,7 @@ export async function initDb() {
       target     TEXT NOT NULL,
       url        TEXT NOT NULL,
       grade      TEXT NOT NULL,
-      score      INTEGER NOT NULL,
+      score      INTEGER,
       report     JSONB NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
@@ -96,6 +96,7 @@ export async function initDb() {
     )`);
   // ---- reports: ownership, dedup, attestation, contact hints ----
   for (const stmt of [
+    `ALTER TABLE reports ALTER COLUMN score DROP NOT NULL`,
     `ALTER TABLE reports ADD COLUMN IF NOT EXISTS user_id TEXT`,
     `ALTER TABLE reports ADD COLUMN IF NOT EXISTS target_host TEXT`,
     `ALTER TABLE reports ADD COLUMN IF NOT EXISTS signature TEXT`,
@@ -162,17 +163,17 @@ export async function saveReport(report) {
 export async function reportsForHost(host, limit = 10) {
   if (!pool) return [];
   const { rows } = await pool.query(
-    `SELECT r.id, r.grade, r.score, r.created_at, u.name AS by_name
-       FROM reports r LEFT JOIN users u ON u.id = r.user_id
+    `SELECT r.id, r.grade, r.score, r.created_at, r.user_id
+       FROM reports r
       WHERE r.target_host = $1 ORDER BY r.created_at DESC LIMIT $2`,
     [host, limit]);
   return rows;
 }
 export async function getReport(id) {
   if (!pool) return null;
-  const { rows } = await pool.query(`SELECT id, report FROM reports WHERE id = $1`, [id]);
+  const { rows } = await pool.query(`SELECT id, report, user_id FROM reports WHERE id = $1`, [id]);
   if (!rows.length) return null;
-  return { ...rows[0].report, id: rows[0].id };
+  return { ...rows[0].report, id: rows[0].id, userId: rows[0].user_id || null };
 }
 export async function listReports(limit = 20, { host, userId } = {}) {
   if (!pool) return [];
@@ -181,8 +182,8 @@ export async function listReports(limit = 20, { host, userId } = {}) {
   if (userId) { params.push(userId); where.push(`r.user_id = $${params.length}`); }
   params.push(Math.max(1, Math.min(100, limit)));
   const { rows } = await pool.query(
-    `SELECT r.id, r.target, r.grade, r.score, r.created_at, u.name AS by_name
-       FROM reports r LEFT JOIN users u ON u.id = r.user_id
+    `SELECT r.id, r.target, r.grade, r.score, r.created_at, r.user_id
+       FROM reports r
        ${where.length ? "WHERE " + where.join(" AND ") : ""}
       ORDER BY r.created_at DESC LIMIT $${params.length}`, params);
   return rows;
