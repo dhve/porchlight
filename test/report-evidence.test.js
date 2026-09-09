@@ -47,13 +47,14 @@ test.after(async () => {
   await browser?.close();
   if (server) {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });
-async function openReport(t) {
+async function openReport(t, fixture = report) {
   const page = await browser.newPage({viewport:{width:390,height:844}});
   t.after(()=>page.close());
   await page.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
+  if (fixture !== report) await page.route(origin+'/api/reports/evidence13', route => route.fulfill({json:fixture}));
   await page.goto(origin+'/r/evidence13');
   await page.locator('#screen-report.is-active').waitFor();
-  await page.locator('.finding').first().waitFor();
+  await page.locator('.finding, .minor-notes').first().waitFor();
   return page;
 }
 
@@ -70,6 +71,15 @@ test('all recorded image addresses are available beyond the old eight-line cutof
   assert.equal(await card.locator('.proof-addresses').getByText('<img src=x onerror=alert(1)>',{exact:true}).isVisible(),true);
   assert.equal(await card.getByText('and 5 more',{exact:true}).count(),0);
   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
+});
+
+test('a minor saved finding with malformed item data still renders', async t => {
+  const fixture = {...report,findings:[{id:'broken-links',severity:'minor',category:'quality',
+    title:'Recorded minor note',meaning:'Original explanation',
+    evidence:{items:{url:'https://fixture.example/a',status:0}}}]};
+  const page = await openReport(t, fixture);
+  await page.locator('.minor-notes > summary').click();
+  assert.equal(await page.getByText('Recorded minor note',{exact:true}).isVisible(),true);
 });
 
 test('an old refused connection is clarified before its original urgent claim and grade', async t => {

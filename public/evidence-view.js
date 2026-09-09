@@ -23,16 +23,20 @@
       detail: item.changed === true ? 'The availability result changed since the original check.' : item.changed === false ? 'The availability result is unchanged.' : 'The original result is not comparable.',
     };
   }
+  function evidenceItems(finding) {
+    return Array.isArray(finding?.evidence?.items) ? finding.evidence.items : [];
+  }
   function retestSupported(finding = {}) {
+    if (!finding) return false;
     if (finding.source === 'agent' || String(finding.id).startsWith('agent-')) return false;
     if (!/^(broken-links|broken-images|flow-(error|missing)-.+)$/.test(String(finding.id))) return false;
-    return (finding.evidence?.items || []).some(item => {
+    return evidenceItems(finding).some(item => {
       try { return /^https?:$/.test(new URL(item.url).protocol); } catch { return false; }
     });
   }
   function connectionLimitation(finding = {}) {
     if (!retestSupported(finding)) return null;
-    const failures = finding.evidence.items.filter(item => item && item.status === 0);
+    const failures = evidenceItems(finding).filter(item => item && item.status === 0);
     if (!failures.length) return null;
     const title = finding.id === 'broken-images' ? 'Image connections need verification'
       : finding.id === 'broken-links' ? 'Link connections need verification' : 'The page connection needs verification';

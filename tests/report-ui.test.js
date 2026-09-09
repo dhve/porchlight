@@ -53,3 +53,12 @@ test('actual HTTP errors keep their ordinary assessment and separate security fi
   assert.equal(Boolean(view.assessment(report).networkLimited), false);
   assert.equal(view.assessment(report).incomplete, false);
 });
+
+test('malformed legacy evidence cannot stop report assessment', () => {
+  for (const items of [{url:'https://fixture.example/a',status:0}, 'unstructured old evidence']) {
+    const finding = {id:'broken-links',severity:'minor',evidence:{items}};
+    assert.equal(view.retestSupported(finding), false);
+    assert.equal(view.connectionLimitation(finding), null);
+    assert.equal(view.assessment({grade:'B',score:85,findings:[finding]}).networkLimited, false);
+  }
+});
