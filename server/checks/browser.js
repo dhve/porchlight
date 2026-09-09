@@ -24,6 +24,7 @@
 // checkout, so nothing on the site is changed.
 
 import { openBrowser, browserMode as configuredBrowserMode } from "../lib/browserConnect.js";
+import { isChallenge, CHALLENGE_REASON, headerValue } from "../lib/challenge.js";
 
 export const CHROME_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36";
@@ -81,6 +82,11 @@ export async function runBrowser(ctx) {
 
     // ---- load the homepage as our honest bot identity ----
     let obs = await observe(botContext, homepage);
+    const challengedHome = () => {
+      facts.challenged = facts.challenged || obs.challenge.reason;
+      return { findings, passes, skipped: true, reason: `${obs.challenge.reason} (${obs.challenge.detail})`, browserMode, challenged: 1, challengeReason: obs.challenge.reason };
+    };
+    if (obs.challenge) return challengedHome();
     if (obs.mainStatus === 429) {
       facts.throttled = true;
       return { findings, passes, skipped: true, reason: "The site limited our checker", browserMode };
@@ -92,6 +98,7 @@ export async function runBrowser(ctx) {
       const asked = (obs.failed.get(obs.mainUrl) || obs.failed.get(homepage) || {}).retryAfterMs;
       await sleep(asked ? Math.min(asked, 5000) : 1500);
       obs = await observe(await asChrome(), homepage);
+      if (obs.challenge) return challengedHome();
       if (obs.mainStatus === 429) {
         facts.throttled = true;
         return { findings, passes, skipped: true, reason: "The site limited our checker", browserMode };
@@ -100,7 +107,12 @@ export async function runBrowser(ctx) {
         return { findings, passes, skipped: true, reason: "The site refused our checker", browserMode };
       }
     }
-    const { page, mainStatus, mainUrl, loadMs, consoleErrors, failed, responses } = obs;
+    const { page, mainStatus, mainUrl, loadMs, consoleErrors, failed, responses, challengedSubs } = obs;
+    // Files answered by a bot check were neither loaded nor broken: they were held back from
+    // our checker. They are set aside, counted, and reported to the pipeline.
+    for (const u of challengedSubs.keys()) { failed.delete(u); responses.delete(u); }
+    const challengedCount = challengedSubs.size;
+    if (challengedCount) facts.challenged = facts.challenged || CHALLENGE_REASON;
     const mainOk = mainStatus > 0 && mainStatus < 400;
     const isMainDocument = (u) => u === homepage || u === mainUrl;
 
@@ -225,11 +237,13 @@ export async function runBrowser(ctx) {
           items: broken.slice(0, MAX_ITEMS).map((f) => ({ url: f.url, status: f.status, statusText: f.reason, page: homepage, kind: "resource" })),
         },
       });
-    } else if (mainOk && loaded > 0) {
+    } else if (mainOk && loaded > 0 && !challengedCount) {
       let text = `The ${loaded} file${loaded === 1 ? "" : "s"} the homepage asked for ${loaded === 1 ? "loaded" : "all loaded"} in a real browser`;
       if (couldNotTest) text += `, ${couldNotTest} could not be tested because the site limited our checker`;
       passes.push(text + ".");
     }
+    // When the site's bot check held files back, nothing is vouched for: the pipeline reads
+    // facts.challenged and says the checkup was shortened.
 
     if (consoleErrors.length) {
       // Scripts the errors came from, leaving out the homepage itself (inline scripts), which is already the page item.
@@ -311,7 +325,7 @@ export async function runBrowser(ctx) {
       });
     }
 
-    return { findings, passes, browserMode };
+    return { findings, passes, browserMode, challenged: challengedCount, challengeReason: challengedCount ? CHALLENGE_REASON : null };
   } catch (err) {
     return { findings, passes, skipped: true, reason: `Browser pass failed: ${String((err && err.message) || err).slice(0, 120)}`, browserMode };
   } finally {
@@ -337,6 +351,9 @@ async function observe(context, url) {
   const consoleErrors = []; // { text, url }
   const failed = new Map();  // url -> { status, reason, errorText, retryAfterMs }
   const responses = new Map(); // url -> status, every response we saw
+  const challengedSubs = new Map(); // url -> detail, files answered by a hosting bot check instead
+  const pendingBodies = []; // small HTML answers being read to tell a bot check from a real answer
+  let docChallenge = null; // a bot check that answered the page itself, read eagerly and kept until a clean page arrives
 
   const obsHost = hostOf(url);
   page.on("pageerror", (err) => {
@@ -359,6 +376,28 @@ async function observe(context, url) {
     const u = res.url();
     const st = res.status();
     if (!responses.has(u)) responses.set(u, st);
+    // A file answered with a small HTML page on a challenge-shaped status may be a bot check
+    // standing in for it (SiteGround uses 202, Cloudflare 403 or 503). Read it to tell.
+    let main = false;
+    try { const rq = res.request(); main = rq.isNavigationRequest() && !rq.frame().parentFrame(); } catch {}
+    const ct = headerValue(res.headers(), "content-type");
+    const byUrl = isChallenge({ url: u, status: st, headers: res.headers() });
+    if (main) {
+      if (byUrl) docChallenge = byUrl;
+      else if ((st === 202 || st === 403 || st === 503) && (!ct || /text\/html|application\/xhtml/i.test(ct))) {
+        pendingBodies.push(res.text().catch(() => "").then((body) => {
+          const c = isChallenge({ url: u, status: st, headers: res.headers(), bodyStart: String(body || "").slice(0, 8192) });
+          if (c) docChallenge = c; else if (st !== 202) docChallenge = null;
+        }));
+      } else if (st >= 200 && st < 400) docChallenge = null;
+    } else if (byUrl) {
+      challengedSubs.set(u, byUrl.detail);
+    } else if ((st === 202 || st === 403 || st === 503) && (!ct || /text\/html|application\/xhtml/i.test(ct))) {
+      pendingBodies.push(res.text().catch(() => "").then((body) => {
+        const c = isChallenge({ url: u, status: st, headers: res.headers(), bodyStart: String(body || "").slice(0, 8192) });
+        if (c) challengedSubs.set(u, c.detail);
+      }));
+    }
     if (st >= 400 && !failed.has(u)) {
       let retryAfterMs = null;
       try {
@@ -381,7 +420,14 @@ async function observe(context, url) {
   const mainStatus = mainRes ? mainRes.status() : 0;
   const mainUrl = mainRes ? mainRes.url() : url;
 
-  return { page, mainStatus, mainUrl, loadMs, consoleErrors, failed, responses };
+  if (pendingBodies.length) {
+    await Promise.race([Promise.allSettled(pendingBodies), new Promise((r) => setTimeout(r, 1500))]);
+  }
+  // Was the homepage itself answered by a bot check? (Read eagerly above: a SiteGround check
+  // refreshes to its own page at once, and the first body is gone by then.)
+  const challenge = docChallenge;
+
+  return { page, mainStatus, mainUrl, loadMs, consoleErrors, failed, responses, challenge, challengedSubs };
 }
 
 /** One GET from the standard-browser context. Resolves { status } or null when the request itself failed. */

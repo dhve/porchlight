@@ -19,6 +19,8 @@ import { sql, dbEnabled } from "./db.js";
 import { openBrowser } from "./lib/browserConnect.js";
 import { resolveTarget, isPrivateIp } from "./safety.js";
 import { CHROME_USER_AGENT } from "./checks/browser.js";
+import { isChallenge, CHALLENGE_REASON, headerValue } from "./lib/challenge.js";
+import { classifyStylesheetResponse, assessStyling } from "./lib/styling.js";
 
 export const proofRouter = express.Router();
 
@@ -26,6 +28,20 @@ const ID_RE = /^[A-Za-z0-9_-]{6,20}$/;
 const KEY_RE = /^s[1-9]$/;
 
 const MAX_SHOTS = 6;
+/** Pictures are kept this long (sweepOldShots). */
+export const SHOT_RETENTION_DAYS = 60;
+
+/**
+ * Headers for a stored picture. Pictures are never cached: the earlier
+ * "public, max-age=31536000, immutable" let browsers and proxies keep showing a picture for a
+ * year after the sweep had removed it, and would defeat a takedown during the retention
+ * window. private, no-store matches the API responses.
+ */
+export const SHOT_CACHE_CONTROL = "private, no-store";
+export function shotHeaders(mime) {
+  const type = /^image\/[a-z0-9.+-]+$/i.test(mime || "") ? mime : "image/jpeg";
+  return { "Content-Type": type, "X-Content-Type-Options": "nosniff", "Cache-Control": SHOT_CACHE_CONTROL };
+}
 const VIEWPORT = { width: 1100, height: 760 };
 const PAGE_TIMEOUT_MS = 12_000;
 const TOTAL_BUDGET_MS = 25_000;
@@ -62,7 +78,7 @@ export async function ensureProofSchema() {
  * Sets finding.evidence.shots = [{ key, page, caption, highlighted }] on the
  * findings it pictured. Never throws.
  */
-export async function captureProof({ facts, findings, onEvent } = {}) {
+export async function captureProof({ facts, findings, onEvent, session: givenSession = null } = {}) {
   const emit = typeof onEvent === "function" ? onEvent : () => {};
   const started = Date.now();
   const deadline = started + TOTAL_BUDGET_MS;
@@ -79,9 +95,11 @@ export async function captureProof({ facts, findings, onEvent } = {}) {
   targets = targets.filter((t) => t.pages.length);
   if (!targets.length) return { shots: [], skipped: "No finding names a page to picture." };
 
-  let session;
+  // Tests may hand in a browser they launched themselves (for example with a host alias so a
+  // local fixture answers under a public-looking name); production always opens its own.
+  let session = givenSession;
   try {
-    session = await openBrowser({ purpose: "proof" });
+    if (!session) session = await openBrowser({ purpose: "proof" });
   } catch (err) {
     const reason = err && err.code === "NO_PLAYWRIGHT"
       ? "Playwright not installed (run: npm run enable-browser)"
@@ -92,6 +110,7 @@ export async function captureProof({ facts, findings, onEvent } = {}) {
 
   const shots = [];
   const plainByPage = new Map(); // page -> shot ref, reused by findings that need no highlight
+  const declined = []; // { page, reason }: pages we refused to picture, and why
   let skipped = null;
 
   try {
@@ -113,6 +132,7 @@ export async function captureProof({ facts, findings, onEvent } = {}) {
       const pg = await ctx.newPage();
       pg.setDefaultTimeout(PAGE_TIMEOUT_MS);
       pg.on("dialog", (d) => d.dismiss().catch(() => {}));
+      watchRender(pg);
       // Stay on the site: a top-level navigation to another domain is not followed. (Redirect
       // hops do not pass through here, so takeShot checks where the page really ended up.)
       await pg.route("**/*", (route) => {
@@ -130,11 +150,12 @@ export async function captureProof({ facts, findings, onEvent } = {}) {
     // A 429 while picturing means the site asked us to slow down: we stop and say so.
     let limited = false;
     const onLimited = () => { limited = true; if (facts) facts.throttled = true; };
+    const onChallenged = (reason) => { if (facts && !facts.challenged) facts.challenged = reason || CHALLENGE_REASON; };
 
     for (const t of targets) {
       if (shots.length >= MAX_SHOTS) break;
       if (remaining() < 3000) { skipped = skipped || "Ran out of time before every page was pictured."; break; }
-      const opts = { shots, plainByPage, remaining, onLimited, siteHost, getPhonePage };
+      const opts = { shots, plainByPage, remaining, onLimited, onChallenged, declined, siteHost, getPhonePage };
       const ref = t.needsHighlight ? await shootHighlighted(page, t, opts) : await shootPlain(page, t, opts);
       if (ref) t.finding.evidence.shots = [ref];
       if (limited) { skipped = "The site limited our checker"; break; }
@@ -142,17 +163,18 @@ export async function captureProof({ facts, findings, onEvent } = {}) {
   } catch (err) {
     skipped = `Pictures stopped early: ${String((err && err.message) || err).slice(0, 100)}`;
   } finally {
-    await withTimeout(session.close(), 5000).catch(() => {});
+    if (!givenSession) await withTimeout(session.close(), 5000).catch(() => {});
   }
 
   const n = shots.length;
+  if (!n && !skipped && declined.length) skipped = declined[0].reason;
   emit("log", {
     mark: "📸",
     text: n
-      ? `Took ${n} picture${n === 1 ? "" : "s"} of the page${n === 1 ? "" : "s"} where problems were found.`
+      ? `Took ${n} picture${n === 1 ? "" : "s"} of the page${n === 1 ? "" : "s"} where problems were found.${declined.length ? ` ${declined.length} page${declined.length === 1 ? " was" : "s were"} not pictured because ${declined[0].reason.replace(/^The /, "the ")}.` : ""}`
       : `No pictures this time: ${skipped || "the pages did not load in time."}`,
   });
-  return { shots, skipped: n ? null : (skipped || "The pages did not load in time.") };
+  return { shots, skipped: n ? null : (skipped || "The pages did not load in time."), declined };
 }
 
 const PHONE = { width: 390, height: 844 };
@@ -200,14 +222,14 @@ function pickTargets(findings, siteHost) {
   return targets;
 }
 
-async function shootPlain(page, t, { shots, plainByPage, remaining, onLimited, siteHost, getPhonePage }) {
+async function shootPlain(page, t, { shots, plainByPage, remaining, onLimited, onChallenged, declined, siteHost, getPhonePage }) {
   if (!t.rule || t.rule.highlight) return null; // a highlight finding with nothing to outline shows nothing
   const cacheKey = (url) => `${t.rule.phone ? "phone" : "desk"}|${t.rule.caption}|${url}`;
   for (const url of t.pages.slice(0, 2)) {
     if (plainByPage.has(cacheKey(url))) return plainByPage.get(cacheKey(url));
     if (shots.length >= MAX_SHOTS || remaining() < 3000) return null;
     const pg = t.rule.phone && getPhonePage ? await getPhonePage() : page;
-    const shot = await takeShot(pg, url, null, { remaining, onLimited, siteHost, phone: t.rule.phone, allowErrorPage: Boolean(t.rule.errorPage) });
+    const shot = await takeShot(pg, url, null, { remaining, onLimited, onChallenged, declined, siteHost, phone: t.rule.phone, allowErrorPage: Boolean(t.rule.errorPage) });
     if (!shot) continue;
     const ref = register(shots, shot, url, t.rule.caption, 0);
     plainByPage.set(cacheKey(url), ref);
@@ -216,12 +238,12 @@ async function shootPlain(page, t, { shots, plainByPage, remaining, onLimited, s
   return null;
 }
 
-async function shootHighlighted(page, t, { shots, plainByPage, remaining, onLimited, siteHost }) {
+async function shootHighlighted(page, t, { shots, plainByPage, remaining, onLimited, onChallenged, declined, siteHost }) {
   const marks = { links: t.links, images: t.images };
   let fallback = null; // a picture of the page with nothing outlined
   for (const url of t.pages.slice(0, 2)) {
     if (shots.length >= MAX_SHOTS || remaining() < 3000) break;
-    const shot = await takeShot(page, url, marks, { remaining, onLimited, siteHost });
+    const shot = await takeShot(page, url, marks, { remaining, onLimited, onChallenged, declined, siteHost });
     if (!shot) continue;
     if (shot.highlighted > 0) {
       return register(shots, shot, url, captionFor(shot), shot.highlighted);
@@ -250,7 +272,7 @@ function captionFor(shot) {
  * Load one page and photograph it. marks = { links: [urls], images: [urls] } or null.
  * Resolves { bytes, highlighted, links, images } or null when the page could not be pictured.
  */
-async function takeShot(page, url, marks, { remaining, onLimited, siteHost, phone = false, allowErrorPage = false }) {
+async function takeShot(page, url, marks, { remaining, onLimited, onChallenged = () => {}, declined = [], siteHost, phone = false, allowErrorPage = false }) {
   try {
     const size = phone ? PHONE : VIEWPORT; // the page handed in already has this viewport
     const navTimeout = Math.max(1000, Math.min(PAGE_TIMEOUT_MS, remaining() - 1500));
@@ -260,14 +282,39 @@ async function takeShot(page, url, marks, { remaining, onLimited, siteHost, phon
       onLimited();
       return null;
     }
+    // A bot check that answered instead of the page is not a picture of the site. The
+    // page's ledger read the document eagerly; the URL the browser ended up on counts too.
+    if (page.__render && page.__render.pending.length) {
+      const pending = page.__render.pending.splice(0);
+      await withTimeout(Promise.allSettled(pending), 1500).catch(() => {});
+    }
+    const ledgerChallenge = page.__render && page.__render.docChallenge;
+    const c = ledgerChallenge || isChallenge({ url: page.url(), status });
+    if (c) {
+      onChallenged(c.reason);
+      declined.push({ page: url, reason: `${c.reason} (${c.detail})` });
+      return null;
+    }
     if (status >= 400 && !allowErrorPage) return null; // an error page is not what the finding is about
     // A script, stylesheet, or data file renders as a wall of text; only pages are pictured.
     const ctype = res ? String((res.headers() || {})["content-type"] || "") : "";
     if (ctype && !/text\/html|application\/xhtml/i.test(ctype)) return null;
     // A redirect may have carried the page off the site or onto a private address; that is not
     // a picture of the site's page, so it is not taken.
-    if (!stayedOnSite(page.url(), siteHost)) return null;
+    if (!stayedOnSite(page.url(), siteHost)) {
+      declined.push({ page: url, reason: "the page is not on the site or is on a private address" });
+      return null;
+    }
     await page.waitForTimeout(Math.max(0, Math.min(SETTLE_MS, remaining() - 1200)));
+
+    // A page whose stylesheets did not load for us would be pictured unstyled, which shows
+    // our checker being refused rather than the site. Such a page is not pictured.
+    const render = await renderState(page, remaining);
+    if (render.unreliable) {
+      if (render.challenged) onChallenged(CHALLENGE_REASON);
+      declined.push({ page: url, reason: render.reason });
+      return null;
+    }
 
     let hl = { links: 0, images: 0, visible: 0 };
     if (marks && (marks.links.length || marks.images.length)) {
@@ -284,6 +331,86 @@ async function takeShot(page, url, marks, { remaining, onLimited, siteHost, phon
   } catch {
     return null;
   }
+}
+
+/**
+ * Keep a per-document ledger of stylesheet answers on a page, so a picture is only taken
+ * when the page could look the way it does for visitors.
+ */
+function watchRender(pg) {
+  const ledger = { entries: new Map(), pending: [], docChallenge: null };
+  pg.__render = ledger;
+  pg.on("response", (res) => {
+    let main = false;
+    let url = "";
+    let status = 0;
+    let type = "";
+    try {
+      const rq = res.request();
+      main = rq.isNavigationRequest() && !rq.frame().parentFrame();
+      url = res.url();
+      status = res.status();
+      type = rq.resourceType();
+    } catch { return; }
+    if (main) {
+      ledger.entries = new Map(); ledger.pending = [];
+      const byUrl = isChallenge({ url, status, headers: res.headers() });
+      const ct = headerValue(res.headers(), "content-type");
+      if (byUrl) ledger.docChallenge = byUrl;
+      else if ((status === 202 || status === 403 || status === 503) && (!ct || /text\/html|application\/xhtml/i.test(ct))) {
+        ledger.pending.push(res.text().catch(() => "").then((body) => {
+          const c = isChallenge({ url, status, headers: res.headers(), bodyStart: String(body || "").slice(0, 8192) });
+          if (c) ledger.docChallenge = c; else if (status !== 202) ledger.docChallenge = null;
+        }));
+      } else if (status >= 200 && status < 400) ledger.docChallenge = null;
+      return;
+    }
+    if (type !== "stylesheet" && !/\.css(?:[?#]|$)/i.test(url)) return;
+    const headers = res.headers();
+    const ct = headerValue(headers, "content-type");
+    if (status >= 200 && status < 400 && /text\/css/i.test(ct)) {
+      ledger.entries.set(url, classifyStylesheetResponse({ url, status, contentType: ct }));
+      return;
+    }
+    ledger.pending.push(res.text().catch(() => "").then((body) => {
+      ledger.entries.set(url, classifyStylesheetResponse({ url, status, contentType: ct, headers, bodyStart: String(body || "").slice(0, 8192) }));
+    }));
+  });
+  pg.on("requestfailed", (req) => {
+    let url = "";
+    let type = "";
+    try { url = req.url(); type = req.resourceType(); } catch { return; }
+    if (type !== "stylesheet" && !/\.css(?:[?#]|$)/i.test(url)) return;
+    const errorText = String((req.failure() && req.failure().errorText) || "did not load");
+    ledger.entries.set(url, classifyStylesheetResponse({ url, status: 0, errorText }));
+  });
+}
+
+/** Did the page's stylesheets arrive and apply? Waits briefly for slow ones. */
+async function renderState(page, remaining) {
+  const ledger = page.__render || { entries: new Map(), pending: [] };
+  if (ledger.pending.length) {
+    const pending = ledger.pending.splice(0);
+    await withTimeout(Promise.allSettled(pending), 1500).catch(() => {});
+  }
+  let counts = await withTimeout(page.evaluate(countStylesheetsInPage), 1500).catch(() => ({ linked: 0, applied: 0 }));
+  const deadline = Date.now() + Math.min(1500, Math.max(0, remaining() - 2500));
+  while (counts.linked > counts.applied && Date.now() < deadline) {
+    await page.waitForTimeout(250);
+    counts = await withTimeout(page.evaluate(countStylesheetsInPage), 1000).catch(() => counts);
+  }
+  const failures = [...ledger.entries.values()].filter((e) => e.outcome !== "ok");
+  const a = assessStyling({ linked: counts.linked, applied: counts.applied, failures });
+  const challenged = failures.some((f) => f.outcome === "challenge");
+  const reason = a.warnings[0] ? a.warnings[0].replace(/\s*Do not judge its appearance\.$/, "") : "";
+  return { unreliable: a.unreliable, challenged, reason: a.unreliable ? (reason || "the page's stylesheets did not load for our checker") : "" };
+}
+
+function countStylesheetsInPage() {
+  const linkEls = document.querySelectorAll('link[rel~="stylesheet"]');
+  let applied = 0;
+  for (const l of linkEls) { if (l.sheet) applied++; }
+  return { linked: linkEls.length, applied };
 }
 
 /**
@@ -380,7 +507,7 @@ export async function saveShots(reportId, shots = []) {
 }
 
 /** Delete pictures of reports older than `days`. Resolves the number of rows removed. */
-export async function sweepOldShots(days = 60) {
+export async function sweepOldShots(days = SHOT_RETENTION_DAYS) {
   if (!dbEnabled()) return 0;
   const d = Math.max(1, Math.floor(Number(days) || 60));
   const rows = await sql(
@@ -403,10 +530,7 @@ proofRouter.get("/api/reports/:id/shots/:key", async (req, res) => {
   try {
     const rows = await sql(`SELECT mime, bytes FROM report_shots WHERE report_id = $1 AND key = $2`, [id, key]);
     if (!rows.length || !rows[0].bytes) return res.status(404).json({ error: "We couldn't find that picture." });
-    const mime = /^image\/[a-z0-9.+-]+$/i.test(rows[0].mime || "") ? rows[0].mime : "image/jpeg";
-    res.setHeader("Content-Type", mime);
-    res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    for (const [name, value] of Object.entries(shotHeaders(rows[0].mime))) res.setHeader(name, value);
     res.setHeader("Content-Length", String(rows[0].bytes.length));
     res.end(rows[0].bytes);
   } catch (err) {
@@ -426,7 +550,11 @@ function okUrl(u, siteHost) {
 }
 
 /** True when the address the browser ended up on is still the site's, and not a private address. */
-function stayedOnSite(u, siteHost) {
+/**
+ * May this address be pictured? It must be on the site and must not be a private or
+ * loopback address, whatever host the checkup started on. Exported for the tests.
+ */
+export function stayedOnSite(u, siteHost) {
   let x;
   try { x = new URL(String(u || "")); } catch { return false; }
   if (!okUrl(x.href, siteHost)) return false;

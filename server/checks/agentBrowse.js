@@ -34,6 +34,9 @@
 
 import { openBrowser } from "../lib/browserConnect.js";
 import { chatTools, llmEnabled, modelName } from "../llm.js";
+import { isChallenge, CHALLENGE_REASON, headerValue } from "../lib/challenge.js";
+import { classifyStylesheetResponse, assessStyling, noteRefusal, statusWords } from "../lib/styling.js";
+import { CHROME_USER_AGENT } from "./browser.js";
 import { resolveTarget } from "../safety.js";
 
 export const MOBILE_USER_AGENT =
@@ -111,7 +114,9 @@ export async function runAgentBrowse(ctx) {
   };
   const skipped = (reason) => ({ findings: [], passes: [], skipped: true, reason });
   try {
-    if (!llmEnabled()) return skipped("AI is not configured, so the browsing agent did not run");
+    // Tests hand in a scripted model through ctx.agentModel; production uses llm.js.
+    const model = ctx && typeof ctx.agentModel === "function" ? ctx.agentModel : null;
+    if (!model && !llmEnabled()) return skipped("AI is not configured, so the browsing agent did not run");
     if (String(process.env.AGENT_BROWSE || "") === "0") return skipped("The browsing agent is turned off");
     const facts = (ctx && ctx.facts) || {};
     const homepage = pickHomepage(ctx, facts);
@@ -127,7 +132,7 @@ export async function runAgentBrowse(ctx) {
       return skipped(`Browser unavailable: ${String((err && err.message) || err).slice(0, 120)}`);
     }
     try {
-      return await explore({ ctx, facts, emit, homepage, siteHost, session });
+      return await explore({ ctx, facts, emit, homepage, siteHost, session, model });
     } finally {
       await withTimeout(session.close(), 5000).catch(() => {});
     }
@@ -140,7 +145,7 @@ export async function runAgentBrowse(ctx) {
 // The run
 // ---------------------------------------------------------------------------
 
-async function explore({ ctx, facts, emit, homepage, siteHost, session }) {
+async function explore({ ctx, facts, emit, homepage, siteHost, session, model = null }) {
   const { browser, mode } = session;
   const replayUrl = (session.session && session.session.replayUrl) || null;
   const maxSteps = intEnv("AGENT_STEPS", DEFAULT_STEPS, 1, 60);
@@ -170,6 +175,16 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session }) {
     stopReason: "",
     directCalls: false, // set when llm.js's chatTools cannot be used with this model
     toolChoice: "required", // falls back to "auto" for the rest of the run when the model rejects "required"
+    model, // a scripted stand-in for the model (tests), else null
+    // Did the page render for us? A per-document ledger of stylesheet answers, filled by
+    // the response listeners, and the judgement made from it at observation time.
+    css: { doc: "", entries: new Map() }, // stylesheet url -> classifyStylesheetResponse entry
+    pendingCss: [], // body reads still in flight for the ledger
+    docChallenge: null, // { url, vendor, detail } when a bot check answered the page itself
+    challenged: "", // CHALLENGE_REASON once any bot check was seen on this site
+    assessments: new Map(), // page url -> assessStyling result
+    unreliablePages: new Set(), // pages whose appearance cannot be judged
+    challengedPages: new Set(), // pages that were a bot check, not the site's page
   };
 
   const onSite = (u) => sameSite(u, siteHost);
@@ -295,12 +310,69 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session }) {
     if (main) {
       state.lastStatus = status;
       state.statusByUrl.set(url, status);
+      state.css = { doc: url, entries: new Map() }; // a new document starts a fresh stylesheet ledger
+      // A hosting bot check may stand in for the page itself (SiteGround answers 202 and then
+      // refreshes to its /.well-known/sgcaptcha/ page; Cloudflare answers 403 or 503). The
+      // body is read at once, because it is gone once the refresh moves the browser on. The
+      // challenge stays in force until a clean page arrives.
+      const byUrl = isChallenge({ url, status, headers: res.headers() });
+      const ct = headerValue(res.headers(), "content-type");
+      if (byUrl) {
+        state.docChallenge = { url: stripHash(url), vendor: byUrl.vendor, detail: byUrl.detail };
+        state.challengedPages.add(stripHash(url));
+        markChallenged(byUrl);
+      } else if (status === 202 || status === 403 || status === 503) {
+        if (!ct || /text\/html|application\/xhtml/i.test(ct)) {
+          state.pendingCss.push(res.text().catch(() => "").then((body) => {
+            const c = isChallenge({ url, status, headers: res.headers(), bodyStart: String(body || "").slice(0, 8192) });
+            if (c) {
+              state.docChallenge = { url: stripHash(url), vendor: c.vendor, detail: c.detail };
+              state.challengedPages.add(stripHash(url));
+              markChallenged(c);
+            } else if (status !== 202) {
+              state.docChallenge = null;
+            }
+          }));
+        }
+      } else if (status >= 200 && status < 400) {
+        state.docChallenge = null; // a real page answered: the check is over for this document
+      }
+    }
+    // Stylesheets: what the page needs to look like itself. Anything other than a CSS
+    // answer goes into the ledger with its reason, read off the response when needed.
+    let resourceType = "";
+    try { resourceType = req.resourceType(); } catch {}
+    if (!main && (resourceType === "stylesheet" || /\.css(?:[?#]|$)/i.test(url))) {
+      const headers = res.headers();
+      const ct = headerValue(headers, "content-type");
+      if (status >= 200 && status < 400 && /text\/css/i.test(ct)) {
+        state.css.entries.set(url, classifyStylesheetResponse({ url, status, contentType: ct }));
+      } else {
+        state.pendingCss.push(res.text().catch(() => "").then((body) => {
+          const entry = classifyStylesheetResponse({ url, status, contentType: ct, headers, bodyStart: String(body || "").slice(0, 8192) });
+          state.css.entries.set(url, entry);
+          if (entry.outcome === "challenge") markChallenged(entry);
+        }));
+      }
     }
     if (status === 429 && onSite(url)) {
       state.limited = true;
       facts.throttled = true;
     }
   });
+  page.on("requestfailed", (req) => {
+    let resourceType = "";
+    let url = "";
+    try { resourceType = req.resourceType(); url = req.url(); } catch { return; }
+    if (resourceType !== "stylesheet" && !/\.css(?:[?#]|$)/i.test(url)) return;
+    const errorText = String((req.failure() && req.failure().errorText) || "did not load");
+    state.css.entries.set(url, classifyStylesheetResponse({ url, status: 0, errorText }));
+  });
+  /** Remember that this site put a bot check in front of us, for the report and the pipeline. */
+  function markChallenged(c) {
+    state.challenged = state.challenged || (c && c.reason) || CHALLENGE_REASON;
+    if (facts && !facts.challenged) facts.challenged = state.challenged;
+  }
 
   const visitLog = (url) => {
     emit("log", { mark: "🧭", text: `Browsing agent opened ${pathFor(url, homeHost)}` });
@@ -311,7 +383,9 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session }) {
     const url = page.url();
     const obsStart = Date.now();
     const obsLeft = () => Math.max(500, OBSERVE_TIMEOUT_MS - (Date.now() - obsStart));
+    await settleStylesheets(obsLeft);
     const data = await withTimeout(page.evaluate(readPage, { maxControls: MAX_CONTROLS, textLimit: TEXT_LIMIT }), obsLeft()).catch(() => null);
+    const styling = await judgeStyling(data, obsLeft);
     let st = status != null ? status : state.lastStatus;
     if (status == null && state.statusByUrl.has(url)) st = state.statusByUrl.get(url);
     const warn = [...warnings, ...state.pending.splice(0)];
@@ -338,9 +412,9 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session }) {
       const where = data.y < 4 ? "top" : atBottom ? "bottom" : `screen ${Math.min(screens, Math.round(data.y / data.vh) + 1)}`;
       view = `${where} of the page, about ${screens} screen${screens === 1 ? "" : "s"} tall`;
       if (data.cut) view += `; text shortened to ${TEXT_LIMIT} of ${data.total} characters, taken from around the current screen`;
-      if (data.overflowX) warn.push("The page is wider than the phone screen, so some content may be cut off or need sideways scrolling.");
-      if (data.overlay) warn.push(`Something covers most of the screen: "${data.overlay}".`);
-      if (data.total < 40 && st < 400) warn.push("The page shows almost no text.");
+      if (data.overflowX && !styling.unreliable) warn.push("The page is wider than the phone screen, so some content may be cut off or need sideways scrolling.");
+      if (data.overlay && !styling.unreliable) warn.push(`Something covers most of the screen: "${data.overlay}".`);
+      if (data.total < 40 && st < 400 && !styling.challenged) warn.push("The page shows almost no text.");
     } else {
       warn.push("The page contents could not be read this time.");
       try { title = await withTimeout(page.title(), 2000); } catch {}
@@ -348,19 +422,115 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session }) {
 
     // Pages are tracked without their #fragment: jumping within a page is not a new page.
     const pageUrl = stripHash(url);
+    // The measured render state comes first, so the model reads it before the page text.
+    if (styling.challenged) {
+      warn.unshift(`${CHALLENGE_REASON} for this page (${styling.challenged}). What the screen shows is that check, not the site's page. Nothing on this page can be judged or noted.`);
+    } else if (styling.warnings.length) {
+      warn.unshift(...styling.warnings);
+    }
+    state.assessments.set(pageUrl, styling);
+    if (styling.unreliable || styling.challenged) state.unreliablePages.add(pageUrl);
+    if (styling.challenged) state.challengedPages.add(pageUrl);
     const shot = await withTimeout(page.screenshot({ type: "jpeg", quality: OBS_JPEG_QUALITY, timeout: obsLeft() }), obsLeft()).catch(() => null);
-    if (shot && shot.length <= MAX_SHOT_BYTES && /^https?:/i.test(pageUrl)) {
+    // The model still sees the picture (it explains the warning), but an unreliable render is
+    // never kept as evidence for a later note about this page.
+    if (shot && shot.length <= MAX_SHOT_BYTES && /^https?:/i.test(pageUrl) && !styling.unreliable && !styling.challenged) {
       if (!state.shotByUrl.has(pageUrl) && state.shotByUrl.size >= MAX_VISITED) state.shotByUrl.delete(state.shotByUrl.keys().next().value);
       state.shotByUrl.set(pageUrl, shot);
+    } else if (state.shotByUrl.has(pageUrl) && (styling.unreliable || styling.challenged)) {
+      state.shotByUrl.delete(pageUrl);
     }
 
-    // Bookkeeping: what we visited, and the live log line for a new page.
-    if (/^https?:/i.test(pageUrl) && !sameAddress(pageUrl, state.lastUrl)) {
+    // Bookkeeping: what we visited, and the live log line for a new page. A bot check page
+    // is not one of the site's pages, so it is neither counted nor logged as opened.
+    if (/^https?:/i.test(pageUrl) && !sameAddress(pageUrl, state.lastUrl) && !styling.challenged) {
       state.lastUrl = pageUrl;
       if (!state.visited.some((v) => sameAddress(v, pageUrl)) && state.visited.length < MAX_VISITED) state.visited.push(pageUrl);
       visitLog(pageUrl);
     }
-    return { obs: { url, title, status: st, view, text, controls, warnings: warn }, shot };
+    const obs = { url, title, status: st, view, text, controls, warnings: warn };
+    obs.stylesheets = { linked: styling.linked, applied: styling.applied, failed: styling.failed };
+    if (styling.unreliable || styling.challenged) obs.stylingUnreliable = true;
+    return { obs, shot };
+  }
+
+  /** Let in-flight stylesheet body reads finish, briefly. */
+  async function settleStylesheets(obsLeft) {
+    if (!state.pendingCss.length) return;
+    const pending = state.pendingCss.splice(0);
+    await withTimeout(Promise.allSettled(pending), Math.min(1500, obsLeft())).catch(() => {});
+  }
+
+  /**
+   * Did this page render for our browser? Counts linked vs applied stylesheets (waiting a
+   * little for slow ones), confirms a failing stylesheet with an independent request that
+   * carries standard browser headers, and turns the ledger into warnings for the model.
+   */
+  async function judgeStyling(data, obsLeft) {
+    const out = { linked: 0, applied: 0, failed: [], warnings: [], unreliable: false, confirmedBroken: [], challenged: "" };
+    const here = stripHash(page.url());
+    if (state.docChallenge) {
+      state.challengedPages.add(here);
+      out.challenged = state.docChallenge.detail;
+      out.unreliable = true;
+      return out;
+    }
+    let counts = data && data.stylesheets ? data.stylesheets : null;
+    // A stylesheet still on its way when we looked gets a short grace period.
+    const deadline = Date.now() + Math.min(1500, Math.max(0, obsLeft() - 1500));
+    while (counts && counts.linked > counts.applied && Date.now() < deadline) {
+      await sleep(250);
+      counts = await withTimeout(page.evaluate(countStylesheets), 1000).catch(() => counts);
+    }
+    await settleStylesheets(obsLeft);
+    const failures = [...state.css.entries.values()].filter((e) => e.outcome !== "ok");
+    for (const f of failures) {
+      if (f.outcome === "broken" && f.confirmed === undefined) await confirmStylesheet(f);
+    }
+    const a = assessStyling({ linked: counts ? counts.linked : 0, applied: counts ? counts.applied : 0, failures });
+    out.linked = counts ? counts.linked : 0;
+    out.applied = counts ? counts.applied : 0;
+    out.failed = failures.map((f) => ({ url: f.url, status: f.status, outcome: f.outcome, confirmed: f.confirmed === true }));
+    out.warnings = a.warnings;
+    out.unreliable = a.unreliable;
+    out.confirmedBroken = a.confirmedBroken;
+    return out;
+  }
+
+  /**
+   * One 404 is not proof: ask for the stylesheet once more, from outside the page, with the
+   * headers a desktop browser sends. Only when that answer fails the same way is the
+   * stylesheet counted as the site's problem. Off-site hosts are checked against the same
+   * address rule as navigations before anything is requested.
+   */
+  async function confirmStylesheet(entry) {
+    entry.confirmed = false;
+    let target;
+    try { target = new URL(entry.url); } catch { return; }
+    if (!/^https?:$/.test(target.protocol)) return;
+    if (!onSite(entry.url)) {
+      const ok = await lookupHost(target).then((r) => r && r.ok).catch(() => false);
+      if (!ok) return;
+    }
+    try {
+      await sleep(300);
+      const r = await context.request.get(entry.url, {
+        headers: { "User-Agent": CHROME_USER_AGENT, Accept: "text/css,*/*;q=0.1", "Accept-Language": "en-US,en;q=0.9" },
+        timeout: 5000,
+        maxRedirects: 3,
+      });
+      const st = r.status();
+      const headers = r.headers();
+      let body = "";
+      try { body = String(await r.text()).slice(0, 8192); } catch {}
+      const again = classifyStylesheetResponse({ url: entry.url, status: st, contentType: headerValue(headers, "content-type"), headers, bodyStart: body });
+      entry.retry = { status: st, outcome: again.outcome };
+      if (again.outcome === "broken") entry.confirmed = true;
+      else if (again.outcome === "ok") entry.reason = `answered ${entry.status} ${statusWords(entry.status)} once but loaded when asked again with standard browser headers`;
+      else if (again.outcome === "challenge") { entry.outcome = "challenge"; entry.reason = again.reason; markChallenged(again); }
+    } catch (err) {
+      entry.retry = { error: String((err && err.message) || err).slice(0, 80) };
+    }
   }
 
   // Let the page finish loading and paint, within what is left of the action's 10 seconds.
@@ -594,8 +764,18 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session }) {
     }
     const status = state.statusByUrl.get(where) ?? (sameAddress(where, here) ? state.lastStatus : 0);
 
-    const entry = { title: fitTitle(title), what, why, fix, severity, category, quote, where, status, shot: null };
-    if (state.shots.length < SHOT_KEYS.length) {
+    // Measured render state decides what may be noted about this page, whatever the model saw.
+    if (state.challengedPages.has(stripHash(where))) {
+      return { text: `${CHALLENGE_REASON} for ${where}, so what you saw there was the check, not the site's page. Nothing on it can be noted. Move on to another page.` };
+    }
+    const assessment = state.assessments.get(stripHash(where)) || null;
+    const refusal = noteRefusal(assessment, { title, what, category });
+    if (refusal) return { text: refusal };
+    const cssEvidence = assessment && assessment.confirmedBroken && assessment.confirmedBroken.length ? assessment.confirmedBroken.slice(0, 2).map((f) => ({ url: f.url, status: f.status })) : [];
+    const noPicture = Boolean(assessment && assessment.unreliable);
+
+    const entry = { title: fitTitle(title), what, why, fix, severity, category, quote, where, status, shot: null, cssEvidence, noPicture };
+    if (state.shots.length < SHOT_KEYS.length && !noPicture) {
       // A fresh picture of the page the agent is on. When the note is about a page it
       // opened earlier, the picture it saw of that page is used, so the picture matches.
       // When a fresh picture cannot be taken, the last one of this page stands in.
@@ -701,6 +881,9 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session }) {
   const first = await withTimeout(navigate(homepage), ACTION_TIMEOUT_MS + OBSERVE_TIMEOUT_MS).catch((err) => ({ text: String((err && err.message) || err) }));
   if (process.env.AGENT_DEBUG && first.obs) console.error(`agentBrowse homepage: ${JSON.stringify(first.obs).slice(0, 300)}`);
   if (state.limited) return { findings: [], passes: [], skipped: true, reason: "The site limited our checker" };
+  if (state.docChallenge) {
+    return { findings: [], passes: [], skipped: true, reason: `${CHALLENGE_REASON} (${state.docChallenge.detail})`, agent: { ran: false, challenged: state.challenged } };
+  }
   if (!first.obs) {
     return { findings: [], passes: [], skipped: true, reason: `The homepage did not open in the browsing agent's browser: ${String(first.text || "").slice(0, 100)}` };
   }
@@ -816,6 +999,8 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session }) {
       summary,
       replayUrl,
       shots: state.shots,
+      challenged: state.challenged || null,
+      unreliablePages: state.unreliablePages.size,
     },
   };
   } // exploreWith
@@ -828,6 +1013,7 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session }) {
 async function askModel({ system, messages, remaining, state }) {
   const budget = () => Math.max(3000, remaining());
   const opts = { system, messages, tools: TOOLS, maxTokens: MODEL_MAX_TOKENS, toolChoice: state.toolChoice };
+  if (state.model) return withTimeout(Promise.resolve(state.model(opts)), budget());
   if (state.directCalls) return withTimeout(chatToolsDirect(opts), budget());
   try {
     return await withTimeout(chatTools(opts), budget());
@@ -928,6 +1114,7 @@ function systemPrompt({ homepage, facts, maxSteps, budgetMs }) {
     "",
     "Being fair",
     "- Note only what you actually saw on this phone screen. Quote the text exactly as it appeared and give the page address. Do not guess at causes you cannot see, and do not invent problems.",
+    "- When a warning says a stylesheet did not load, or that a bot check answered instead of the page, the way that page looks is our checker being refused, not the site. Never note styling, colours, fonts, or layout for that page; such a note is refused anyway. Only a stylesheet the warning calls confirmed (it failed twice, once with standard browser headers) is the site's own problem.",
     "- Prefer fewer, better notes. A site that works fine deserves zero notes, and that is a good result. Do not pad. Do not note design taste, missing features you wish existed, or small things a visitor would not notice.",
     "- Do not note: a cookie or consent banner that can be closed; a control we refused; content from another website that loaded slowly; text that was cut in the observation because of the 3500 character limit; a menu that simply needs a tap; a link you did not open yourself (another check tests every link); a page that our crawler saw but you did not open.",
     "- Old dates: a News or Events section whose newest item is more than about a year old is worth a note. An archive page or a dated blog post is not.",
@@ -1126,7 +1313,20 @@ function readPage({ maxControls, textLimit }) {
     break;
   }
 
-  return { title: (document.title || "").slice(0, 160), text, cut, total, y, vh, scrollH, controls, overflowX, overlay };
+  // Stylesheets the page asked for, and how many actually arrived and applied.
+  const linkEls = document.querySelectorAll('link[rel~="stylesheet"]');
+  let applied = 0;
+  for (const l of linkEls) { if (l.sheet) applied++; }
+
+  return { title: (document.title || "").slice(0, 160), text, cut, total, y, vh, scrollH, controls, overflowX, overlay, stylesheets: { linked: linkEls.length, applied } };
+}
+
+/** Runs inside the page: linked vs applied stylesheets, for the short wait on slow ones. */
+function countStylesheets() {
+  const linkEls = document.querySelectorAll('link[rel~="stylesheet"]');
+  let applied = 0;
+  for (const l of linkEls) { if (l.sheet) applied++; }
+  return { linked: linkEls.length, applied };
 }
 
 // ---------------------------------------------------------------------------
@@ -1142,6 +1342,12 @@ function toFindings(notes) {
     ids.add(id);
     const more = Array.isArray(n.morePages) ? n.morePages.filter(Boolean) : [];
     const lines = [n.where, n.quote ? `Seen on the page: "${n.quote}"` : n.what];
+    const cssItems = [];
+    for (const c of Array.isArray(n.cssEvidence) ? n.cssEvidence : []) {
+      lines.push(`The page's stylesheet ${pathOf(c.url)} answered ${c.status} ${statusWords(c.status)} twice, including once with standard browser headers.`);
+      cssItems.push({ url: c.url, status: c.status, statusText: statusWords(c.status), page: n.where, kind: "resource" });
+    }
+    if (n.noPicture) lines.push("No picture was kept: the page did not fully load for our checker.");
     if (more.length) lines.push(`Also seen on ${more.length === 1 ? "another page" : more.length + " other pages"}: ${more.map((u) => pathOf(u)).join(", ")}`);
     return {
       id,
@@ -1159,7 +1365,7 @@ function toFindings(notes) {
         confirm: CONFIRM,
         method: METHOD,
         pages: [n.where, ...more].slice(0, 6),
-        items: [n.where, ...more].slice(0, 6).map((u) => ({ url: u, status: u === n.where ? n.status || 0 : 0, statusText: u === n.where ? statusText(n.status || 0) : "seen", kind: "page" })),
+        items: [...[n.where, ...more].slice(0, 6).map((u) => ({ url: u, status: u === n.where ? n.status || 0 : 0, statusText: u === n.where ? statusText(n.status || 0) : "seen", kind: "page" })), ...cssItems],
         shots: n.shot ? [n.shot] : [],
       },
     };

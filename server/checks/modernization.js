@@ -10,6 +10,8 @@
 // read) and evidence.method (how we tested it). Nothing here requests an
 // address, so there are no evidence.items.
 
+import { isChallenge } from "../lib/challenge.js";
+
 export async function runModernization(ctx) {
   const { facts } = ctx;
   const findings = [];
@@ -17,6 +19,13 @@ export async function runModernization(ctx) {
   const page = facts.pages && facts.pages[0];
   if (!page || !page.html) return { findings, passes };
   const html = page.html;
+  // A hosting bot check that answered instead of the homepage has no viewport tag and no
+  // design of its own. Judging it would blame the site for our checker being refused.
+  const challenge = isChallenge({ status: page.status, headers: page.headers, contentType: page.contentType, bodyStart: html.slice(0, 8192) });
+  if (challenge) {
+    if (!facts.challenged) facts.challenged = challenge.reason;
+    return { findings, passes, skipped: true, reason: `${challenge.reason} (${challenge.detail})` };
+  }
   const $ = page.$ || facts.$;
   const year = new Date().getFullYear();
   const homepage = href(facts.finalUrl) || href(page.url) || (facts.baseOrigin ? facts.baseOrigin + "/" : "");
