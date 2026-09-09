@@ -19,7 +19,7 @@ import { sql, dbEnabled } from "./db.js";
 import { openBrowser } from "./lib/browserConnect.js";
 import { resolveTarget, isPrivateIp } from "./safety.js";
 import { CHROME_USER_AGENT } from "./checks/browser.js";
-import { isChallenge, CHALLENGE_REASON, headerValue } from "./lib/challenge.js";
+import { isChallenge, isChallengeUrl, CHALLENGE_REASON, headerValue } from "./lib/challenge.js";
 import { classifyStylesheetResponse, assessStyling } from "./lib/styling.js";
 
 export const proofRouter = express.Router();
@@ -289,7 +289,7 @@ async function takeShot(page, url, marks, { remaining, onLimited, onChallenged =
       await withTimeout(Promise.allSettled(pending), 1500).catch(() => {});
     }
     const ledgerChallenge = page.__render && page.__render.docChallenge;
-    const c = ledgerChallenge || isChallenge({ url: page.url(), status });
+    const c = ledgerChallenge || isChallenge({ url: page.url(), status, headers: res ? res.headers() : undefined });
     if (c) {
       onChallenged(c.reason);
       declined.push({ page: url, reason: `${c.reason} (${c.detail})` });
@@ -338,49 +338,65 @@ async function takeShot(page, url, marks, { remaining, onLimited, onChallenged =
  * when the page could look the way it does for visitors.
  */
 function watchRender(pg) {
-  const ledger = { entries: new Map(), pending: [], docChallenge: null };
+  const ledger = { entries: new Map(), pending: [], docChallenge: null, documents: 0 };
   pg.__render = ledger;
+  const small = (headers) => { const len = Number(headerValue(headers, "content-length")); return !Number.isFinite(len) || len <= 16384; };
   pg.on("response", (res) => {
     let main = false;
+    let mainFrame = false;
     let url = "";
     let status = 0;
     let type = "";
     try {
       const rq = res.request();
-      main = rq.isNavigationRequest() && !rq.frame().parentFrame();
+      mainFrame = !rq.frame().parentFrame();
+      main = rq.isNavigationRequest() && mainFrame;
       url = res.url();
       status = res.status();
       type = rq.resourceType();
     } catch { return; }
-    if (main) {
-      ledger.entries = new Map(); ledger.pending = [];
-      const byUrl = isChallenge({ url, status, headers: res.headers() });
-      const ct = headerValue(res.headers(), "content-type");
-      if (byUrl) ledger.docChallenge = byUrl;
-      else if ((status === 202 || status === 403 || status === 503) && (!ct || /text\/html|application\/xhtml/i.test(ct))) {
-        ledger.pending.push(res.text().catch(() => "").then((body) => {
-          const c = isChallenge({ url, status, headers: res.headers(), bodyStart: String(body || "").slice(0, 8192) });
-          if (c) ledger.docChallenge = c; else if (status !== 202) ledger.docChallenge = null;
-        }));
-      } else if (status >= 200 && status < 400) ledger.docChallenge = null;
-      return;
-    }
-    if (type !== "stylesheet" && !/\.css(?:[?#]|$)/i.test(url)) return;
     const headers = res.headers();
     const ct = headerValue(headers, "content-type");
-    if (status >= 200 && status < 400 && /text\/css/i.test(ct)) {
-      ledger.entries.set(url, classifyStylesheetResponse({ url, status, contentType: ct }));
+    if (main) {
+      // Each document starts clean: a fresh ledger and no challenge carried over. The check's
+      // own address (a SiteGround refresh target) is recognised on its own.
+      const entries = new Map();
+      ledger.entries = entries; ledger.pending = [];
+      const thisDoc = ++ledger.documents;
+      // The check's own address and a challenge header count whatever the status; a small
+      // HTML answer (200, 202, 403, 503) is read to tell.
+      ledger.docChallenge = isChallenge({ url, status, headers }) || null;
+      if (!ledger.docChallenge && (status === 200 || status === 202 || status === 403 || status === 503) && (!ct || /text\/html|application\/xhtml/i.test(ct))) {
+        // Full headers first (no request); the small body only when they say nothing.
+        ledger.pending.push(res.allHeaders().catch(() => headers).then(async (h) => {
+          let c = isChallenge({ url, status, headers: h });
+          if (!c && small(h)) {
+            const body = await res.text().catch(() => "");
+            c = isChallenge({ status, headers: h, bodyStart: String(body || "").slice(0, 8192) });
+          }
+          if (c && ledger.documents === thisDoc) ledger.docChallenge = c;
+        }));
+      }
       return;
     }
-    ledger.pending.push(res.text().catch(() => "").then((body) => {
-      ledger.entries.set(url, classifyStylesheetResponse({ url, status, contentType: ct, headers, bodyStart: String(body || "").slice(0, 8192) }));
-    }));
+    if (!mainFrame) return; // a frame's own stylesheets are not the page's
+    if (type !== "stylesheet" && !/\.css(?:[?#]|$)/i.test(url)) return;
+    // Judged from status and headers only: reading a failed file's body makes the browser
+    // request it again on its own. The full header set arrives separately, without a request.
+    const entries = ledger.entries;
+    entries.set(url, classifyStylesheetResponse({ url, status, contentType: ct, headers }));
+    if ((status === 202 || status === 403 || status === 503) && (!ct || /text\/html|application\/xhtml/i.test(ct))) {
+      ledger.pending.push(res.allHeaders().then((h) => entries.set(url, classifyStylesheetResponse({ url, status, contentType: ct, headers: h }))).catch(() => {}));
+    }
   });
   pg.on("requestfailed", (req) => {
     let url = "";
     let type = "";
-    try { url = req.url(); type = req.resourceType(); } catch { return; }
+    let mainFrame = false;
+    try { url = req.url(); type = req.resourceType(); mainFrame = !req.frame().parentFrame(); } catch { return; }
+    if (!mainFrame) return;
     if (type !== "stylesheet" && !/\.css(?:[?#]|$)/i.test(url)) return;
+    if (ledger.entries.has(url) && ledger.entries.get(url).status) return; // keep the answer's own status
     const errorText = String((req.failure() && req.failure().errorText) || "did not load");
     ledger.entries.set(url, classifyStylesheetResponse({ url, status: 0, errorText }));
   });
@@ -407,7 +423,8 @@ async function renderState(page, remaining) {
 }
 
 function countStylesheetsInPage() {
-  const linkEls = document.querySelectorAll('link[rel~="stylesheet"]');
+  // Only stylesheets the page meant to apply: enabled, not alternate, with an address.
+  const linkEls = Array.from(document.querySelectorAll('link[rel~="stylesheet"]')).filter((l) => !l.disabled && !/\balternate\b/i.test(l.rel) && l.getAttribute("href"));
   let applied = 0;
   for (const l of linkEls) { if (l.sheet) applied++; }
   return { linked: linkEls.length, applied };

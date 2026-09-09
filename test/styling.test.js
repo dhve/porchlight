@@ -24,7 +24,6 @@ test("assessStyling: healthy, no stylesheet, and slow-but-loaded pages are relia
 test("assessStyling: a challenged or blocked stylesheet makes appearance unreliable and says why", () => {
   const a = assessStyling({ linked: 1, applied: 0, failures: [{ url: "https://s/wp-content/style.css", status: 202, outcome: "challenge", reason: "The site's hosting put a bot check in front of our checker" }] });
   assert.equal(a.unreliable, true);
-  assert.equal(a.confirmedBroken.length, 0);
   assert.match(a.warnings[0], /stylesheet \/wp-content\/style\.css did not load/);
   assert.match(a.warnings[0], /bot check/);
   assert.match(a.warnings[0], /Do not judge its appearance/);
@@ -38,15 +37,16 @@ test("assessStyling: a stylesheet still loading when we looked is unreliable, no
   assert.match(a.warnings[0], /1 of 2 stylesheets had not loaded/);
 });
 
-test("assessStyling: a 404 stylesheet counts as the site's problem only after the independent retry agrees", () => {
-  const unconfirmed = assessStyling({ linked: 1, applied: 0, failures: [{ url: "https://s/missing.css", status: 404, outcome: "broken", confirmed: false }] });
-  assert.equal(unconfirmed.unreliable, true, "one 404 is not proof");
-  assert.match(unconfirmed.warnings[0], /not confirmed/);
-  const confirmed = assessStyling({ linked: 1, applied: 0, failures: [{ url: "https://s/missing.css", status: 404, outcome: "broken", confirmed: true }] });
-  assert.equal(confirmed.unreliable, false);
-  assert.equal(confirmed.confirmedBroken.length, 1);
-  assert.match(confirmed.warnings[0], /answered 404 Not Found twice/);
-  assert.match(confirmed.warnings[0], /visitors/);
+test("assessStyling: a 404 stylesheet is inconclusive for our browser, never proof of what visitors see", () => {
+  const a = assessStyling({ linked: 1, applied: 0, failures: [{ url: "https://s/missing.css", status: 404, outcome: "broken" }] });
+  assert.equal(a.unreliable, true, "a 404 for our browser is not proof");
+  assert.match(a.warnings[0], /answered 404 Not Found when our browser asked for it/);
+  assert.match(a.warnings[0], /Do not judge its appearance/);
+  assert.doesNotMatch(a.warnings[0], /twice|visitors too|standard browser headers/);
+  // A repeated status changes nothing: there is no confirmation path.
+  const again = assessStyling({ linked: 1, applied: 0, failures: [{ url: "https://s/missing.css", status: 404, outcome: "broken", confirmed: true }] });
+  assert.equal(again.unreliable, true);
+  assert.equal(again.confirmedBroken, undefined);
 });
 
 test("isAppearanceNote recognises styling and layout complaints", () => {
@@ -64,4 +64,12 @@ test("noteRefusal blocks appearance notes only when styling is unreliable", () =
   assert.match(noteRefusal(unreliable, appearance), /did not fully load/);
   assert.equal(noteRefusal(reliable, appearance), null);
   assert.equal(noteRefusal(unreliable, content), null, "content notes are still allowed on an unstyled page");
+});
+
+test("classifyStylesheetResponse works from status and headers alone", () => {
+  const sg = classifyStylesheetResponse({ url: "https://s/a.css", status: 202, contentType: "text/html", headers: { "set-cookie": "nevercache-b39818=Y;Max-Age=-1" } });
+  assert.equal(sg.outcome, "challenge");
+  const html202 = classifyStylesheetResponse({ url: "https://s/a.css", status: 202, contentType: "text/html", headers: {} });
+  assert.equal(html202.outcome, "blocked", "an HTML answer without a known signature is a refusal, not proof of a check");
+  assert.match(html202.reason, /instead of a stylesheet/);
 });

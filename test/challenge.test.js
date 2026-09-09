@@ -66,3 +66,21 @@ test("landing on the bot check's own address is the challenge, whatever it answe
   // isChallenge honours the address even for a 200 with an ordinary looking body.
   assert.ok(isChallenge({ url: "https://site/.well-known/sgcaptcha/?r=%2F", status: 200, headers: { "content-type": "text/html" }, bodyStart: "<html><body>Checking the site connection security</body></html>" }));
 });
+
+test("a real page that merely mentions the SiteGround address is not a challenge; the refresh is", () => {
+  assert.equal(isChallenge({ status: 200, headers: { "content-type": "text/html" }, bodyStart: "<html><body><p>If you see /.well-known/sgcaptcha/ ask your host.</p></body></html>" }), null);
+  assert.ok(isChallenge({ status: 200, headers: { "content-type": "text/html" }, bodyStart: '<html><head><meta http-equiv="refresh" content="0;/.well-known/sgcaptcha/?r=%2F"></head></html>' }));
+});
+
+test("a challenge header is recognised on any status, including 200", () => {
+  const r = isChallenge({ url: "https://site/", status: 200, headers: { "content-type": "text/html", "cf-mitigated": "challenge" } });
+  assert.ok(r);
+  assert.equal(r.vendor, "cloudflare");
+});
+
+test("SiteGround is recognised from its headers alone, so a failed file's body never has to be read", () => {
+  const r = isChallenge({ status: 202, headers: { "content-type": "text/html", "set-cookie": "nevercache-b39818=Y;Max-Age=-1" }, bodyStart: "" });
+  assert.ok(r);
+  assert.equal(r.vendor, "siteground");
+  assert.equal(isChallenge({ status: 200, headers: { "content-type": "text/html", "set-cookie": "nevercache-b39818=Y" }, bodyStart: "" }), null, "the cookie alone on a 200 page is not a check");
+});

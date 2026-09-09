@@ -34,9 +34,8 @@
 
 import { openBrowser } from "../lib/browserConnect.js";
 import { chatTools, llmEnabled, modelName } from "../llm.js";
-import { isChallenge, CHALLENGE_REASON, headerValue } from "../lib/challenge.js";
+import { isChallenge, isChallengeUrl, CHALLENGE_REASON, headerValue } from "../lib/challenge.js";
 import { classifyStylesheetResponse, assessStyling, noteRefusal, statusWords } from "../lib/styling.js";
-import { CHROME_USER_AGENT } from "./browser.js";
 import { resolveTarget } from "../safety.js";
 
 export const MOBILE_USER_AGENT =
@@ -299,75 +298,101 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session, model = 
     let status = 0;
     let url = "";
     let main = false;
+    let mainFrame = false;
+    let req = null;
     try {
       status = res.status();
       url = res.url();
-      const req = res.request();
-      main = req.isNavigationRequest() && !req.frame().parentFrame();
+      req = res.request();
+      mainFrame = !req.frame().parentFrame();
+      main = req.isNavigationRequest() && mainFrame;
     } catch {
       return;
+    }
+    const headers = res.headers();
+    const ct = headerValue(headers, "content-type");
+    if (status === 429 && onSite(url)) {
+      state.limited = true;
+      facts.throttled = true;
     }
     if (main) {
       state.lastStatus = status;
       state.statusByUrl.set(url, status);
-      state.css = { doc: url, entries: new Map() }; // a new document starts a fresh stylesheet ledger
-      // A hosting bot check may stand in for the page itself (SiteGround answers 202 and then
-      // refreshes to its /.well-known/sgcaptcha/ page; Cloudflare answers 403 or 503). The
-      // body is read at once, because it is gone once the refresh moves the browser on. The
-      // challenge stays in force until a clean page arrives.
-      const byUrl = isChallenge({ url, status, headers: res.headers() });
-      const ct = headerValue(res.headers(), "content-type");
-      if (byUrl) {
-        state.docChallenge = { url: stripHash(url), vendor: byUrl.vendor, detail: byUrl.detail };
-        state.challengedPages.add(stripHash(url));
-        markChallenged(byUrl);
-      } else if (status === 202 || status === 403 || status === 503) {
-        if (!ct || /text\/html|application\/xhtml/i.test(ct)) {
-          state.pendingCss.push(res.text().catch(() => "").then((body) => {
-            const c = isChallenge({ url, status, headers: res.headers(), bodyStart: String(body || "").slice(0, 8192) });
-            if (c) {
-              state.docChallenge = { url: stripHash(url), vendor: c.vendor, detail: c.detail };
-              state.challengedPages.add(stripHash(url));
-              markChallenged(c);
-            } else if (status !== 202) {
-              state.docChallenge = null;
-            }
-          }));
-        }
-      } else if (status >= 200 && status < 400) {
-        state.docChallenge = null; // a real page answered: the check is over for this document
-      }
-    }
-    // Stylesheets: what the page needs to look like itself. Anything other than a CSS
-    // answer goes into the ledger with its reason, read off the response when needed.
-    let resourceType = "";
-    try { resourceType = req.resourceType(); } catch {}
-    if (!main && (resourceType === "stylesheet" || /\.css(?:[?#]|$)/i.test(url))) {
-      const headers = res.headers();
-      const ct = headerValue(headers, "content-type");
-      if (status >= 200 && status < 400 && /text\/css/i.test(ct)) {
-        state.css.entries.set(url, classifyStylesheetResponse({ url, status, contentType: ct }));
-      } else {
-        state.pendingCss.push(res.text().catch(() => "").then((body) => {
-          const entry = classifyStylesheetResponse({ url, status, contentType: ct, headers, bodyStart: String(body || "").slice(0, 8192) });
-          state.css.entries.set(url, entry);
-          if (entry.outcome === "challenge") markChallenged(entry);
+      const ledger = { doc: url, entries: new Map() }; // a new document starts a fresh stylesheet ledger
+      state.css = ledger;
+      // A challenge belongs to the answer that carried it: every document starts clean. The
+      // check's own address and a challenge header are recognised whatever the status; a
+      // small HTML answer (200, 202, 403, 503) is read at once, because it is gone once a
+      // refresh moves the browser on. A SiteGround check refreshes to its own
+      // /.well-known/sgcaptcha/ page, so the check stays in force across the refresh.
+      state.docChallenge = null;
+      const direct = isChallenge({ url, status, headers });
+      if (direct) {
+        setDocChallenge(url, direct, true);
+      } else if ((status === 200 || status === 202 || status === 403 || status === 503) && (!ct || /text\/html|application\/xhtml/i.test(ct))) {
+        // The full header set (set-cookie included) arrives separately and costs no request;
+        // it recognises a SiteGround answer even when the refresh has already moved the
+        // browser on. Only when the headers say nothing is the (small) body read. The answer's
+        // own address is a challenged page either way; the current-document flag is set only
+        // while it is still current.
+        state.pendingCss.push(res.allHeaders().catch(() => headers).then(async (h) => {
+          let c = isChallenge({ url, status, headers: h });
+          if (!c && smallBody(h)) {
+            const body = await res.text().catch(() => "");
+            c = isChallenge({ status, headers: h, bodyStart: String(body || "").slice(0, 8192) });
+          }
+          if (c) setDocChallenge(url, c, state.css === ledger);
         }));
       }
+      return;
     }
-    if (status === 429 && onSite(url)) {
-      state.limited = true;
-      facts.throttled = true;
+    // Stylesheets the page itself asked for (frames' own stylesheets are not the page's).
+    // Anything other than a CSS answer goes into the ledger with its reason.
+    if (!mainFrame) return;
+    let resourceType = "";
+    try { resourceType = req.resourceType(); } catch {}
+    if (resourceType !== "stylesheet" && !/\.css(?:[?#]|$)/i.test(url)) return;
+    // Judged from status and headers only. Reading a failed file's body would make the
+    // browser request it again on its own (Playwright falls back to loading the resource
+    // afresh when the body is not retained), outside the page and our guards. The full
+    // header set (set-cookie included) arrives separately and is awaited without any request.
+    const ledger = state.css;
+    const record = (h) => {
+      const entry = classifyStylesheetResponse({ url, status, contentType: ct, headers: h });
+      if (entry.outcome === "challenge") {
+        if (onSite(url)) markChallenged(entry);
+        else entry.reason = "that file's host put a bot check in front of our checker";
+      }
+      ledger.entries.set(url, entry);
+    };
+    record(headers);
+    if ((status === 202 || status === 403 || status === 503) && (!ct || /text\/html|application\/xhtml/i.test(ct))) {
+      state.pendingCss.push(res.allHeaders().then(record).catch(() => {}));
     }
   });
   page.on("requestfailed", (req) => {
     let resourceType = "";
     let url = "";
-    try { resourceType = req.resourceType(); url = req.url(); } catch { return; }
+    let mainFrame = false;
+    try { resourceType = req.resourceType(); url = req.url(); mainFrame = !req.frame().parentFrame(); } catch { return; }
+    if (!mainFrame) return;
     if (resourceType !== "stylesheet" && !/\.css(?:[?#]|$)/i.test(url)) return;
+    // A stylesheet the browser aborted after an error answer keeps that answer's status.
+    if (state.css.entries.has(url) && state.css.entries.get(url).status) return;
     const errorText = String((req.failure() && req.failure().errorText) || "did not load");
     state.css.entries.set(url, classifyStylesheetResponse({ url, status: 0, errorText }));
   });
+  /** A bot check answered a document; `current` says whether the browser is still on it. */
+  function setDocChallenge(url, c, current = true) {
+    if (current) state.docChallenge = { url: stripHash(url), vendor: c.vendor, detail: c.detail };
+    state.challengedPages.add(stripHash(url));
+    markChallenged(c);
+  }
+  /** Only small answers are read to tell a bot check from a real answer. */
+  function smallBody(headers) {
+    const len = Number(headerValue(headers, "content-length"));
+    return !Number.isFinite(len) || len <= 16384;
+  }
   /** Remember that this site put a bot check in front of us, for the report and the pipeline. */
   function markChallenged(c) {
     state.challenged = state.challenged || (c && c.reason) || CHALLENGE_REASON;
@@ -467,7 +492,7 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session, model = 
    * carries standard browser headers, and turns the ledger into warnings for the model.
    */
   async function judgeStyling(data, obsLeft) {
-    const out = { linked: 0, applied: 0, failed: [], warnings: [], unreliable: false, confirmedBroken: [], challenged: "" };
+    const out = { linked: 0, applied: 0, failed: [], warnings: [], unreliable: false, challenged: "" };
     const here = stripHash(page.url());
     if (state.docChallenge) {
       state.challengedPages.add(here);
@@ -484,53 +509,13 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session, model = 
     }
     await settleStylesheets(obsLeft);
     const failures = [...state.css.entries.values()].filter((e) => e.outcome !== "ok");
-    for (const f of failures) {
-      if (f.outcome === "broken" && f.confirmed === undefined) await confirmStylesheet(f);
-    }
     const a = assessStyling({ linked: counts ? counts.linked : 0, applied: counts ? counts.applied : 0, failures });
     out.linked = counts ? counts.linked : 0;
     out.applied = counts ? counts.applied : 0;
-    out.failed = failures.map((f) => ({ url: f.url, status: f.status, outcome: f.outcome, confirmed: f.confirmed === true }));
+    out.failed = failures.slice(0, 6).map((f) => ({ url: f.url, status: f.status, outcome: f.outcome }));
     out.warnings = a.warnings;
     out.unreliable = a.unreliable;
-    out.confirmedBroken = a.confirmedBroken;
     return out;
-  }
-
-  /**
-   * One 404 is not proof: ask for the stylesheet once more, from outside the page, with the
-   * headers a desktop browser sends. Only when that answer fails the same way is the
-   * stylesheet counted as the site's problem. Off-site hosts are checked against the same
-   * address rule as navigations before anything is requested.
-   */
-  async function confirmStylesheet(entry) {
-    entry.confirmed = false;
-    let target;
-    try { target = new URL(entry.url); } catch { return; }
-    if (!/^https?:$/.test(target.protocol)) return;
-    if (!onSite(entry.url)) {
-      const ok = await lookupHost(target).then((r) => r && r.ok).catch(() => false);
-      if (!ok) return;
-    }
-    try {
-      await sleep(300);
-      const r = await context.request.get(entry.url, {
-        headers: { "User-Agent": CHROME_USER_AGENT, Accept: "text/css,*/*;q=0.1", "Accept-Language": "en-US,en;q=0.9" },
-        timeout: 5000,
-        maxRedirects: 3,
-      });
-      const st = r.status();
-      const headers = r.headers();
-      let body = "";
-      try { body = String(await r.text()).slice(0, 8192); } catch {}
-      const again = classifyStylesheetResponse({ url: entry.url, status: st, contentType: headerValue(headers, "content-type"), headers, bodyStart: body });
-      entry.retry = { status: st, outcome: again.outcome };
-      if (again.outcome === "broken") entry.confirmed = true;
-      else if (again.outcome === "ok") entry.reason = `answered ${entry.status} ${statusWords(entry.status)} once but loaded when asked again with standard browser headers`;
-      else if (again.outcome === "challenge") { entry.outcome = "challenge"; entry.reason = again.reason; markChallenged(again); }
-    } catch (err) {
-      entry.retry = { error: String((err && err.message) || err).slice(0, 80) };
-    }
   }
 
   // Let the page finish loading and paint, within what is left of the action's 10 seconds.
@@ -756,11 +741,14 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session, model = 
     let where = here;
     const named = String(args.where == null ? "" : args.where).trim();
     if (named) {
-      try {
-        const w = new URL(named, homepage).href;
-        const hit = state.visited.find((v) => v === w) || state.visited.find((v) => sameAddress(v, w));
-        if (hit) where = hit;
-      } catch {}
+      let w = "";
+      try { w = new URL(named, homepage).href; } catch { w = ""; }
+      // Any page the agent looked at can be named, including one that turned out to be a bot
+      // check (so that it can be refused by name). An unknown address is not quietly re-attributed.
+      const known = [...state.visited, ...state.challengedPages, ...state.assessments.keys()];
+      const hit = w && (known.find((v) => v === w) || known.find((v) => sameAddress(v, w)));
+      if (hit) where = hit;
+      else if (!w || !sameAddress(w, here)) return { text: "That address is not one of the pages you opened, so the note was not recorded. Name the page you saw it on, or leave the address empty for the page you are on." };
     }
     const status = state.statusByUrl.get(where) ?? (sameAddress(where, here) ? state.lastStatus : 0);
 
@@ -771,20 +759,23 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session, model = 
     const assessment = state.assessments.get(stripHash(where)) || null;
     const refusal = noteRefusal(assessment, { title, what, category });
     if (refusal) return { text: refusal };
-    const cssEvidence = assessment && assessment.confirmedBroken && assessment.confirmedBroken.length ? assessment.confirmedBroken.slice(0, 2).map((f) => ({ url: f.url, status: f.status })) : [];
+    // What our browser observed about the page's stylesheets is recorded with the note. It is
+    // evidence of what happened to our request, never a claim about what visitors see.
+    const cssEvidence = assessment && Array.isArray(assessment.failed) ? assessment.failed.slice(0, 2).map((f) => ({ url: f.url, status: f.status, outcome: f.outcome })) : [];
     const noPicture = Boolean(assessment && assessment.unreliable);
 
     const entry = { title: fitTitle(title), what, why, fix, severity, category, quote, where, status, shot: null, cssEvidence, noPicture };
     if (state.shots.length < SHOT_KEYS.length && !noPicture) {
-      // A fresh picture of the page the agent is on. When the note is about a page it
-      // opened earlier, the picture it saw of that page is used, so the picture matches.
-      // When a fresh picture cannot be taken, the last one of this page stands in.
-      const elsewhere = !sameAddress(where, here) && state.shotByUrl.get(where);
-      const bytes = elsewhere || (await takeShot()) || state.shotByUrl.get(here) || null;
+      // A fresh picture only of the page the agent is on. A note about a page it opened
+      // earlier gets the picture it saw of that page, or none: the current page is never
+      // photographed on behalf of another address.
+      const bytes = sameAddress(where, here)
+        ? (await takeShot()) || state.shotByUrl.get(here) || null
+        : state.shotByUrl.get(where) || null;
       if (bytes) {
         const shot = {
           key: SHOT_KEYS[state.shots.length],
-          page: elsewhere ? where : here,
+          page: where,
           caption: CAPTION,
           highlighted: 0,
           mime: "image/jpeg",
@@ -1114,7 +1105,7 @@ function systemPrompt({ homepage, facts, maxSteps, budgetMs }) {
     "",
     "Being fair",
     "- Note only what you actually saw on this phone screen. Quote the text exactly as it appeared and give the page address. Do not guess at causes you cannot see, and do not invent problems.",
-    "- When a warning says a stylesheet did not load, or that a bot check answered instead of the page, the way that page looks is our checker being refused, not the site. Never note styling, colours, fonts, or layout for that page; such a note is refused anyway. Only a stylesheet the warning calls confirmed (it failed twice, once with standard browser headers) is the site's own problem.",
+    "- When a warning says a stylesheet did not load or answered with an error, or that a bot check answered instead of the page, the way that page looks tells you nothing about the site: our browser did not get the page as visitors do. Never note styling, colours, fonts, or layout for that page; such a note is refused anyway.",
     "- Prefer fewer, better notes. A site that works fine deserves zero notes, and that is a good result. Do not pad. Do not note design taste, missing features you wish existed, or small things a visitor would not notice.",
     "- Do not note: a cookie or consent banner that can be closed; a control we refused; content from another website that loaded slowly; text that was cut in the observation because of the 3500 character limit; a menu that simply needs a tap; a link you did not open yourself (another check tests every link); a page that our crawler saw but you did not open.",
     "- Old dates: a News or Events section whose newest item is more than about a year old is worth a note. An archive page or a dated blog post is not.",
@@ -1313,8 +1304,9 @@ function readPage({ maxControls, textLimit }) {
     break;
   }
 
-  // Stylesheets the page asked for, and how many actually arrived and applied.
-  const linkEls = document.querySelectorAll('link[rel~="stylesheet"]');
+  // Stylesheets the page meant to apply (enabled, not alternate, with an address), and how
+  // many actually arrived and applied.
+  const linkEls = Array.from(document.querySelectorAll('link[rel~="stylesheet"]')).filter((l) => !l.disabled && !/\balternate\b/i.test(l.rel) && l.getAttribute("href"));
   let applied = 0;
   for (const l of linkEls) { if (l.sheet) applied++; }
 
@@ -1323,7 +1315,7 @@ function readPage({ maxControls, textLimit }) {
 
 /** Runs inside the page: linked vs applied stylesheets, for the short wait on slow ones. */
 function countStylesheets() {
-  const linkEls = document.querySelectorAll('link[rel~="stylesheet"]');
+  const linkEls = Array.from(document.querySelectorAll('link[rel~="stylesheet"]')).filter((l) => !l.disabled && !/\balternate\b/i.test(l.rel) && l.getAttribute("href"));
   let applied = 0;
   for (const l of linkEls) { if (l.sheet) applied++; }
   return { linked: linkEls.length, applied };
@@ -1344,8 +1336,9 @@ function toFindings(notes) {
     const lines = [n.where, n.quote ? `Seen on the page: "${n.quote}"` : n.what];
     const cssItems = [];
     for (const c of Array.isArray(n.cssEvidence) ? n.cssEvidence : []) {
-      lines.push(`The page's stylesheet ${pathOf(c.url)} answered ${c.status} ${statusWords(c.status)} twice, including once with standard browser headers.`);
-      cssItems.push({ url: c.url, status: c.status, statusText: statusWords(c.status), page: n.where, kind: "resource" });
+      const what = c.status ? `answered ${c.status} ${statusWords(c.status)}` : "did not complete";
+      lines.push(`Our browser's request for the page's stylesheet ${pathOf(c.url)} ${what}. This records what happened to our request; it does not show what visitors see.`);
+      cssItems.push({ url: c.url, status: c.status || 0, statusText: c.status ? statusWords(c.status) : "did not load", page: n.where, kind: "resource" });
     }
     if (n.noPicture) lines.push("No picture was kept: the page did not fully load for our checker.");
     if (more.length) lines.push(`Also seen on ${more.length === 1 ? "another page" : more.length + " other pages"}: ${more.map((u) => pathOf(u)).join(", ")}`);

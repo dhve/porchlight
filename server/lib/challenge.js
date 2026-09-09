@@ -64,7 +64,11 @@ function htmlLike(contentType) {
  * @param {{status:number, headers?:any, contentType?:string, bodyStart?:string, url?:string}} r
  * @returns {null | { vendor: "siteground"|"cloudflare"|"generic", reason: string, detail: string }}
  */
-/** Paths that are the bot check itself: landing on one of these is the challenge, whatever it answers. */
+/**
+ * Paths that are the bot check itself: a DOCUMENT landing on one of these is the challenge,
+ * whatever it answers. Apply only to top-level navigations: Cloudflare also serves ordinary
+ * scripts under /cdn-cgi/challenge-platform/ on pages that are not challenged at all.
+ */
 export const CHALLENGE_PATH_RE = /\/\.well-known\/sgcaptcha\/|\/cdn-cgi\/challenge-platform\/|\/cdn-cgi\/l\/chk_(?:jschl|captcha)/i;
 
 /** Is this address the bot check page itself? Returns the same shape as isChallenge. */
@@ -90,10 +94,19 @@ export function isChallenge(r) {
   }
 
   if (!htmlLike(ctype)) return null;
+
+  // SiteGround marks its check answers with a nevercache cookie: recognisable from the
+  // headers alone, which matters because reading a failed file's body makes the browser
+  // request it again.
+  if (status === 202 && /(?:^|[,\s])nevercache-/i.test(headerValue(headers, "set-cookie"))) {
+    return { vendor: "siteground", reason: CHALLENGE_REASON, detail: `SiteGround bot check (status ${status}, nevercache cookie)` };
+  }
+
   if (body.length > MAX_CHALLENGE_BODY) return null;
 
-  // SiteGround: a tiny page that refreshes to the sgcaptcha check. Seen with status 202.
-  if (/\/\.well-known\/sgcaptcha\//i.test(body)) {
+  // SiteGround: a tiny page that refreshes to the sgcaptcha check. Seen with status 202. A
+  // page that merely mentions the address in its text is not a check.
+  if (/http-equiv=["']?refresh["']?[^>]*\/\.well-known\/sgcaptcha\//i.test(body) || (status === 202 && /\/\.well-known\/sgcaptcha\//i.test(body))) {
     return { vendor: "siteground", reason: CHALLENGE_REASON, detail: `SiteGround bot check (status ${status}, refresh to /.well-known/sgcaptcha/)` };
   }
 

@@ -24,7 +24,7 @@
 // checkout, so nothing on the site is changed.
 
 import { openBrowser, browserMode as configuredBrowserMode } from "../lib/browserConnect.js";
-import { isChallenge, CHALLENGE_REASON, headerValue } from "../lib/challenge.js";
+import { isChallenge, isChallengeUrl, CHALLENGE_REASON, headerValue } from "../lib/challenge.js";
 
 export const CHROME_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36";
@@ -112,7 +112,17 @@ export async function runBrowser(ctx) {
     // our checker. They are set aside, counted, and reported to the pipeline.
     for (const u of challengedSubs.keys()) { failed.delete(u); responses.delete(u); }
     const challengedCount = challengedSubs.size;
-    if (challengedCount) facts.challenged = facts.challenged || CHALLENGE_REASON;
+    // A script answered by a bot check runs HTML as JavaScript and throws; that error is the
+    // check's, not the site's.
+    for (let i = consoleErrors.length - 1; i >= 0; i--) {
+      const e = consoleErrors[i];
+      const fromChallenged = e.url && challengedSubs.has(e.url);
+      // A syntax error with no location while a script was challenged is that HTML being parsed as code.
+      const parseOfCheck = challengedCount > 0 && !e.url && /SyntaxError|Unexpected token/i.test(e.raw || e.text);
+      if (fromChallenged || parseOfCheck) consoleErrors.splice(i, 1);
+    }
+    // Only a check on the site's own host says something about the site's hosting.
+    if ([...challengedSubs.keys()].some((u) => sameSite(u, siteHost))) facts.challenged = facts.challenged || CHALLENGE_REASON;
     const mainOk = mainStatus > 0 && mainStatus < 400;
     const isMainDocument = (u) => u === homepage || u === mainUrl;
 
@@ -353,7 +363,8 @@ async function observe(context, url) {
   const responses = new Map(); // url -> status, every response we saw
   const challengedSubs = new Map(); // url -> detail, files answered by a hosting bot check instead
   const pendingBodies = []; // small HTML answers being read to tell a bot check from a real answer
-  let docChallenge = null; // a bot check that answered the page itself, read eagerly and kept until a clean page arrives
+  let docChallenge = null; // a bot check that answered the current document, read eagerly
+  let documents = 0; // main-frame answers seen, so a late body read cannot mark a later document
 
   const obsHost = hostOf(url);
   page.on("pageerror", (err) => {
@@ -381,22 +392,37 @@ async function observe(context, url) {
     let main = false;
     try { const rq = res.request(); main = rq.isNavigationRequest() && !rq.frame().parentFrame(); } catch {}
     const ct = headerValue(res.headers(), "content-type");
-    const byUrl = isChallenge({ url: u, status: st, headers: res.headers() });
+    const small = (() => { const len = Number(headerValue(res.headers(), "content-length")); return !Number.isFinite(len) || len <= 16384; })();
+    const htmlish = !ct || /text\/html|application\/xhtml/i.test(ct);
     if (main) {
-      if (byUrl) docChallenge = byUrl;
-      else if ((st === 202 || st === 403 || st === 503) && (!ct || /text\/html|application\/xhtml/i.test(ct))) {
-        pendingBodies.push(res.text().catch(() => "").then((body) => {
-          const c = isChallenge({ url: u, status: st, headers: res.headers(), bodyStart: String(body || "").slice(0, 8192) });
-          if (c) docChallenge = c; else if (st !== 202) docChallenge = null;
+      // Each document starts clean; a challenge belongs to the answer that carried it. The
+      // check's own address and a challenge header are recognised whatever the status; a
+      // small HTML answer (200, 202, 403, 503) is read to tell.
+      const direct = isChallenge({ url: u, status: st, headers: res.headers() });
+      const thisDoc = ++documents;
+      docChallenge = direct || null;
+      if (!direct && (st === 200 || st === 202 || st === 403 || st === 503) && htmlish) {
+        // Full headers first (no request); the small body only when they say nothing.
+        pendingBodies.push(res.allHeaders().catch(() => res.headers()).then(async (h) => {
+          let c = isChallenge({ url: u, status: st, headers: h });
+          if (!c && small) {
+            const body = await res.text().catch(() => "");
+            c = isChallenge({ status: st, headers: h, bodyStart: String(body || "").slice(0, 8192) });
+          }
+          if (c && documents === thisDoc) docChallenge = c;
         }));
-      } else if (st >= 200 && st < 400) docChallenge = null;
-    } else if (byUrl) {
-      challengedSubs.set(u, byUrl.detail);
-    } else if ((st === 202 || st === 403 || st === 503) && (!ct || /text\/html|application\/xhtml/i.test(ct))) {
-      pendingBodies.push(res.text().catch(() => "").then((body) => {
-        const c = isChallenge({ url: u, status: st, headers: res.headers(), bodyStart: String(body || "").slice(0, 8192) });
-        if (c) challengedSubs.set(u, c.detail);
-      }));
+      }
+    } else {
+      // Files are judged from status and headers, never by their address (Cloudflare serves
+      // ordinary scripts under /cdn-cgi/challenge-platform/ on pages that are not challenged)
+      // and never by reading their body (that makes the browser request the file again on
+      // its own).
+      const byHeader = isChallenge({ status: st, headers: res.headers() });
+      if (byHeader) challengedSubs.set(u, byHeader.detail);
+      else if ((st === 202 || st === 403 || st === 503) && htmlish) {
+        // The full header set (set-cookie included) arrives separately; no request is made.
+        pendingBodies.push(res.allHeaders().then((h) => { const c = isChallenge({ status: st, headers: h }); if (c) challengedSubs.set(u, c.detail); }).catch(() => {}));
+      }
     }
     if (st >= 400 && !failed.has(u)) {
       let retryAfterMs = null;

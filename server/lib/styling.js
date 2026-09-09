@@ -41,7 +41,8 @@ export function classifyStylesheetResponse({ url, status, contentType = "", head
   const entry = { url: String(url || ""), status: Number(status) || 0, contentType: String(contentType || "").toLowerCase(), outcome: "ok", reason: "", errorText: String(errorText || "") };
   if (entry.errorText || (!entry.status && !entry.contentType)) {
     entry.outcome = "failed";
-    entry.reason = entry.errorText ? `the request failed (${entry.errorText.replace(/^net::/, "")})` : "the request never completed";
+    if (/ERR_BLOCKED_BY_ORB|ERR_BLOCKED_BY_RESPONSE/i.test(entry.errorText)) entry.reason = "the browser refused an answer from that host that was not a stylesheet";
+    else entry.reason = entry.errorText ? `the request failed (${entry.errorText.replace(/^net::/, "")})` : "the request never completed";
     return entry;
   }
   const c = isChallenge({ status: entry.status, headers, contentType: entry.contentType, bodyStart });
@@ -72,53 +73,47 @@ export function classifyStylesheetResponse({ url, status, contentType = "", head
 /**
  * Judge whether the page's appearance can be trusted.
  * @param {{ linked:number, applied:number, failures:Array<object> }} p
- *   linked   how many <link rel="stylesheet"> the page has
+ *   linked   how many stylesheets the page meant to apply (enabled, not alternate)
  *   applied  how many of them have a loaded sheet
- *   failures stylesheet entries from classifyStylesheetResponse whose outcome is not "ok";
- *            a "broken" entry may carry confirmed: true when an independent retry with
- *            standard browser headers answered the same way
- * @returns {{ unreliable:boolean, confirmedBroken:object[], warnings:string[], reason:string }}
+ *   failures stylesheet entries from classifyStylesheetResponse whose outcome is not "ok"
+ * @returns {{ unreliable:boolean, warnings:string[], reason:string }}
+ *
+ * Any stylesheet that did not arrive for OUR browser makes the appearance inconclusive: a
+ * bot check, a refusal, a network failure, and a 404 alike. Repeating the request from the
+ * same address would not show what visitors see, so nothing here ever claims that a page
+ * looks unstyled for them; the observed status is recorded as evidence and no more.
  */
 export function assessStyling({ linked = 0, applied = 0, failures = [] } = {}) {
   const warnings = [];
-  const confirmedBroken = [];
   let unreliable = false;
   let reason = "";
   const list = Array.isArray(failures) ? failures.filter((f) => f && f.outcome && f.outcome !== "ok") : [];
 
   for (const f of list.slice(0, 3)) {
     const path = pathOf(f.url);
+    unreliable = true;
     if (f.outcome === "broken") {
-      if (f.confirmed === true) {
-        confirmedBroken.push(f);
-        warnings.push(`The page's stylesheet ${path} answered ${f.status} ${statusWords(f.status)} twice, including once with standard browser headers, so the page looks unstyled for visitors too.`);
-      } else {
-        unreliable = true;
-        reason = reason || "a stylesheet failed once and that is not confirmed";
-        warnings.push(`The page's stylesheet ${path} answered ${f.status} ${statusWords(f.status)} once, which is not confirmed, so the page may not look the way it does for visitors. Do not judge its appearance.`);
-      }
+      reason = reason || `a stylesheet answered ${f.status} ${statusWords(f.status)} for our browser`;
+      warnings.push(`The page's stylesheet ${path} answered ${f.status} ${statusWords(f.status)} when our browser asked for it, so the page may not look the way it does for visitors. Do not judge its appearance.`);
       continue;
     }
-    unreliable = true;
     const why = f.outcome === "challenge" ? (f.reason || CHALLENGE_REASON) : (f.reason || "it did not load");
     reason = reason || why;
     warnings.push(`The page's stylesheet ${path} did not load (${why}). The page looks unstyled for that reason, not because of its design. Do not judge its appearance.`);
   }
 
-  const known = new Set(list.map((f) => f.url));
-  const unexplained = Math.max(0, linked - applied - list.filter((f) => known.has(f.url)).length);
-  if (!list.length && linked > applied) {
-    unreliable = true;
-    reason = reason || "a stylesheet had not loaded when we looked";
-    const missing = linked - applied;
-    warnings.push(`${missing} of ${linked} stylesheet${linked === 1 ? "" : "s"} had not loaded when we looked, so the page may not look the way it does for visitors. Do not judge its appearance.`);
-  } else if (unexplained > 0 && !unreliable) {
-    unreliable = true;
-    reason = reason || "a stylesheet had not loaded when we looked";
-    warnings.push(`${unexplained} of ${linked} stylesheet${linked === 1 ? "" : "s"} had not loaded when we looked, so the page may not look the way it does for visitors. Do not judge its appearance.`);
+  if (linked > applied) {
+    const known = new Set(list.map((f) => f.url));
+    const unexplained = Math.max(0, linked - applied - list.filter((f) => known.has(f.url)).length);
+    if (!list.length || unexplained > 0) {
+      unreliable = true;
+      const missing = list.length ? unexplained : linked - applied;
+      reason = reason || "a stylesheet had not loaded when we looked";
+      warnings.push(`${missing} of ${linked} stylesheet${linked === 1 ? "" : "s"} had not loaded when we looked, so the page may not look the way it does for visitors. Do not judge its appearance.`);
+    }
   }
 
-  return { unreliable, confirmedBroken, warnings, reason };
+  return { unreliable, warnings, reason };
 }
 
 const APPEARANCE_RE = /unstyled|no styl|styl(?:e|es|ing) (?:is |are )?(?:missing|gone|not load)|plain (?:blue )?(?:links|text|list)|missing (?:styles?|layout|colou?rs?|design|logo|branding|formatting)|default (?:font|fonts|links|styling|browser style)|looks? (?:broken|plain|bare|unfinished|like raw)|blank (?:area|space|page|block)|no (?:colou?rs?|layout|formatting|design|css)|not styled|raw html|bulleted (?:nav|menu|links|navigation)|layout (?:is )?(?:broken|missing|gone)|cut off|overlap|run[s]? off (?:the )?(?:phone )?screen|wider than the (?:phone )?screen|tiny text|unreadable/i;
