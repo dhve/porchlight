@@ -27,12 +27,16 @@ export async function observeCheck(check, fn, ctx = {}) {
   if (status === "completed" && (unresolvedRequests.size || missingCertificate)) status = "inconclusive";
   if (check === "recon" && !out.facts?.reachable) status = "inconclusive";
   if (check === "recon" && out.facts?.challenged) status = "inconclusive";
+  const unusableHomepage = check === "recon" && Number.isFinite(out.facts?.statusCode) &&
+    (out.facts.statusCode < 200 || out.facts.statusCode >= 300);
+  if (unusableHomepage) status = "inconclusive";
   const coverage = { check, status };
   if (status !== "completed") coverage.reason = typeof out.reason === "string" && out.reason.trim()
     ? out.reason.trim().slice(0, 500)
     : missingCertificate ? "The TLS check did not return usable certificate evidence."
       : unresolvedRequests.size ? "Some requests needed for this check did not complete."
       : check === "recon" && out.facts?.challenged ? "A verification challenge prevented the homepage check."
+      : unusableHomepage ? `The homepage returned HTTP ${out.facts.statusCode}, so its content could not be fully checked.`
       : check === "recon" ? "The homepage could not be checked, so follow-up checks could not run." : "This check did not complete.";
   const recordedAt = new Date().toISOString();
   out = { ...out, findings: out.findings.filter((f) => f && typeof f === "object").map((f) => ({

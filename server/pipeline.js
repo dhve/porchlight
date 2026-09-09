@@ -174,10 +174,11 @@ async function finish({ url, display, userId = null, facts, findings, passes, pl
   const { grade, gradeLabel, score, ringPercent, tally } = scoreReport(unique, assessment);
 
   // Pictures of the affected pages are taken while the write-up is produced; both are bounded.
-  if (facts?.reachable && !facts.challenged) await respectThrottle({ facts, client }, onEvent, "taking pictures of the affected pages");
-  const proofPromise = facts?.reachable && !facts.challenged
+  const canCaptureProof = facts?.reachable && !facts.challenged && coverage.find((c) => c.check === "recon")?.status === "completed";
+  if (canCaptureProof) await respectThrottle({ facts, client }, onEvent, "taking pictures of the affected pages");
+  const proofPromise = canCaptureProof
     ? captureProof({ facts, findings: unique, onEvent }).catch((err) => ({ shots: [], skipped: `capture failed: ${String(err.message).slice(0, 100)}` }))
-    : Promise.resolve({ shots: [], skipped: facts?.challenged ? "A verification challenge prevented page capture." : "site unreachable" });
+    : Promise.resolve({ shots: [], skipped: facts?.challenged ? "A verification challenge prevented page capture." : "The homepage check did not complete." });
   const [written, proof] = await Promise.all([
     writeReport({
       target: display,

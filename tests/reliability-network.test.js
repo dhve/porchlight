@@ -12,7 +12,7 @@ mock.module('../server/lib/browserConnect.js', { namedExports: {
 } });
 const { runCheckup } = await import('../server/pipeline.js');
 
-for (const status of [200, 503]) {
+for (const status of [200, 403, 404, 503]) {
   test(`real pipeline with homepage HTTP ${status} reports only supported coverage`, async (t) => {
     t.mock.method(globalThis, 'fetch', async (value) => {
       const url = new URL(value);
