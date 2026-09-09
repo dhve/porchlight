@@ -101,6 +101,17 @@ export function createRetestRouter({
 
 export const retestRouter = createRetestRouter();
 
+// One current observation of a recorded address for automatic feedback processing.
+// Same public-address, port, redirect, and challenge rules as the route; no baseline
+// comparison and nothing saved. The answer describes now and only now.
+export async function observeRecordedAddress(rawUrl, { resolve = resolveTarget, makeClient = createClient, allowPort = defaultAllowPort } = {}) {
+  const target = parseHttpUrl(rawUrl);
+  if (!target) return { url: typeof rawUrl === 'string' ? rawUrl.slice(0, 500) : '', status: 0, statusText: 'not an HTTP address', classification: 'inconclusive', reason: 'invalid-address', observedAt: new Date().toISOString() };
+  if (!(await allowed(target, resolve, allowPort))) return { url: target.href, status: 0, statusText: 'not allowed', classification: 'inconclusive', reason: 'not-allowed', observedAt: new Date().toISOString() };
+  const observation = await fetchStatus(makeClient(), target, resolve, allowPort);
+  return { url: target.href, ...observation, observedAt: new Date().toISOString() };
+}
+
 function classify(status) {
   if (status >= 200 && status < 300) return 'working';
   if (BROKEN_STATUSES.has(status)) return 'broken';
@@ -153,7 +164,8 @@ function parseHttpUrl(value) {
     return url;
   } catch { return null; }
 }
-async function allowed(url, resolve, allowPort = (port) => !port || port === '80' || port === '443') {
+const defaultAllowPort = (port) => !port || port === '80' || port === '443';
+async function allowed(url, resolve, allowPort = defaultAllowPort) {
   if (!url || !['http:', 'https:'].includes(url.protocol) || url.username || url.password || !allowPort(url.port)) return false;
   try { return Boolean((await resolve(url))?.ok); } catch { return false; }
 }
