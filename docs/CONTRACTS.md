@@ -1,5 +1,12 @@
 # Sutros accounts + community: implementation contracts
 
+The September 9 evidence and feedback changes supersede the older contracts
+below where they differ. See [the current specification](superpowers/specs/2026-09-09-trust-and-feedback-design.md)
+and [the review and evaluation guide](feedback-validation.md). In particular,
+public responses omit submitter identity, new signatures use version 2,
+incomplete checks cannot imply a clean result, and votes remain separate from
+reviewed evidence. The older sections record prior implementation rounds.
+
 Read this before touching code. Modules are owned; do not edit files you do not own.
 Stack: Node 22 ESM, Express, Postgres via `pg` (helpers in server/db.js), vanilla-JS SPA.
 Live: https://sutros.org (Caddy TLS proxy -> :3300). APP_URL env is the public origin.
