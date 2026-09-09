@@ -8,7 +8,8 @@
 //  - HEAD first (cheap), GET when HEAD is not allowed
 //  - any error answer gets one more look with standard browser headers, so a
 //    site that only refuses automated checkers is never reported as broken
-//  - only 404, 410, 500, 502, 504 (twice) or a failed connection count as broken;
+//  - only 404, 410, 500, 502, 504 (twice) count as broken; a connection that never
+//    got an answer is a coverage gap, never a broken link or image;
 //    401, 403, 405, 406, 429, 503 mean the site limited our checker
 //  - after two answers of 429 from one host we stop and say so
 //  - 250 ms between requests, and the whole check stops after a time budget
@@ -68,10 +69,10 @@ export async function runLinks(ctx) {
     if (sent++ > 0) await sleep(PACE_MS);
   };
 
-  const results = { image: [], link: [] }; // { item, verdict, status, statusText }
+  const results = { image: [], link: [] }; // { item, verdict, status, statusText, reason }
   for (const item of [...imgSample, ...linkSample]) {
     if (throttle.stopped) {
-      results[item.kind].push({ item, verdict: "untested", status: 0, statusText: "not tested" });
+      results[item.kind].push({ item, verdict: "untested", status: 0, statusText: "not tested", reason: throttle.reason });
       continue;
     }
     if (outOfBudget || Date.now() > deadline) {
@@ -86,12 +87,13 @@ export async function runLinks(ctx) {
     }
     const r = await probeAddress(client, item.url, { headFirst: true, throttle, pace });
     if (r.reason === "budget") outOfBudget = true;
-    results[item.kind].push({ item, verdict: r.reason === "budget" ? "untried" : r.verdict, status: r.status, statusText: r.statusText, retried: r.retried });
+    results[item.kind].push({ item, verdict: r.reason === "budget" ? "untried" : r.verdict, status: r.status, statusText: r.statusText, retried: r.retried, reason: r.reason, transport: r.transport });
   }
 
-  const imgStats = summarize(results.image);
-  const linkStats = summarize(results.link);
-  const stats = summarize([...results.image, ...results.link]);
+  const stopReason = throttle.reason;
+  const imgStats = summarize(results.image, stopReason);
+  const linkStats = summarize(results.link, stopReason);
+  const stats = summarize([...results.image, ...results.link], stopReason);
   const complete = stats.ok + stats.broken.length === stats.sampled;
 
   if (imgStats.broken.length) {
@@ -176,8 +178,8 @@ function hostGuard(origin, resolve = resolveTarget) {
   };
 }
 
-function summarize(list) {
-  const out = { sampled: list.length, ok: 0, broken: [], limited: 0, inconclusive: 0, untried: 0, untested: 0, skipped: 0, tested: 0 };
+function summarize(list, stopReason = "") {
+  const out = { sampled: list.length, ok: 0, broken: [], limited: 0, inconclusive: 0, unreachable: 0, unreachableText: "", untried: 0, untested: 0, skipped: 0, tested: 0, stopReason };
   for (const r of list) {
     if (r.verdict === "skipped") { out.skipped++; continue; }
     if (r.verdict === "untried") { out.untried++; continue; }
@@ -186,6 +188,7 @@ function summarize(list) {
     if (r.verdict === "ok") out.ok++;
     else if (r.verdict === "broken") out.broken.push(r);
     else if (r.verdict === "blocked") out.limited++;
+    else if (r.transport) { out.unreachable++; out.unreachableText = out.unreachableText || r.statusText; }
     else out.inconclusive++;
   }
   return out;
@@ -194,8 +197,13 @@ function summarize(list) {
 function limitations(stats) {
   let text = "";
   if (stats.limited) text += ` Refused or blocked by the site: ${stats.limited}.`;
+  if (stats.unreachable) text += ` Could not connect from our network: ${stats.unreachable} (${stats.unreachableText}). A connection that fails without an answer does not show what visitors see.`;
   if (stats.inconclusive) text += ` No conclusive answer: ${stats.inconclusive}.`;
-  if (stats.untested) text += ` Left untested after a site limit: ${stats.untested}.`;
+  if (stats.untested) {
+    text += stats.stopReason === "unreachable"
+      ? ` Left untested after the site stopped accepting connections from our network: ${stats.untested}.`
+      : ` Left untested after a site limit: ${stats.untested}.`;
+  }
   if (stats.untried) text += ` Left untested after the time or request budget: ${stats.untried}.`;
   if (stats.skipped) text += ` Not requested because of the safety guard: ${stats.skipped}.`;
   return text;
@@ -225,7 +233,8 @@ function buildEvidence(stats, kind, origin) {
 
   const method =
     `We selected ${stats.sampled} ${kind} addresses and attempted requests for ${stats.tested}, sending a HEAD request first and a GET when the server does not allow HEAD. ` +
-    `Any address that answered with an error or failed to connect was requested once more with standard browser headers after a short wait, and it counts as broken only when the second answer was also 404, 410, 500, 502, or 504, or when the connection failed both times.`;
+    `Any address that answered with an error was requested once more with standard browser headers after a short wait, and it counts as broken only when the second answer was also 404, 410, 500, 502, or 504. ` +
+    `A connection that failed without an answer is never counted as broken; it is listed as a gap in what we could test, because a failure between our network and the site does not show what visitors see.`;
 
   return { lines, items, pages, method, note };
 }

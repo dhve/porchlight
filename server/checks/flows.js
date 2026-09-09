@@ -8,7 +8,9 @@
 // answer gets one more look with standard browser headers, so a site that only
 // refuses automated checkers (401, 403, 405, 406, 429, 503) is never called a
 // broken flow. Only 404/410 (missing) and 500/502/504 (error) count, and only
-// when both tries agree.
+// when both tries agree. A connection that never got an answer (refused, reset,
+// timed out, unresolved) is a gap in coverage, never a finding: it happened
+// between our network and the site and says nothing about visitors.
 
 import { probeAddress, createThrottleGuard, sleep } from "../lib/http.js";
 
@@ -63,6 +65,8 @@ export async function runFlows(ctx) {
   let broken = 0;
   let blocked = 0;
   let inconclusive = 0;
+  let unreachable = 0;
+  let unreachableText = "";
   let untested = 0;
   let outOfBudget = false;
   for (const [href, { name, text }] of list) {
@@ -74,26 +78,26 @@ export async function runFlows(ctx) {
       continue;
     }
     if (r.verdict === "blocked") { blocked++; continue; }
-    if (r.verdict !== "broken") { inconclusive++; continue; }
+    // No HTTP answer at all: a gap, never a finding.
+    if (r.verdict !== "broken" || !(r.status > 0)) {
+      if (r.transport) { unreachable++; unreachableText = unreachableText || r.statusText; } else inconclusive++;
+      continue;
+    }
     broken++;
 
     const path = pathOf(href, origin);
     const label = text ? `link "${text}"` : "link";
-    const answer = r.status > 0 ? `${r.status} ${r.statusText}` : r.statusText;
+    const answer = `${r.status} ${r.statusText}`;
     const lines = [
       `${answer}  ${path}  (${label} on ${pathOf(homepage, origin)})`,
-      r.retried
-        ? `Tried again with standard browser headers after a short wait: ${answer}.`
-        : `The connection failed before the site answered (${r.statusText}).`,
+      `Tried again with standard browser headers after a short wait: ${answer}.`,
     ];
     const items = [{ url: href, status: r.status, statusText: r.statusText, page: homepage, text: text || "", kind: "page" }];
-    const method = r.retried
-      ? `We followed the ${name} ${label} from the homepage with a plain GET request, then waited and requested the same address once more with standard browser headers. ` +
-        `We report it only because both tries failed, and the second answer was ${answer}.`
-      : `We followed the ${name} ${label} from the homepage with a plain GET request. ` +
-        `We report it because the connection failed before the site answered (${r.statusText}).`;
+    const method =
+      `We followed the ${name} ${label} from the homepage with a plain GET request, then waited and requested the same address once more with standard browser headers. ` +
+      `We report it only because both tries answered with an error, and the second answer was ${answer}. A connection that fails without an answer is never reported this way.`;
 
-    if (r.status >= 500 || r.status === 0) {
+    if (r.status >= 500) {
       findings.push({
         id: `flow-error-${name}`,
         category: "broken-flow",
@@ -130,8 +134,13 @@ export async function runFlows(ctx) {
   if (complete) return { findings, passes, status: "completed" };
   let reason = `${loaded + broken} of ${list.length} sampled customer pages gave conclusive results (${loaded} working, ${broken} broken).`;
   if (blocked) reason += ` Refused or blocked by the site: ${blocked}.`;
+  if (unreachable) reason += ` Could not connect from our network: ${unreachable} (${unreachableText}). A connection that fails without an answer does not show what visitors see.`;
   if (inconclusive) reason += ` No conclusive answer: ${inconclusive}.`;
-  if (untested) reason += ` Left untested after a site limit or the request budget: ${untested}.`;
+  if (untested) {
+    reason += throttle.reason === "unreachable"
+      ? ` Left untested after the site stopped accepting connections from our network: ${untested}.`
+      : ` Left untested after a site limit or the request budget: ${untested}.`;
+  }
   return { findings, passes, status: "inconclusive", reason };
 }
 

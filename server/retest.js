@@ -45,6 +45,8 @@ export function createRetestRouter({
   loadReport = getReport, dbOn = dbEnabled, resolve = resolveTarget,
   makeClient = createClient, consumeFn = consume, ipFn = ip, gapMs = 200,
   saveAttempt = saveRetestAttempt,
+  // Only standard web ports are rechecked in production; tests inject a local port.
+  allowPort = (port) => !port || port === '80' || port === '443',
 } = {}) {
   const router = express.Router();
   router.post('/api/reports/:id/retest', async (req, res) => {
@@ -72,8 +74,8 @@ export function createRetestRouter({
       for (const item of selected) {
         if (items.length) await sleep(gapMs);
         const target = parseHttpUrl(item.url);
-        const observation = await allowed(target, resolve)
-          ? await fetchStatus(client, target, resolve)
+        const observation = await allowed(target, resolve, allowPort)
+          ? await fetchStatus(client, target, resolve, allowPort)
           : { status: 0, statusText: 'not allowed', classification: 'inconclusive', reason: 'not-allowed' };
         const previous = Number.isInteger(item.status) && item.status > 0 ? item.status : 0;
         const baseline = classify(previous);
@@ -104,7 +106,7 @@ function classify(status) {
   return 'inconclusive';
 }
 
-async function fetchStatus(client, target, resolve) {
+async function fetchStatus(client, target, resolve, allowPort) {
   let current = target;
   const visited = new Set();
   for (let hop = 0; hop <= MAX_HOPS; hop++) {
@@ -112,8 +114,10 @@ async function fetchStatus(client, target, resolve) {
     let response;
     try { response = await client.get(current.href, { browserLike: true, timeoutMs: 8000, redirect: 'manual' }); }
     catch (error) {
+      // No HTTP answer: what happened between our network and the site, never a verdict on
+      // the address. The recorded baseline cannot be compared with it, so changed stays null.
       const failure = classifyError(error);
-      return { status: 0, statusText: failure.statusText, classification: 'inconclusive', reason: failure.reason || 'request-failed', finalUrl: current.href };
+      return { status: 0, statusText: failure.statusText, classification: 'inconclusive', reason: failure.reason || 'request-failed', transport: Boolean(failure.transport), finalUrl: current.href };
     }
     let challenge;
     try { challenge = await inspectChallenge(response); }
@@ -130,7 +134,7 @@ async function fetchStatus(client, target, resolve) {
     next.hash = '';
     if (visited.has(next.href)) return { ...observed, classification: 'inconclusive', reason: 'redirect-loop' };
     if (hop === MAX_HOPS) return { ...observed, classification: 'inconclusive', reason: 'redirect-limit' };
-    if (!(await allowed(next, resolve))) return { ...observed, classification: 'inconclusive', reason: 'not-allowed' };
+    if (!(await allowed(next, resolve, allowPort))) return { ...observed, classification: 'inconclusive', reason: 'not-allowed' };
     current = next;
   }
 }
@@ -148,7 +152,7 @@ function parseHttpUrl(value) {
     return url;
   } catch { return null; }
 }
-async function allowed(url, resolve) {
-  if (!url || !['http:', 'https:'].includes(url.protocol) || url.username || url.password || (url.port && !['80', '443'].includes(url.port))) return false;
+async function allowed(url, resolve, allowPort = (port) => !port || port === '80' || port === '443') {
+  if (!url || !['http:', 'https:'].includes(url.protocol) || url.username || url.password || !allowPort(url.port)) return false;
   try { return Boolean((await resolve(url))?.ok); } catch { return false; }
 }

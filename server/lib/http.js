@@ -242,21 +242,29 @@ export async function inspectChallenge(response) {
 
 /**
  * Read a thrown request error.
- * Returns { verdict: "broken"|"inconclusive", statusText, reason }.
- * Only connection failures that are not timeouts count as broken.
+ * Returns { verdict: "inconclusive", statusText, reason, transport }.
+ *
+ * A request that fails without an HTTP answer (refused, reset, timed out, or an address
+ * our resolver could not look up) is never "broken". It happened between our network and
+ * theirs, and a host that has started refusing our address answers the same way to any
+ * headers we send. It is a coverage gap: recorded with its reason, never a finding.
+ * `transport` is true for those; false for the request budget.
  */
 export function classifyError(err) {
   const code = errorCode(err);
   const name = String((err && err.name) || "");
-  if (code === "BUDGET") return { verdict: "inconclusive", statusText: "not tested", reason: "budget" };
+  if (code === "BUDGET") return { verdict: "inconclusive", statusText: "not tested", reason: "budget", transport: false };
   if (code === "TIMEOUT" || name === "TimeoutError" || name === "AbortError" || /TIMEOUT|ETIMEDOUT/i.test(code)) {
-    return { verdict: "inconclusive", statusText: "timed out", reason: "timeout" };
+    return { verdict: "inconclusive", statusText: "timed out", reason: "timeout", transport: true };
   }
-  if (/ENOTFOUND|EAI_AGAIN|EAI_NONAME|EAI_FAIL|EAI_NODATA/i.test(code)) return { verdict: "broken", statusText: "no such host", reason: "dns" };
-  if (/ECONNREFUSED/i.test(code)) return { verdict: "broken", statusText: "connection refused", reason: "refused" };
-  if (/ECONNRESET|EPIPE|UND_ERR_SOCKET/i.test(code)) return { verdict: "broken", statusText: "connection reset", reason: "reset" };
-  return { verdict: "inconclusive", statusText: "did not load", reason: "unknown" };
+  if (/ENOTFOUND|EAI_AGAIN|EAI_NONAME|EAI_FAIL|EAI_NODATA/i.test(code)) return { verdict: "inconclusive", statusText: "could not look up the address", reason: "dns", transport: true };
+  if (/ECONNREFUSED/i.test(code)) return { verdict: "inconclusive", statusText: "connection refused", reason: "refused", transport: true };
+  if (/ECONNRESET|EPIPE|UND_ERR_SOCKET/i.test(code)) return { verdict: "inconclusive", statusText: "connection reset", reason: "reset", transport: true };
+  return { verdict: "inconclusive", statusText: "did not load", reason: "unknown", transport: true };
 }
+
+/** Reasons that mean "our connection never got an answer". */
+export const TRANSPORT_REASONS = new Set(["refused", "reset", "timeout", "dns", "unknown"]);
 
 /** The first system error code found on an error, its cause, or an AggregateError's members. */
 function errorCode(err, depth = 0) {
@@ -286,25 +294,48 @@ export function retryDelayMs(retryAfterMs) {
 }
 
 /**
- * Per-check throttle guard. After `limit` answers of 429 from one host, the
- * check should stop asking; we mark facts.throttled so the report can say so.
+ * Per-check guard. After `limit` answers of 429 from one host the check should stop
+ * asking (facts.throttled). After `connectionLimit` consecutive connections to one host
+ * that never got an answer, it should stop too (facts.connectionLost): the host, or a
+ * firewall in front of it, has stopped accepting our address, and every further request
+ * would only add refusals that say nothing about visitors. An HTTP answer of any status
+ * resets that streak. `reason` says which happened: "throttled" or "unreachable".
  */
-export function createThrottleGuard(facts, limit = 2) {
+export function createThrottleGuard(facts, limit = 2, { connectionLimit = 3 } = {}) {
   const counts = new Map();
+  const streaks = new Map();
   let stopped = false;
+  let reason = "";
+  const hostOf = (url) => { try { return new URL(url).hostname; } catch { return String(url); } };
   return {
     get stopped() {
       return stopped;
     },
+    get reason() {
+      return reason;
+    },
     record(url, status) {
+      const host = hostOf(url);
+      streaks.set(host, 0); // an answer, whatever it says, means the host is talking to us
       if (Number(status) !== 429) return stopped;
-      let host = "";
-      try { host = new URL(url).hostname; } catch { host = String(url); }
       const n = (counts.get(host) || 0) + 1;
       counts.set(host, n);
       if (n >= limit) {
         stopped = true;
+        reason = reason || "throttled";
         if (facts && typeof facts === "object") facts.throttled = true;
+      }
+      return stopped;
+    },
+    recordError(url, classification) {
+      if (!classification || !classification.transport) return stopped;
+      const host = hostOf(url);
+      const n = (streaks.get(host) || 0) + 1;
+      streaks.set(host, n);
+      if (n >= connectionLimit) {
+        stopped = true;
+        reason = reason || "unreachable";
+        if (facts && typeof facts === "object" && !facts.connectionLost) facts.connectionLost = classification.statusText || "connection failed";
       }
       return stopped;
     },
@@ -320,9 +351,12 @@ export function createThrottleGuard(facts, limit = 2) {
  *  3. If the retry is 2xx/3xx the address works. If it is 404/410/500/502/504
  *     it is broken. Anything else is blocked (the site refused our checker).
  * A refused or reset connection also gets the second try (servers close idle
- * keep-alive sockets, which looks like a reset on the next request); it is
- * broken only when the connection fails again. No such host is broken at
- * once. Timeouts, aborts, and the request budget are inconclusive.
+ * keep-alive sockets, which looks like a reset on the next request). A
+ * connection that fails without an answer is NEVER broken: it is inconclusive
+ * with its reason (refused, reset, timeout, dns), because a failure between our
+ * network and theirs says nothing about what visitors see. Only an HTTP answer
+ * of 404, 410, 500, 502, or 504 that repeats with standard browser headers is
+ * broken. The request budget is inconclusive too.
  *
  * @returns {Promise<{ verdict: "ok"|"broken"|"blocked"|"inconclusive", status: number, statusText: string, retried: boolean, firstStatus: number|null, reason?: string }>}
  */
@@ -343,7 +377,8 @@ export async function probeAddress(client, url, { headFirst = true, throttle = n
   }
   function fromError(err, retried, firstStatus) {
     const c = classifyError(err);
-    return { verdict: c.verdict, status: 0, statusText: c.statusText, retried, firstStatus, reason: c.reason };
+    if (throttle) throttle.recordError(url, c);
+    return { verdict: c.verdict, status: 0, statusText: c.statusText, retried, firstStatus, reason: c.reason, transport: Boolean(c.transport) };
   }
 
   let first = await send(headFirst ? "HEAD" : "GET");
@@ -353,7 +388,7 @@ export async function probeAddress(client, url, { headFirst = true, throttle = n
   if (first.res?.challenge) return {verdict:'blocked',status:first.res.status,statusText:statusText(first.res.status),retried:false,firstStatus:first.res.status,reason:'challenge'};
   if (first.error) {
     const c = classifyError(first.error);
-    const transient = c.verdict === "broken" && (c.reason === "refused" || c.reason === "reset");
+    const transient = c.transport && (c.reason === "refused" || c.reason === "reset");
     if (!transient || (throttle && throttle.stopped)) return fromError(first.error, false, null);
     await sleep(retryDelayMs(null));
     const again = await send("GET", { browserLike: true });
