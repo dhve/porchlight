@@ -25,10 +25,18 @@ export async function ensureFeedbackSchema() {
   // Keep the anonymous browser digest stable across workers and restarts even
   // when the operator has not configured an environment secret. This one-row
   // table is private server configuration and is never part of an API response.
-  await sql(`CREATE TABLE IF NOT EXISTS feedback_identity_key (
-    id INTEGER PRIMARY KEY CHECK (id=1),
-    secret TEXT NOT NULL CHECK (secret ~ '^[A-Za-z0-9_-]{43}$')
-  )`);
+  // Concurrent IF NOT EXISTS DDL can still collide in PostgreSQL's type catalog.
+  // The transaction lock and DDL share one statement, so pooled connections
+  // cannot retain a session lock or release it before the table is committed.
+  await sql(`DO $feedback_identity$
+    BEGIN
+      PERFORM pg_advisory_xact_lock(1398101074, 1178757444); -- Sutros feedback identity table
+      CREATE TABLE IF NOT EXISTS feedback_identity_key (
+        id INTEGER PRIMARY KEY CHECK (id=1),
+        secret TEXT NOT NULL CHECK (secret ~ '^[A-Za-z0-9_-]{43}$')
+      );
+    END;
+  $feedback_identity$`);
   await sql('INSERT INTO feedback_identity_key (id,secret) VALUES (1,$1) ON CONFLICT (id) DO NOTHING', [randomBytes(32).toString('base64url')]);
   const [identity] = await sql('SELECT secret FROM feedback_identity_key WHERE id=1');
   if (!identity || !/^[A-Za-z0-9_-]{43}$/.test(identity.secret)) throw new Error('The feedback identity key could not be initialized.');

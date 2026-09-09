@@ -159,6 +159,36 @@ test('an uninitialized router refuses to invent a temporary browser identity', a
   assert.equal((await sql('SELECT count(*)::int AS n FROM finding_feedback'))[0].n, 0);
 });
 
+test('concurrent workers can initialize the identity table on an existing installation', async (t) => {
+  if (!available(t)) return;
+  withoutConfiguredIdentityKey(t);
+  // Only the new table is absent, as during an upgrade of the existing schema.
+  await sql('DROP TABLE feedback_identity_key');
+  const connections = await Promise.all(Array.from({ length: 5 }, () => sql('SELECT pg_backend_pid() AS pid, pg_sleep(0.05)')));
+  assert.equal(new Set(connections.map((rows) => rows[0].pid)).size, 5);
+  const labels = Array.from({ length: 5 }, (_, i) => 'concurrent-' + i);
+  const modules = await Promise.all(labels.map((label) => import('../server/feedback.js?identity-' + label)));
+  const initialized = await Promise.allSettled(modules.map((module) => module.ensureFeedbackSchema()));
+  assert.deepEqual(initialized.map((result) => result.status === 'fulfilled'
+    ? { status: result.status }
+    : { status: result.status, code: result.reason?.code, constraint: result.reason?.constraint }),
+  labels.map(() => ({ status: 'fulfilled' })));
+  assert.equal((await sql('SELECT count(*)::int AS n FROM feedback_identity_key'))[0].n, 1);
+
+  const addresses = await Promise.all(labels.map((label) => independentRouter(t, label, false)));
+  const sent = await request(path, { urlBase: addresses[0], body: vote() });
+  assert.equal(sent.status, 200);
+  for (const urlBase of addresses) {
+    const read = await request(path, { urlBase, cookie: sent.cookie });
+    assert.equal(read.status, 200);
+    assert.equal(read.body.mine['broken-links'], 'wrong');
+    const updated = await request(path, { urlBase, cookie: sent.cookie, body: vote() });
+    assert.equal(updated.status, 200);
+    assert.equal(updated.body.receipt.id, sent.body.receipt.id);
+  }
+  assert.equal((await sql('SELECT count(*)::int AS n FROM finding_feedback'))[0].n, 1);
+});
+
 test('unauthorized readers cannot read the queue, export cases, or adjudicate', async (t) => {
   if (!available(t)) return;
   for (const role of [undefined, 'user']) {
