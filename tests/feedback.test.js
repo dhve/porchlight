@@ -6,6 +6,7 @@ import { disposablePostgres } from './helpers/feedback-db.mjs';
 import { initDb, sql, saveReport } from '../server/db.js';
 import { feedbackRouter, ensureFeedbackSchema, disputesForHost } from '../server/feedback.js';
 import { createRetestRouter } from '../server/retest.js';
+import { canonicalize, sha256Hex } from '../server/signing.js';
 
 let db, server, base, network = 0;
 const original = {
@@ -56,12 +57,12 @@ test.after(async () => {
   if (db) { await delay(10_100); await db.close(); }
 });
 
-async function request(path, { role, cookie, body, agent = 'fixture-browser' } = {}) {
+async function request(path, { role, cookie, body, agent = 'fixture-browser', urlBase = base } = {}) {
   const headers = { 'x-forwarded-for': `198.51.100.${network}`, 'user-agent': agent };
   if (role) headers['x-test-role'] = role;
   if (cookie) headers.cookie = cookie;
   if (body) headers['content-type'] = 'application/json';
-  const res = await fetch(base + path, { method: body ? 'POST' : 'GET', headers, body: body ? JSON.stringify(body) : undefined });
+  const res = await fetch(urlBase + path, { method: body ? 'POST' : 'GET', headers, body: body ? JSON.stringify(body) : undefined });
   return { status: res.status, body: await res.json().catch(() => null), cookie: res.headers.get('set-cookie')?.split(';')[0] };
 }
 const path = '/api/reports/report01/feedback';
@@ -103,6 +104,59 @@ test('two anonymous browsers on one network remain separate voters', async (t) =
   assert.equal(changed.body.findings['broken-links'].right, 1);
   const keys = await sql('SELECT voter_key FROM finding_feedback');
   assert.equal(keys.some((x) => x.voter_key.includes(first.cookie.split('=')[1])), false);
+});
+
+function withoutConfiguredIdentityKey(t) {
+  for (const name of ['FEEDBACK_COOKIE_SECRET', 'SESSION_SECRET']) {
+    const saved = process.env[name];
+    delete process.env[name];
+    t.after(() => { if (saved === undefined) delete process.env[name]; else process.env[name] = saved; });
+  }
+}
+
+async function independentRouter(t, label, initialize = true) {
+  const module = await import('../server/feedback.js?identity-' + label);
+  if (initialize) await module.ensureFeedbackSchema();
+  const app = express();
+  app.set('trust proxy', 1);
+  app.use(express.json(), module.feedbackRouter);
+  const listener = app.listen(0, '127.0.0.1');
+  await new Promise((done) => listener.once('listening', done));
+  t.after(() => new Promise((done) => listener.close(done)));
+  return `http://127.0.0.1:${listener.address().port}`;
+}
+
+test('independently initialized routers preserve a browser vote without a configured secret', async (t) => {
+  if (!available(t)) return;
+  withoutConfiguredIdentityKey(t);
+  const first = await independentRouter(t, 'first');
+  const sent = await request(path, { urlBase: first, body: vote() });
+  assert.equal(sent.status, 200);
+  assert.ok(sent.cookie);
+
+  // A fresh module has independent in-memory state, as after a worker restart.
+  const second = await independentRouter(t, 'second');
+  const read = await request(path, { urlBase: second, cookie: sent.cookie });
+  assert.equal(read.status, 200);
+  assert.equal(read.body.mine['broken-links'], 'wrong');
+  const changed = await request(path, { urlBase: second, cookie: sent.cookie, body: { findingId: 'broken-links', verdict: 'right' } });
+  assert.equal(changed.status, 200);
+  assert.equal(changed.body.receipt.id, sent.body.receipt.id);
+  assert.equal(changed.body.right, 1);
+  assert.equal(changed.body.wrong, 0);
+  assert.equal((await sql('SELECT count(*)::int AS n FROM finding_feedback'))[0].n, 1);
+  assert.equal((await request(path, { urlBase: first, cookie: sent.cookie })).body.mine['broken-links'], 'right');
+});
+
+test('an uninitialized router refuses to invent a temporary browser identity', async (t) => {
+  if (!available(t)) return;
+  withoutConfiguredIdentityKey(t);
+  const uninitialized = await independentRouter(t, 'uninitialized', false);
+  const result = await request(path, { urlBase: uninitialized, body: vote() });
+  assert.equal(result.status, 503);
+  assert.match(result.body.error, /identity.*unavailable|unavailable.*identity/i);
+  assert.equal(result.cookie, undefined);
+  assert.equal((await sql('SELECT count(*)::int AS n FROM finding_feedback'))[0].n, 0);
 });
 
 test('unauthorized readers cannot read the queue, export cases, or adjudicate', async (t) => {
@@ -156,6 +210,56 @@ test('only the latest conclusive reviews become stable evaluation labels', async
   assert.equal(changed.body.cases.find((x) => x.findingId === 'broken-links').caseId, stable);
   await request(path + '/review', { role: 'admin', body: review('broken-links', 'inconclusive') });
   assert.equal((await request('/api/feedback/evaluation-cases', { role: 'admin' })).body.cases.length, 1);
+});
+
+test('reviewed snapshots retain public observation conditions and omit reader feedback', async (t) => {
+  if (!available(t)) return;
+  const measured = structuredClone(original);
+  measured.engine = {
+    ...measured.engine, scoringVersion: 'scoring-fixture-v2', reporterVersion: 'reporter-fixture-v2',
+    browser: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, locale: 'en-US' },
+    challenged: false, proof: { shots: 1, artifacts: [{ key: 'shot-fixture', sha256: 'a'.repeat(64) }] },
+  };
+  measured.assessment = { status: 'complete', reason: 'The planned checks completed.' };
+  measured.coverage = [{ check: 'links', status: 'completed' }, { check: 'browser', status: 'completed' }];
+  measured.privateNotes = ['PRIVATE_REPORT_NOTE'];
+  const finding = measured.findings[0];
+  finding.provenance = { check: 'links', observedAt: '2026-09-09T01:02:03.000Z', recordedAt: '2026-09-09T01:02:04.000Z', scannerVersion: 'scanner-fixture-v2' };
+  finding.evidence = { ...finding.evidence,
+    render: { readyState: 'complete', usable: true, viewport: { width: 390, height: 844 } },
+    resources: [{ url: 'https://example.invalid/styles.css', status: 200, kind: 'stylesheet' }],
+    measurements: { name: 'public server address', ip: '203.0.113.8' },
+    shots: [{ key: 'shot-fixture', sha256: 'a'.repeat(64) }],
+  };
+  finding.feedback = { right: 500, notes: ['PRIVATE_READER_NOTE'], by: 'PRIVATE_CONTRIBUTOR' };
+  finding.privateNotes = ['PRIVATE_FINDING_NOTE'];
+  finding.userId = 'PRIVATE_FINDING_ACCOUNT';
+  await sql('UPDATE reports SET report=$1 WHERE id=$2', [JSON.stringify(measured), 'report01']);
+  await request(path, { body: vote() });
+  const queued = (await request('/api/feedback/review-queue', { role: 'admin' })).body.cases[0];
+  assert.deepEqual(queued.finding.provenance, finding.provenance);
+  assert.deepEqual(queued.finding.evidence, finding.evidence);
+  assert.deepEqual(queued.report.engine, measured.engine);
+  assert.deepEqual(queued.report.assessment, measured.assessment);
+  assert.deepEqual(queued.report.coverage, measured.coverage);
+  assert.equal(queued.finding.disputed, undefined);
+  assert.equal(queued.finding.feedback, undefined);
+  assert.equal(JSON.stringify({ report: queued.report, finding: queued.finding }).includes('PRIVATE_'), false);
+  assert.equal(queued.notes[0].text, 'PRIVATE_VISITOR_NOTE', 'The separate admin queue notes remain available');
+
+  assert.equal((await request(path + '/review', { role: 'admin', body: review() })).status, 201);
+  const exported = (await request('/api/feedback/evaluation-cases', { role: 'admin' })).body.cases[0];
+  assert.deepEqual(exported.finding.provenance, finding.provenance);
+  assert.deepEqual(exported.finding.evidence, finding.evidence);
+  assert.deepEqual(exported.report.engine, measured.engine);
+  assert.deepEqual(exported.report.assessment, measured.assessment);
+  assert.deepEqual(exported.report.coverage, measured.coverage);
+  assert.equal(exported.finding.disputed, undefined);
+  assert.equal(exported.finding.feedback, undefined);
+  assert.equal(JSON.stringify(exported).includes('PRIVATE_'), false);
+  assert.equal(JSON.stringify(exported).includes('reviewer01'), false);
+  assert.equal(exported.provenance.findingDigest, sha256Hex(canonicalize(exported.finding)));
+  assert.deepEqual((await sql('SELECT report FROM reports WHERE id=$1', ['report01']))[0].report, measured);
 });
 
 test('public progress counts submitted and reviewed cases without exposing notes', async (t) => {

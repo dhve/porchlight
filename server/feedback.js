@@ -12,7 +12,7 @@ const ID_RE = /^[A-Za-z0-9_-]{6,20}$/;
 const REPORT_LEVEL = '_report';
 const HOUR = 3600000;
 const COOKIE = 'sutros_feedback';
-const runtimeSecret = randomBytes(32);
+let storedIdentityKey = null;
 export const FEEDBACK_POLICY = {
   votes: 'Votes are unverified reader responses, not verified unique people or confirmed findings.',
   notes: 'Your note is private to authorized reviewers. Counts and a reviewer\'s separate explanation are public.',
@@ -22,6 +22,17 @@ export const FEEDBACK_POLICY = {
 
 export async function ensureFeedbackSchema() {
   if (!dbEnabled()) return false;
+  // Keep the anonymous browser digest stable across workers and restarts even
+  // when the operator has not configured an environment secret. This one-row
+  // table is private server configuration and is never part of an API response.
+  await sql(`CREATE TABLE IF NOT EXISTS feedback_identity_key (
+    id INTEGER PRIMARY KEY CHECK (id=1),
+    secret TEXT NOT NULL CHECK (secret ~ '^[A-Za-z0-9_-]{43}$')
+  )`);
+  await sql('INSERT INTO feedback_identity_key (id,secret) VALUES (1,$1) ON CONFLICT (id) DO NOTHING', [randomBytes(32).toString('base64url')]);
+  const [identity] = await sql('SELECT secret FROM feedback_identity_key WHERE id=1');
+  if (!identity || !/^[A-Za-z0-9_-]{43}$/.test(identity.secret)) throw new Error('The feedback identity key could not be initialized.');
+  storedIdentityKey = identity.secret;
   await sql(`CREATE TABLE IF NOT EXISTS finding_feedback (
     id TEXT PRIMARY KEY, report_id TEXT NOT NULL, target_host TEXT NOT NULL,
     finding_id TEXT NOT NULL, user_id TEXT, voter_key TEXT NOT NULL,
@@ -39,8 +50,14 @@ export async function ensureFeedbackSchema() {
   return true;
 }
 
-function digest(value) { return createHmac('sha256', process.env.FEEDBACK_COOKIE_SECRET || process.env.SESSION_SECRET || runtimeSecret).update(value).digest('hex'); }
+function identityKey() {
+  const key = process.env.FEEDBACK_COOKIE_SECRET || process.env.SESSION_SECRET || storedIdentityKey;
+  if (!key) throw Object.assign(new Error('Feedback identity is unavailable. Please try again later.'), { status: 503 });
+  return key;
+}
+function digest(value) { return createHmac('sha256', identityKey()).update(value).digest('hex'); }
 function voterKey(req, res) {
+  identityKey(); // Fail before issuing a cookie if startup did not initialize it.
   const raw = String(req.get('cookie') || '').split(';').map((s) => s.trim()).find((s) => s.startsWith(COOKIE + '='));
   let token = raw?.slice(COOKIE.length + 1);
   if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) {
@@ -55,8 +72,9 @@ function validFindingId(value) { return typeof value === 'string' && value.trim(
 function needDb(_req, res, next) { if (!dbEnabled()) return res.status(503).json({ error: 'Feedback is unavailable because the database is not configured.' }); next(); }
 function requireAdmin(req, res, next) { if (!req.user?.id || req.user.role !== 'admin') return res.status(403).json({ error: 'Only authorized reviewers can access this.' }); next(); }
 function safe(handler) { return (req, res) => Promise.resolve(handler(req, res)).catch((err) => {
-  console.error('feedback: request failed');
-  if (!res.headersSent) res.status(err.status === 413 ? 413 : 500).json({ error: err.status === 413 ? err.message : 'Feedback could not be processed right now. Please try again later.' });
+  const status = [413, 503].includes(err.status) ? err.status : 500;
+  if (status === 500) console.error('feedback: request failed');
+  if (!res.headersSent) res.status(status).json({ error: status === 500 ? 'Feedback could not be processed right now. Please try again later.' : err.message });
 }); }
 async function loadReport(id) {
   const [row] = await sql('SELECT report,target_host FROM reports WHERE id=$1', [id]);

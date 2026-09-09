@@ -1,5 +1,6 @@
 import { sql, dbEnabled, newId } from './db.js';
 import { canonicalize, sha256Hex } from './signing.js';
+import { publicReport } from './publicReport.js';
 
 export const REVIEW_STATUSES = ['confirmed', 'incorrect', 'inconclusive'];
 export const SELECTION_NOTE = 'These are selected cases reviewed by a person. Agreement on these cases is not overall model accuracy. Votes and inconclusive reviews are not evaluation labels.';
@@ -26,23 +27,19 @@ export async function latestReviews(reportId = null) {
   return sql(`SELECT DISTINCT ON (report_id, finding_id) * FROM finding_feedback_reviews
     ${reportId ? 'WHERE report_id=$1' : ''} ORDER BY report_id, finding_id, sequence DESC`, reportId ? [reportId] : []);
 }
-function pick(value, fields) {
-  const out = {};
-  if (!value || typeof value !== 'object') return out;
-  for (const field of fields) if (Object.hasOwn(value, field)) out[field] = structuredClone(value[field]);
-  return out;
-}
-// Old disputed.notes and submitter metadata must not reappear in a snapshot.
+// Reuse the public observation boundary so new evidence and run conditions do
+// not disappear from review cases. Reader signals are separate from evidence.
 export function findingSnapshot(finding) {
-  const out = pick(finding, ['id', 'source', 'severity', 'category', 'title', 'meaning', 'fix', 'who', 'observedAt', 'detector', 'check']);
-  if (finding?.evidence) out.evidence = pick(finding.evidence, ['lines', 'note', 'method', 'pages', 'items', 'shots', 'why', 'confirm', 'observedAt', 'detector', 'check', 'source']);
-  return out;
+  return reportSnapshot({ findings: [finding] }).findings[0];
 }
 function reportSnapshot(report) {
-  const out = pick(report, ['id', 'target', 'url', 'scannedAt', 'grade', 'gradeLabel', 'score', 'summary', 'passes']);
-  if (report.assessment) out.assessment = pick(report.assessment, ['status', 'reason']);
-  if (Array.isArray(report.coverage)) out.coverage = report.coverage.map((entry) => pick(entry, ['check', 'status', 'reason']));
-  if (report.engine) out.engine = pick(report.engine, ['llm', 'model', 'version', 'implementationVersion', 'orchestrator', 'reporter', 'focus', 'checksRun']);
+  const out = structuredClone(publicReport(report));
+  delete out.canPostToBulletin;
+  for (const finding of Array.isArray(out.findings) ? out.findings : []) {
+    if (!finding || typeof finding !== 'object') continue;
+    delete finding.disputed;
+    delete finding.feedback;
+  }
   return out;
 }
 export async function appendReview({ report, finding, status, reason, reviewerId }) {
