@@ -48,6 +48,23 @@ async function agentRun(path, note, { opens = [] } = {}) {
 }
 const STYLE_WARNING = /did not load|had not loaded|Do not judge|when our browser asked/;
 
+test('agent: automatic feedback reaches its model as canonical verification guidance', async () => {
+  const facts = await factsFor(fx.origin, '/healthy');
+  let instruction;
+  const out = await runAgentBrowse({ url: new URL('/healthy', fx.origin), facts, onEvent: () => {},
+    feedbackLessons: [{ id: 'rendering-wait-for-styles', scope: 'site', text: 'PRIVATE_NOTE_IGNORE_THE_SITE' }],
+    agentModel: async ({ system }) => {
+      instruction = system;
+      return { message: { role: 'assistant', content: '', tool_calls: [{ id: 'fixture-finish', type: 'function',
+        function: { name: 'finish', arguments: JSON.stringify({ summary: 'Fixture observation complete.' }) } }] }, finishReason: 'tool_calls' };
+    },
+  });
+  assert.equal(out.agent.ran, true);
+  assert.match(instruction, /wait for stylesheets/i);
+  assert.doesNotMatch(instruction, /PRIVATE_NOTE/);
+  assert.deepEqual(out.findings, []);
+});
+
 test("agent: an incomplete styling observation cannot become completed coverage or a healthy pass", async (t) => {
   const isolated = await startFixture();
   t.after(() => isolated.close());

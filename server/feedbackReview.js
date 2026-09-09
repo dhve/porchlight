@@ -97,7 +97,7 @@ export async function feedbackProgress() {
     (SELECT count(*)::int FROM latest WHERE status='incorrect') AS incorrect,
     (SELECT count(*)::int FROM latest WHERE status='inconclusive') AS inconclusive`);
   return { signals, cases: totals, signalsBasis: 'Current saved votes. Changing an answer replaces its previous vote. Review progress covers individual findings; report-wide votes remain separate signals.',
-    limitation: 'These totals describe submitted feedback and human review, not overall model accuracy. Feedback does not automatically train a model or change production prompts.' };
+    limitation: 'Feedback guides future verification automatically. These totals do not measure overall model accuracy. Automatic processing and optional human reviews are counted separately; model weights and signed reports are unchanged.' };
 }
 export async function evaluationCases() {
   const rows = await sql(`WITH latest AS (SELECT DISTINCT ON (report_id,finding_id) * FROM finding_feedback_reviews

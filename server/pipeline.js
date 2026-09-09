@@ -19,6 +19,8 @@ import { saveReport, newId } from "./db.js";
 import { signReport } from "./verify.js";
 import { explain, PROOF_PROMISE } from "./explain.js";
 import { disputesForHost } from "./feedback.js";
+import { lessonsFor } from './feedbackAuto.js';
+import { publicGuidance } from './feedbackLessons.js';
 import { captureProof, saveShots } from "./proof.js";
 import { observeCheck, assessmentFor, bindArtifactHashes, SCANNER_VERSION, SCORING_VERSION, REPORTER_VERSION } from "./provenance.js";
 
@@ -60,6 +62,10 @@ const MARK = { urgent: "⚠️", serious: "🔧", watch: "👀", good: "✅" };
 export async function runCheckup({ url, display, userId = null }, onEvent = () => {}) {
   const client = createClient();
   const ctx = { url, client, onEvent };
+  let feedbackStatus = 'available';
+  try { ctx.feedbackLessons = publicGuidance(await lessonsFor({ host: url.hostname })); }
+  catch { ctx.feedbackLessons = []; feedbackStatus = 'unavailable'; console.error('feedback guidance: lookup unavailable'); }
+  const feedbackLearning = { mode: 'automatic', retrievalStatus: feedbackStatus, lessons: ctx.feedbackLessons };
   let agentInfo = null; // filled by the browsing agent when it runs
   const findings = [];
   const passes = [];
@@ -88,12 +94,12 @@ export async function runCheckup({ url, display, userId = null }, onEvent = () =
   if (!ctx.facts.reachable || observedRecon.coverage.status !== "completed") {
     for (const check of [...STEP3, ...STEP4]) coverage.push({ check, status: "skipped", reason: "The homepage check did not complete." });
     for (const key of ["plan", "probe", "customer"]) onEvent("step", { key, status: "done", detail: "skipped" });
-    return finish({ url, display, userId, facts: ctx.facts, findings, passes, plan: { focus: "The homepage check did not complete.", llm: false }, checksRun, coverage, requiredChecks, browserInfo, onEvent, client });
+    return finish({ url, display, userId, facts: ctx.facts, findings, passes, plan: { focus: "The homepage check did not complete.", llm: false }, checksRun, coverage, requiredChecks, browserInfo, onEvent, client, feedbackLearning });
   }
 
   // ---- Step 2: plan (orchestrator) ----
   onEvent("step", { key: "plan", status: "start" });
-  const plan = await safe(() => planCheckup(recon.facts), { focus: "Running a full checkup.", checks: [], llm: false });
+  const plan = await safe(() => planCheckup(recon.facts, ctx.feedbackLessons), { focus: "Running a full checkup.", checks: [], llm: false });
   onEvent("step", { key: "plan", status: "done", detail: plan.focus, llm: plan.llm });
   onEvent("log", { mark: "📋", text: plan.llm ? plan.focus : "Running the full checklist." });
 
@@ -114,7 +120,7 @@ export async function runCheckup({ url, display, userId = null }, onEvent = () =
   agentInfo = extra.agent || null;
 
   // ---- Step 5: report ----
-  return finish({ url, display, userId, facts: recon.facts, findings, passes, plan, checksRun, coverage, requiredChecks, browserInfo, agentInfo, onEvent, client });
+  return finish({ url, display, userId, facts: recon.facts, findings, passes, plan, checksRun, coverage, requiredChecks, browserInfo, agentInfo, onEvent, client, feedbackLearning });
 }
 
 async function runStep(onEvent, key, ids, ctx, findings, passes, checksRun, coverage, browserInfo, extra = {}) {
@@ -154,7 +160,7 @@ async function runStep(onEvent, key, ids, ctx, findings, passes, checksRun, cove
   onEvent("step", { key, status: "done" });
 }
 
-async function finish({ url, display, userId = null, facts, findings, passes, plan, checksRun, coverage, requiredChecks, browserInfo, agentInfo = null, onEvent, client = null }) {
+async function finish({ url, display, userId = null, facts, findings, passes, plan, checksRun, coverage, requiredChecks, browserInfo, agentInfo = null, onEvent, client = null, feedbackLearning }) {
   onEvent("step", { key: "report", status: "start" });
 
   // De-duplicate by id, then sort most severe first.
@@ -201,6 +207,7 @@ async function finish({ url, display, userId = null, facts, findings, passes, pl
       gradeLabel,
       tally,
       assessment,
+      feedbackLessons: feedbackLearning.lessons,
     }),
     proofPromise,
   ]);
@@ -241,6 +248,8 @@ async function finish({ url, display, userId = null, facts, findings, passes, pl
       throttled: Boolean(facts && (facts.throttled || facts.wasThrottled)),
       challenged: typeof facts?.challenged === "string" ? facts.challenged : null,
       proof: { shots: (proof.shots || []).length, skipped: proof.skipped || null },
+      feedbackLearning: { ...feedbackLearning, usedBy: feedbackLearning.lessons.length ?
+        [plan.llm && 'planner', agentInfo?.ran && 'browsing-agent', written.llm && 'report-writer'].filter(Boolean) : [] },
     },
     proofPromise: PROOF_PROMISE,
   };

@@ -158,23 +158,25 @@ the safety guards before any request is made.
 - `GET /api/reports` lists recent saved reports (needs a database).
 - `GET /api/reports/:id` returns one saved report; `/r/:id` is its share link.
 
-## Evidence and reviewed feedback
+## Evidence and automatic feedback
 
 Reports list completed, failed, skipped, and inconclusive checks. A hosting bot
 check or incomplete browser render cannot establish a visual defect. Supported
 address rechecks test availability only; they cannot validate layout, headers,
 or exposed-secret claims.
 
-No account is required for checkups or feedback when `REQUIRE_ACCOUNT=0`.
-Public reports omit submitter identity. Feedback notes are private to authorized
-reviewers, while response totals and separate review explanations are public.
-Anonymous use does not hide the connection address from the service.
+A verified account is required for new checkups and rechecks. Public reports and
+feedback remain available without signing in. Public reports omit submitter
+identity. Notes are not published, but automated analysis can send bounded notes
+to the configured AI provider. Authorized reviewers can also read them.
 
-Reviewers use `/review` to adjudicate findings and export conclusive cases.
-The offline evaluation command compares explicit candidate decisions with those
-cases and an optional baseline. Votes never train a model or change prompts
-automatically. See [the review and evaluation guide](docs/feedback-validation.md)
-for the workflow, input format, and limits.
+The persistent worker processes feedback automatically and selects fixed
+verification lessons for later scans. The planner, browsing agent, and advice
+writer receive relevant lessons. Applied guidance is included in signed engine
+metadata. No human review is required to process feedback or activate guidance.
+Votes do not establish correctness, rewrite reports, or train model weights.
+Optional reviewers can still use `/review` and export separate evaluation labels.
+See [the feedback and evaluation guide](docs/feedback-validation.md) for limits.
 
 Run `npm test` to check privacy, coverage, signatures, feedback, evaluation, and
 browser rendering. The tests use a disposable local PostgreSQL cluster and

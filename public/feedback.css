@@ -59,3 +59,7 @@
 .fb-review.incorrect{border-color:var(--serious);}
 .fb-review.inconclusive{border-color:var(--watch);}
 .fb-review p{margin-top:5px;}
+.fb-auto{border-left:3px solid var(--brand);padding:10px 14px;margin-top:12px;background:var(--surface);font-size:14px;}
+.fb-auto p{margin:5px 0;}
+.fb-auto ul{padding-left:20px;margin:8px 0;}
+.fb-auto li{margin:5px 0;}

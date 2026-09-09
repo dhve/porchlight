@@ -59,6 +59,12 @@ function recordedItems(finding) {
   return items.filter((item) => item && typeof item.url === 'string' && /^https?:\/\//i.test(item.url.trim()));
 }
 
+function recordedStatus(value) {
+  if (typeof value !== 'number' && !(typeof value === 'string' && /^\d{1,3}$/.test(value.trim()))) return null;
+  const status = Number(value);
+  return Number.isInteger(status) && (status === 0 || (status >= 100 && status <= 599)) ? status : null;
+}
+
 // What a case needs. Agreement needs no network; a dispute over a supported
 // availability claim inspects at most two recorded addresses; a claim whose own
 // evidence has no HTTP answer is unsupported before any request is made.
@@ -67,9 +73,11 @@ export function planCase({ findingId, finding, counts }) {
   if (findingId === REPORT_LEVEL) return { kind: 'report', disputed, addresses: [], unsupported: false };
   if (!finding || typeof finding !== 'object') return { kind: 'missing', disputed, addresses: [], unsupported: false };
   if (!retestCapability(finding).supported) return { kind: 'other', disputed, addresses: [], unsupported: false };
-  const items = recordedItems(finding);
-  const answered = items.filter((item) => Number.isInteger(item.status) && item.status > 0);
-  const unsupported = disputed && items.length > 0 && answered.length === 0;
+  const items = recordedItems(finding).map(item => ({ ...item, status: recordedStatus(item.status) }));
+  const answered = items.filter((item) => item.status !== null && item.status > 0);
+  // Missing measurements are unknown. Only explicit status 0 records establish
+  // that the original evidence received no HTTP answer.
+  const unsupported = disputed && items.length > 0 && items.every(item => item.status === 0);
   const addresses = disputed && !unsupported ? answered.map((item) => item.url.trim()).slice(0, MAX_ADDRESSES) : [];
   return { kind: 'availability', disputed, addresses, unsupported };
 }

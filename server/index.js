@@ -34,6 +34,7 @@ const { mailStatus } = await import("./mail.js");
 const { retestRouter } = await import("./retest.js");
 const { proofRouter, ensureProofSchema, sweepOldShots } = await import("./proof.js");
 const { feedbackRouter, ensureFeedbackSchema } = await import("./feedback.js");
+const { startFeedbackWorker } = await import('./feedbackAuto.js');
 
 const app = express();
 app.set("trust proxy", ["loopback", "172.16.0.0/12"]);
@@ -270,7 +271,8 @@ const dbOn = await initDb().catch((err) => {
 });
 if (dbOn) {
   await ensureProofSchema().catch((err) => console.error("  proof schema: " + err.message));
-  await ensureFeedbackSchema().catch((err) => console.error("  feedback schema: " + err.message));
+  await ensureFeedbackSchema();
+  startFeedbackWorker();
   const sweep = () => sweepOldShots(60).then((n) => { if (n) console.log(`  swept ${n} old page pictures`); }).catch((err) => console.error("  sweep: " + err.message));
   sweep();
   setInterval(sweep, 24 * 60 * 60_000).unref();

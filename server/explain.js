@@ -153,7 +153,7 @@ const BY_CATEGORY = {
  */
 export const PROOF_PROMISE =
   "Scripted findings record what the checker observed under the conditions shown in the evidence. " +
-  "Some checks are heuristics and require human review. Coverage shows which checks completed or could not run. " +
+  "Some checks are heuristics and need further verification. Coverage shows which checks completed or could not run. " +
   "AI browsing observations and AI suggestions are labeled and do not change the grade or replace the original observations. " +
   "Evidence and signatures help readers inspect a report; they do not guarantee that its interpretation is correct or that the whole site is safe.";
 

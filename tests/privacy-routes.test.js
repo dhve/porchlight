@@ -125,6 +125,10 @@ test("public routes preserve private ownership in a disposable local database", 
         assert.equal(reply.status,403);
         assert.equal(reply.body.code,'unverified');
       }
+      const unverifiedStream = await request('/api/checkup/stream?url=https%3A%2F%2Fgate.example%2F',{viewer:people[0],stream:true});
+      assert.equal(unverifiedStream.status,403);
+      assert.equal(JSON.parse(unverifiedStream.body).code,'unverified');
+      assert.equal(targetLookups,before,'Unconfirmed accounts are denied before DNS resolution');
     } finally { await db.sql('UPDATE users SET email_verified=true WHERE id=$1',[people[0].id]); }
   });
 

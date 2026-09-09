@@ -12,7 +12,7 @@ export const LESSON_CATALOG = Object.freeze({
   'rendering-wait-for-styles': lesson('rendering', 'Before noting a layout or missing-style problem, wait for stylesheets to finish loading and confirm the render was reliable.'),
   'rendering-bot-check': lesson('rendering', 'A page that answers with a bot check or interstitial is not a rendering problem. Treat it as not measured.'),
   'rendering-real-device-differs': lesson('rendering', 'A render that looks broken to the checker may look fine on real devices. Keep mobile render notes to what a reliable render actually showed and mark unreliable renders not measured.'),
-  'interaction-closable-overlay': lesson('interaction', 'When a banner, cookie notice, or chat window appears, test whether it can be dismissed and whether it prevents the intended task. Note it only when it blocks the task or cannot be closed.'),
+  'interaction-closable-overlay': lesson('interaction', 'When a banner, cookie notice, or chat window appears, test whether it can be dismissed and whether it prevents the intended task. Base any finding on the observed effect on the task.'),
   'interaction-confirm-in-page': lesson('interaction', 'Only note an interaction problem after attempting the interaction on the page in front of you and recording what happened.'),
   'evidence-quote-page-text': lesson('evidence', 'Support each note with a direct quote or measurement from the page, or with an inference that is labeled as an inference and tied to what was observed.'),
   'evidence-picture-when-visual': lesson('evidence', 'For a visual claim, keep the picture that shows it. Without one, mark the note as unverified.'),

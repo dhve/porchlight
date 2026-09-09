@@ -1,8 +1,9 @@
 // Keep observations unchanged. The model can add suggestions to original
 // findings, but cannot replace measurements, interpretations, passes, or summary.
 import { chatJSON, llmEnabled } from "./llm.js";
+import { formatFeedbackGuidance } from './feedbackLessons.js';
 
-export async function writeReport({ target, facts, findings, passes, assessment }) {
+export async function writeReport({ target, facts, findings, passes, assessment, feedbackLessons = [] }) {
   const base = { summary: templateSummary(findings, target, assessment), findings, passes };
   if (!llmEnabled() || !findings.length) return { ...base, llm: false };
 
@@ -25,7 +26,8 @@ export async function writeReport({ target, facts, findings, passes, assessment 
         "Preserve all uncertainty and limitations, including heuristic checks, incomplete rendering, and AI observations. Evidence does not necessarily prove the interpretation. " +
         "A connection failure or status 0 means no HTTP response was received, not a 5xx server error. Changing request headers on the same network cannot rule out access restrictions or prove what other visitors experience. " +
         "Do not invent measurements, attacks, or successful tests. Use plain language and refer to 'this site' and 'the owner'. " +
-        'Respond as JSON: {"findings":[{"id":string,"why":string,"fix":[string],"who":string,"confirm":string}]}.',
+        'Respond as JSON: {"findings":[{"id":string,"why":string,"fix":[string],"who":string,"confirm":string}]}.\n' +
+        formatFeedbackGuidance(feedbackLessons),
       user: JSON.stringify(payload),
       temperature: 0.5,
       maxTokens: 8000,

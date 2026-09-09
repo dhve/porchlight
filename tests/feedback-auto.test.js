@@ -382,7 +382,7 @@ test('daily budgets defer network and model work but let rule-only cases finish'
 
 test('an availability claim recorded without an HTTP answer is unsupported without any request', async (t) => {
   if (!available(t)) return;
-  await report('rep-legacy', 'legacy.invalid', [linkFinding([{ url: at('/missing'), status: 0, kind: 'link' }, { url: at('/ok'), kind: 'link' }])]);
+  await report('rep-legacy', 'legacy.invalid', [linkFinding([{ url: at('/missing'), status: 0, kind: 'link' }, { url: at('/ok'), status: 0, kind: 'link' }])]);
   await vote('rep-legacy', 'broken-links');
   const done = await processFeedbackJob(options());
   assert.equal(done.result, 'processed');
@@ -392,6 +392,22 @@ test('an availability claim recorded without an HTTP answer is unsupported witho
   const auto = await autoFeedbackForReport('rep-legacy');
   assert.equal(auto['broken-links'].summary, SUMMARY_TEMPLATES['unsupported-no-http-answer']);
   assert.deepEqual(auto['broken-links'].lessons.map((l) => l.id), ['availability-transport-not-broken']);
+});
+
+test('missing baselines stay inconclusive and numeric legacy HTTP statuses are still rechecked', async t => {
+  if (!available(t)) return;
+  await report('rep-unknown', 'unknown.invalid', [linkFinding([{ url: at('/ok') }, { url: at('/missing'), status: 0 }])]);
+  await vote('rep-unknown', 'broken-links');
+  const unknown = await processFeedbackJob(options());
+  assert.equal(unknown.outcome, 'inconclusive');
+  assert.equal(unknown.networkRequests, 0);
+  const publicUnknown = await autoFeedbackForReport('rep-unknown');
+  assert.doesNotMatch(publicUnknown['broken-links'].summary, /original evidence recorded no HTTP answer/);
+  await report('rep-string', 'string.invalid', [linkFinding([{ url: at('/ok'), status: '404' }])]);
+  await vote('rep-string', 'broken-links');
+  const numeric = await processFeedbackJob(options());
+  assert.equal(numeric.outcome, 'different-now');
+  assert.equal(numeric.networkRequests, 1);
 });
 
 test('an address that loads now after a recorded 404 is different now, not a historical error', async (t) => {

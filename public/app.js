@@ -240,7 +240,7 @@ function renderReport(r) {
   const hasMajor = fixFirst.length > 0;
   const promise = proofPromise(r);
   // What the browsing agent did, when it ran. Nothing when it did not.
-  let html = coverageCard(r) + agentCard(r);
+  let html = coverageCard(r) + feedbackGuidanceCard(r) + agentCard(r);
   if (hasMajor) {
     // Lead with the things that actually matter.
     html += promise + `<p class="eyebrow">Fix these first</p>` + fixFirst.map((f) => findingCard(f, r)).join("");
@@ -276,6 +276,14 @@ function coverageCard(r) {
   const lines = coverage.map(c => `<li><span>${esc(labels[c.check] || c.check)}</span><b>${esc(statuses[c.status] || 'Unknown')}</b>${c.reason ? `<p>${esc(c.reason)}</p>` : ''}</li>`).join('');
   const version = r.engine?.version;
   return `<details class="coverage-card"><summary>What was checked and what could not be checked</summary><p>This checkup samples public pages and selected tests. It cannot establish that the entire site is safe or working.</p>${coverage.length ? `<ul class="coverage-list">${lines}</ul>` : '<p>This older report did not record completion status for each check. Its grade should be read with that limitation.</p>'}${version ? `<p class="provenance">Checker version: ${esc(version)}. Recorded ${esc(r.scannedAt || 'at an unknown time')}.</p>` : ''}</details>`;
+}
+
+function feedbackGuidanceCard(r) {
+  const learning = r.engine?.feedbackLearning;
+  const lessons = Array.isArray(learning?.lessons) ? learning.lessons.slice(0, 8).filter(item => typeof item?.text === 'string') : [];
+  if (!lessons.length) return '';
+  const used = Array.isArray(learning.usedBy) && learning.usedBy.length > 0;
+  return `<details class="coverage-card feedback-guidance"><summary>${used ? 'How earlier feedback guided this checkup' : 'Earlier feedback available to this checkup'}</summary><p>${used ? 'The AI received these verification reminders from automatically processed feedback.' : 'These reminders were available, but no AI step used them in this checkup.'} They are not proof that a finding is right or wrong. The original observations remain unchanged.</p><ul>${lessons.map(item => `<li>${esc(item.text)} <small>(${item.scope === 'general' ? 'General guidance' : 'This website'})</small></li>`).join('')}</ul></details>`;
 }
 
 function observationMeta(f) {
@@ -517,7 +525,7 @@ function disputeBlock(f) {
   if (!d) return "";
   const wrong = Number(d.wrong) || 0;
   const right = Number(d.right) || 0;
-  const sum = `Earlier checkups received ${wrong} responses saying this finding was wrong and ${right} saying it was right. These responses are unverified and may refer to older website content. Notes are private to reviewers.`;
+  const sum = `Earlier checkups received ${wrong} responses saying this finding was wrong and ${right} saying it was right. These responses are unverified and may refer to older website content. Feedback is processed automatically; private notes are not published.`;
   return `<div class="proof-said"><p class="proof-k">Earlier feedback</p><p class="proof-said-sum">${esc(sum)}</p></div>`;
 }
 
@@ -542,6 +550,10 @@ async function retestFinding(btn) {
   if (window.Sutros) {
     await Sutros.ready;
     if (!Sutros.requireLogin('/r/' + encodeURIComponent(r.id))) return;
+    if (!Sutros.user.emailVerified) {
+      out.textContent = 'Please confirm your email first. Check your inbox for the confirmation link.';
+      return;
+    }
   }
   const label = btn.textContent;
   btn.disabled = true; btn.textContent = "Checking...";
@@ -728,6 +740,11 @@ $("#checkForm").addEventListener("submit", async (e) => {
   if (window.Sutros) {
     await Sutros.ready;
     if (!Sutros.requireLogin("/?url=" + encodeURIComponent(url))) return;
+    if (!Sutros.user.emailVerified) {
+      err.textContent = 'Please confirm your email first. Check your inbox for the confirmation link.';
+      err.classList.add('show');
+      return;
+    }
   }
   const host = displayHost(url);
   Promise.resolve(window.Sutros ? Sutros.beforeCheckup(host) : true).then((ok) => { if (ok) startLive(url); });

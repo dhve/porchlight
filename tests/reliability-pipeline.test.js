@@ -19,6 +19,7 @@ mock.module('../server/db.js', { namedExports: {
   sql: async () => [], dbEnabled: () => false,
 } });
 mock.module('../server/feedback.js', { namedExports: { disputesForHost: async () => new Map() } });
+mock.module('../server/feedbackAuto.js', { namedExports: { lessonsFor: async () => [] } });
 mock.module('../server/lib/http.js', { namedExports: { createClient: () => ({}) } });
 mock.module('../server/orchestrator.js', { namedExports: {
   planCheckup: async () => ({ focus: 'Fixture checklist', checks: [{ id: 'security' }, { id: 'browser' }], llm: false }),

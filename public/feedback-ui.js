@@ -46,6 +46,8 @@
   // current = { id, findings: { [findingId]: { right, wrong, notes } }, mine: { [findingId]: verdict } }
   let current = null;
   let mountSeq = 0;
+  let pollTimer = null;
+  let feedbackSeq = 0;
 
   function stateFor(fid) {
     const f = (current && current.findings && current.findings[fid]) || {};
@@ -53,13 +55,15 @@
       right: num(f.right),
       wrong: num(f.wrong),
       review: f.review || null,
+      auto: f.auto || null,
       mine: current && current.mine && (current.mine[fid] === "right" || current.mine[fid] === "wrong") ? current.mine[fid] : null,
     };
   }
 
   function remember(fid, d) {
     if (!current) return;
-    current.findings[fid] = { right: num(d.right), wrong: num(d.wrong), review: d.review || current.findings[fid]?.review || null };
+    current.findings[fid] = { right: num(d.right), wrong: num(d.wrong), review: d.review || current.findings[fid]?.review || null,
+      auto: d.auto || current.findings[fid]?.auto || null };
     if (d.mine === "right" || d.mine === "wrong") current.mine[fid] = d.mine;
   }
 
@@ -76,10 +80,14 @@
     return `<span class="fb-count">Unverified responses: ${esc(st.right)} yes, ${esc(st.wrong)} no</span>`;
   }
   function notesList(st) {
+    const automatic = st.auto;
+    const automaticLabel = { queued: 'Feedback queued', processing: 'Checking your feedback', processed: 'Feedback processed automatically', failed: 'Feedback processing could not finish' }[automatic?.status];
+    const lessons = Array.isArray(automatic?.lessons) ? automatic.lessons.slice(0, 8).filter(item => typeof item?.text === 'string') : [];
+    const automaticHtml = automaticLabel ? `<div class="fb-auto"><b>${esc(automaticLabel)}</b><p>${esc(automatic.summary || '')}</p>${lessons.length ? `<p class="fb-policy">Guidance for later checkups:</p><ul>${lessons.map(item => `<li>${esc(item.text)}</li>`).join('')}</ul>` : ''}</div>` : '';
     const review = st.review;
     const label = {confirmed:'Reviewer confirmed this finding',incorrect:'Reviewer found this finding incorrect',inconclusive:'Review could not confirm this finding'}[review?.status];
-    if (!label) return '<p class="fb-policy">Responses await review. A vote does not establish whether a finding is correct.</p>';
-    return `<div class="fb-review ${esc(review.status)}"><b>${esc(label)}</b><p>${esc(review.reason || '')}</p><p class="fb-policy">Review added ${esc(ago(review.reviewedAt) || 'at an unknown time')}. This is a separate review of the original report.</p></div>`;
+    const reviewHtml = label ? `<div class="fb-review ${esc(review.status)}"><b>${esc(label)}</b><p>${esc(review.reason || '')}</p><p class="fb-policy">Optional human review added ${esc(ago(review.reviewedAt) || 'at an unknown time')}. This is separate from automatic processing and the original report.</p></div>` : '';
+    return `<div class="fb-status" aria-live="polite">${automaticHtml}${reviewHtml}<p class="fb-policy">Responses guide later checkups automatically. A vote alone does not prove a finding correct or incorrect.</p></div>`;
   }
 
   function idleHtml(fid, st) {
@@ -98,9 +106,9 @@
     const id = uid();
     return `<form class="fb-form fb-open" novalidate>
       <span class="fb-q">${esc(question(fid))} <span class="fb-picked">You said no.</span></span>
-      <label class="fb-label" for="${id}">What did you see? (optional, private to reviewers)</label>
+      <label class="fb-label" for="${id}">What did you see? (optional, not published)</label>
       <textarea class="fb-note" id="${id}" maxlength="${NOTE_MAX}" rows="2"></textarea>
-      <p class="fb-policy">Your note and account name are not published. Avoid passwords or other private information. Reviewed outcomes and a reviewer’s explanation are public.</p>
+      <p class="fb-policy">The engine processes your note automatically and may send it to its AI provider. Your note and account name are not published. Avoid private information. <a href="/privacy">How feedback is used</a></p>
       <div class="fb-row">
         <button type="submit" class="fb-send">Send</button>
         <button type="button" class="fb-cancel">Cancel</button>
@@ -177,6 +185,7 @@
     if (!current || !current.id) return;
     const id = current.id;
     const token = mountSeq;
+    ++feedbackSeq;
     buttons.forEach((b) => { b.disabled = true; });
     const body = { findingId: fid, verdict };
     if (note) body.note = note.slice(0, NOTE_MAX);
@@ -184,9 +193,14 @@
     try {
       const d = await S.api(FEEDBACK_PATH(id), { method: "POST", body });
       if (token !== mountSeq || !current || current.id !== id) return; // a different report is on screen now
+      ++feedbackSeq;
       remember(fid, d && typeof d === "object" ? { ...d, mine: d.mine || verdict } : { mine: verdict });
       draw(slot, fid, "done");
+      schedulePoll(token);
     } catch (e) {
+      if (token !== mountSeq || current?.id !== id) return;
+      ++feedbackSeq;
+      schedulePoll(token);
       buttons.forEach((b) => { b.disabled = false; });
       const msg = (e && e.message) || "We couldn't save that right now. Please try again.";
       if (errEl) showErr(errEl, msg); else S.toast(msg);
@@ -208,7 +222,36 @@
     if (reportSlot) reportSlot.innerHTML = "";
   }
 
+  function schedulePoll(token) {
+    if (token !== mountSeq || !current) return;
+    clearTimeout(pollTimer);
+    if (!Object.values(current.findings).some(f => ['queued', 'processing'].includes(f.auto?.status))) return;
+    pollTimer = setTimeout(async () => {
+      if (token !== mountSeq || !current || !document.querySelector('#screen-report.is-active')) return;
+      const id = current.id;
+      const generation = feedbackSeq;
+      try {
+        const data = await S.api(FEEDBACK_PATH(id));
+        if (token !== mountSeq || current?.id !== id) return;
+        // A save may start or finish while this GET is in flight. Its earlier
+        // snapshot must not replace the saved correction or stop its polling.
+        if (generation === feedbackSeq) {
+          current.findings = Object.assign(Object.create(null), data.findings || {});
+          current.mine = Object.assign(Object.create(null), data.mine || {});
+          // Update only status text. Keep open corrections, focus, and selected answers intact.
+          for (const slot of [...slots(), document.getElementById('reportFeedbackSlot')].filter(Boolean)) {
+            const box = slot.firstElementChild;
+            const status = box?.querySelector('.fb-status');
+            if (status) status.outerHTML = notesList(stateFor(box.dataset.finding));
+          }
+        }
+      } catch { /* A transient read failure does not lose a saved answer or draft. */ }
+      schedulePoll(token);
+    }, 3000);
+  }
+
   function mount(r) {
+    clearTimeout(pollTimer);
     const list = slots();
     const reportSlot = document.getElementById("reportFeedbackSlot");
     clear(list, reportSlot);
@@ -227,10 +270,11 @@
       if (token !== mountSeq) return;
       current = {
         id,
-        findings: d && d.findings && typeof d.findings === "object" ? d.findings : {},
-        mine: d && d.mine && typeof d.mine === "object" ? d.mine : {},
+        findings: Object.assign(Object.create(null), d?.findings || {}),
+        mine: Object.assign(Object.create(null), d?.mine || {}),
       };
       show();
+      schedulePoll(token);
     }).catch((e) => {
       if (token !== mountSeq) return;
       if (e && (e.status === 503 || e.status === 404)) return; // nothing to vote on: no database, or the report is gone

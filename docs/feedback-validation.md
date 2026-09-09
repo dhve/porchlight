@@ -1,10 +1,41 @@
-# Reviewing findings and testing improvements
+# Automatic feedback and testing improvements
 
 A finding is a claim supported by an observation. Keep the observation, the
 review decision, and the result of a later check separate. A later working page
 does not establish what happened during the original checkup.
 
-## Review a response
+## Automatic processing
+
+Right and wrong answers, optional notes, and report-wide feedback enter a
+persistent queue. The worker starts with the server and recovers pending cases
+after a restart. Changed answers are reconsidered; repeated identical answers
+do not cause another model call. Human approval is not part of this loop.
+
+The worker compares a response with saved evidence. For supported disputed
+availability findings, it checks at most two recorded addresses using the same
+public-address, redirect, and challenge guards as rechecks. A current answer
+describes the site now. It does not prove an old observation was incorrect.
+Other findings can produce verification guidance without an automatic recheck.
+
+The model can select only fixed lesson IDs. Private notes are bounded, treated
+as untrusted data, and sent only for this classification, without account
+identifiers. Model failure uses conservative rules. Neither reader text nor
+model-written instructions enter future scans. Lessons never disable checks,
+rewrite signed reports, or directly change a finding's severity or grade.
+
+The planner, browser agent, and advice writer receive relevant canonical
+lessons. One processed case can activate guidance for its site. General guidance
+requires support across at least three hosts and three signed-in accounts.
+Superseded results are excluded and guidance expires after 90 days. This adapts
+the engine's instructions; it does not train model weights. New reports record
+the guidance and AI steps that used it in `engine.feedbackLearning`, covered by
+the report signature.
+
+The public progress endpoint separates automatic processing from optional
+human reviews. Processing totals are not an accuracy score. Notes and account
+identifiers are never included in public outcomes.
+
+## Optional human review
 
 1. A reader marks an individual finding right or wrong and can leave a private
    note. The saved response has a receipt. Votes are unverified signals; separate
@@ -89,6 +120,7 @@ backups and keep configured secrets consistent across workers. Changing the
 key changes browser digests. The cookie lasts up to 90 days; the stored value
 is a keyed digest rather than the raw cookie. Connection limits remain separate.
 
-User feedback does not automatically fine-tune a model, modify prompts, or
-approve a deployment. The loop is response, evidence review, retained case,
-candidate comparison, and a reviewed change.
+Automatic guidance and human evaluation labels serve different purposes.
+Feedback changes verification instructions automatically. The optional
+evaluation workflow can measure a proposed checker change against retained
+cases, without treating votes or automatic outcomes as ground-truth labels.

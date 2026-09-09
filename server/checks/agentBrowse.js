@@ -37,6 +37,7 @@ import { chatTools, llmEnabled, modelName } from "../llm.js";
 import { isChallenge, CHALLENGE_REASON, headerValue } from "../lib/challenge.js";
 import { classifyStylesheetResponse, assessStyling, noteRefusal, statusWords } from "../lib/styling.js";
 import { resolveTarget } from "../safety.js";
+import { formatFeedbackGuidance } from '../feedbackLessons.js';
 
 export const MOBILE_USER_AGENT =
   "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36";
@@ -878,7 +879,7 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session, model = 
     return { findings: [], passes: [], skipped: true, reason: `The homepage did not open in the browsing agent's browser: ${String(first.text || "").slice(0, 100)}` };
   }
 
-  const system = systemPrompt({ homepage, facts, maxSteps, budgetMs });
+  const system = systemPrompt({ homepage, facts, maxSteps, budgetMs }) + '\n' + formatFeedbackGuidance(ctx.feedbackLessons);
   const messages = [
     {
       role: "user",

@@ -47,18 +47,103 @@ test.after(async () => {
   await browser?.close();
   if (server) {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });
-async function openReport(t, fixture = report, viewer = null, onRequest = () => {}) {
+async function openReport(t, fixture = report, viewer = null, onRequest = () => {}, configure = async () => {}) {
   const page = await browser.newPage({viewport:{width:390,height:844}});
   t.after(()=>page.close());
   page.on('request',onRequest);
   await page.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
   if (fixture !== report) await page.route(origin+'/api/reports/evidence13', route => route.fulfill({json:fixture}));
   if (viewer) await page.route(origin+'/api/me', route => route.fulfill({json:{user:viewer}}));
+  await configure(page);
   await page.goto(origin+'/r/evidence13');
   await page.locator('#screen-report.is-active').waitFor();
   await page.locator('.finding, .minor-notes').first().waitFor();
   return page;
 }
+
+test('feedback processes automatically and polling preserves an unfinished correction', async t => {
+  let answer = null;
+  let processed = false;
+  const auto = () => ({ status: processed ? 'processed' : 'queued', outcome: processed ? 'unsupported' : null,
+    summary: processed ? 'The recorded connection failure did not support this claim.' : 'Automatic processing is waiting.',
+    lessons: processed ? [{ id: 'availability-transport-not-broken', scope: 'site', text: 'Treat failed connections as inconclusive.' }] : [] });
+  const page = await openReport(t, report, null, () => {}, async page => {
+    await page.route(origin+'/api/reports/evidence13/feedback', async route => {
+      if (route.request().method() === 'POST') {
+        answer = route.request().postDataJSON().verdict;
+        return route.fulfill({ json: { findingId: 'flow-error-contact', right: 1, wrong: 0, mine: answer, auto: auto() } });
+      }
+      return route.fulfill({ json: { findings: answer ? { 'flow-error-contact': { right: 1, wrong: 0, auto: auto() } } : {},
+        mine: answer ? { 'flow-error-contact': answer } : {} } });
+    });
+  });
+  const slot = page.locator('.f-slot[data-finding="flow-error-contact"]');
+  await slot.getByRole('button', { name: 'Yes', exact: true }).click();
+  await slot.getByText('Automatic processing is waiting.', { exact: true }).waitFor();
+  await slot.getByRole('button', { name: 'Change my answer' }).click();
+  await slot.getByRole('button', { name: 'No', exact: true }).click();
+  await slot.locator('textarea').fill('My unfinished correction');
+  processed = true;
+  await slot.getByText('The recorded connection failure did not support this claim.', { exact: true }).waitFor();
+  assert.equal(await slot.locator('textarea').inputValue(), 'My unfinished correction');
+  assert.equal(await slot.getByText('Treat failed connections as inconclusive.', { exact: true }).isVisible(), true);
+  assert.doesNotMatch(await slot.textContent(), /await review|needs a human|Reviewer confirmed/);
+});
+
+test('an unconfirmed account sees verification instructions before scans or rechecks start', async t => {
+  let requests = 0;
+  const page = await openReport(t, report, { id: 'fixture-unconfirmed', emailVerified: false }, request => {
+    const path = new URL(request.url()).pathname;
+    if (path.includes('/api/checkup') || path.endsWith('/retest')) requests++;
+  });
+  const card = page.locator('.finding').filter({ has: page.locator('[data-finding="flow-error-contact"]') });
+  await card.locator('details.proof > summary').click();
+  await card.getByRole('button', { name: 'Recheck these addresses', exact: true }).click();
+  await card.locator('.retest-out').getByText('Please confirm your email first. Check your inbox for the confirmation link.', { exact: true }).waitFor();
+  await page.locator('#brandBtn').click();
+  await page.locator('#urlInput').fill('https://fixture.example/');
+  await page.locator('#startBtn').click();
+  await page.locator('#formErr.show').waitFor();
+  assert.match(await page.locator('#formErr').textContent(), /confirm your email/);
+  assert.equal(requests, 0);
+});
+
+test('an old polling response cannot replace a newly submitted correction', async t => {
+  let answer = null, reads = 0, releaseOld;
+  const oldRead = new Promise(resolve => { releaseOld = resolve; });
+  let notifyHeld;
+  const held = new Promise(resolve => { notifyHeld = resolve; });
+  const auto = (status, summary) => ({ status, summary, outcome: status === 'processed' ? 'feedback-only' : null, lessons: [] });
+  const page = await openReport(t, report, null, () => {}, async page => {
+    await page.route(origin+'/api/reports/evidence13/feedback', async route => {
+      if (route.request().method() === 'POST') {
+        answer = route.request().postDataJSON().verdict;
+        return route.fulfill({ json: { right: answer === 'right' ? 1 : 0, wrong: answer === 'wrong' ? 1 : 0, mine: answer,
+          auto: auto('queued', answer === 'right' ? 'First response queued.' : 'Correction queued.') } });
+      }
+      reads++;
+      if (reads === 1) return route.fulfill({ json: { findings: {}, mine: {} } });
+      if (reads === 2) {
+        notifyHeld(); await oldRead;
+        return route.fulfill({ json: { findings: { 'flow-error-contact': { right: 1, wrong: 0, auto: auto('processed', 'Old response processed.') } }, mine: { 'flow-error-contact': 'right' } } });
+      }
+      return route.fulfill({ json: { findings: { 'flow-error-contact': { right: 0, wrong: 1, auto: auto('processed', 'New correction processed.') } }, mine: { 'flow-error-contact': 'wrong' } } });
+    });
+  });
+  t.after(() => releaseOld());
+  const slot = page.locator('.f-slot[data-finding="flow-error-contact"]');
+  await slot.getByRole('button', { name: 'Yes', exact: true }).click();
+  await held;
+  await slot.getByRole('button', { name: 'Change my answer' }).click();
+  await slot.getByRole('button', { name: 'No', exact: true }).click();
+  await slot.locator('textarea').fill('The earlier answer was mistaken.');
+  await slot.getByRole('button', { name: 'Send', exact: true }).click();
+  await slot.getByText('Correction queued.', { exact: true }).waitFor();
+  releaseOld();
+  await slot.getByText('New correction processed.', { exact: true }).waitFor();
+  assert.equal(await slot.getByText('Old response processed.', { exact: true }).count(), 0);
+  assert.ok(reads >= 3);
+});
 
 test('all recorded image addresses are available beyond the old eight-line cutoff', async t => {
   const page = await openReport(t);

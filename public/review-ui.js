@@ -81,8 +81,9 @@
     if (!box) return;
     try {
       const data = await S.api('/api/feedback/progress');
-      box.innerHTML = `<p>${count(data.signals?.total)} feedback response${count(data.signals?.total) === 1 ? '' : 's'} received. ${count(data.cases?.reviewed)} finding${count(data.cases?.reviewed) === 1 ? '' : 's'} reviewed: ${count(data.cases?.confirmed)} confirmed, ${count(data.cases?.incorrect)} incorrect, ${count(data.cases?.inconclusive)} inconclusive.</p><p class="fb-policy">${esc(data.limitation || 'These are selected feedback cases, not a measure of overall model accuracy. Responses do not represent verified unique people.')}</p>`;
-    } catch { box.textContent = 'Review totals are unavailable right now.'; }
+      const automatic = data.automatic;
+      box.innerHTML = `<p>${count(data.signals?.total)} feedback responses received.</p>${automatic?.mode === 'automatic' ? `<p>${count(automatic.processed)} of ${count(automatic.submitted)} feedback cases processed automatically. ${count(automatic.pending)} pending; ${count(automatic.failed)} could not finish. ${count(automatic.lessonsActive)} active verification lessons.</p>` : '<p>Automatic processing totals are unavailable right now.</p>'}<p class="fb-policy">${esc(data.limitation || 'Feedback guides later checkups. These totals do not measure overall accuracy.')}</p>`;
+    } catch { box.textContent = 'Feedback totals are unavailable right now.'; }
   }
   S.route(/^\/review\/?$/, () => loadReview());
   S.onUser(user => {

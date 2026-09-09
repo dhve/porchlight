@@ -6,6 +6,7 @@
 // If no key is set, planCheckup() falls back to running every check.
 
 import { chatJSON, llmEnabled } from "./llm.js";
+import { formatFeedbackGuidance } from './feedbackLessons.js';
 
 // The catalog of checks the orchestrator is allowed to schedule. Keys must
 // match the ids the pipeline knows how to run.
@@ -27,7 +28,7 @@ export const CHECK_CATALOG = [
 
 const ALL_IDS = CHECK_CATALOG.map((c) => c.id);
 
-export async function planCheckup(facts) {
+export async function planCheckup(facts, feedbackLessons = []) {
   const fallback = {
     focus: "Running a full checkup across security, customer flows, and quality.",
     checks: ALL_IDS.map((id) => ({ id, reason: "Default full sweep." })),
@@ -44,7 +45,8 @@ export async function planCheckup(facts) {
         "Given a summary of what an initial scan found, choose which follow-up checks to run and in what order, " +
         "prioritizing the ones most likely to matter for THIS site. You may include every check. " +
         "Respond as JSON: {\"focus\": string, \"checks\": [{\"id\": string, \"reason\": string}]}. " +
-        "Valid ids are exactly: " + ALL_IDS.join(", ") + ". Keep 'focus' to one short sentence a shop owner would understand.",
+        "Valid ids are exactly: " + ALL_IDS.join(", ") + ". Keep 'focus' to one short sentence a shop owner would understand.\n" +
+        formatFeedbackGuidance(feedbackLessons),
       user: `Initial scan summary:\n${summary}`,
       temperature: 0.3,
       maxTokens: 2500,

@@ -44,7 +44,7 @@ test('cases are planned from the saved finding and the vote mix', () => {
   assert.equal(supported.disputed, true);
   assert.deepEqual(supported.addresses, ['https://a.invalid/1', 'https://a.invalid/2']);
   assert.equal(supported.unsupported, false);
-  const legacy = planCase({ findingId: 'broken-links', finding: availability([{ url: 'https://a.invalid/1', status: 0 }, { url: 'https://a.invalid/2' }]), counts: disputed });
+  const legacy = planCase({ findingId: 'broken-links', finding: availability([{ url: 'https://a.invalid/1', status: 0 }, { url: 'https://a.invalid/2', status: 0 }]), counts: disputed });
   assert.equal(legacy.unsupported, true);
   assert.deepEqual(legacy.addresses, []);
   const agreed = planCase({ findingId: 'broken-links', finding: availability([{ url: 'https://a.invalid/1', status: 404 }]), counts: { right: 2, wrong: 0, notes: [] } });
@@ -52,6 +52,19 @@ test('cases are planned from the saved finding and the vote mix', () => {
   assert.deepEqual(agreed.addresses, [], 'agreement needs no network');
   assert.equal(planCase({ findingId: 'agent-layout', finding: { id: 'agent-layout', source: 'agent' }, counts: disputed }).kind, 'other');
   assert.equal(planCase({ findingId: 'gone', finding: null, counts: disputed }).kind, 'missing');
+});
+
+test('missing or malformed baseline status is not evidence of a failed connection', () => {
+  for (const status of [undefined, null, '', false, [], 'unknown', -1, 999]) {
+    const plan = planCase({ findingId: 'broken-links', finding: availability([{ url: 'https://a.invalid/1', status }]), counts: { wrong: 1 } });
+    assert.equal(plan.unsupported, false, JSON.stringify(status));
+    assert.deepEqual(plan.addresses, []);
+  }
+  const mixed = planCase({ findingId: 'broken-links', finding: availability([{ url: 'https://a.invalid/1', status: 0 }, { url: 'https://a.invalid/2' }]), counts: { wrong: 1 } });
+  assert.equal(mixed.unsupported, false);
+  const numericString = planCase({ findingId: 'broken-links', finding: availability([{ url: 'https://a.invalid/1', status: '404' }]), counts: { wrong: 1 } });
+  assert.deepEqual(numericString.addresses, ['https://a.invalid/1']);
+  assert.equal(numericString.unsupported, false);
 });
 
 test('availability outcomes describe now and never a historical mistake', () => {

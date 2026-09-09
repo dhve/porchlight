@@ -1,11 +1,12 @@
-// Visitor signals are private review inputs. Counts and explicit reviewer
-// decisions are public; neither votes nor rechecks alter signed reports.
+// Reader responses are private processing inputs. Counts, automatic outcomes,
+// and optional review decisions are public; signed reports remain unchanged.
 import express from 'express';
 import { createHmac, randomBytes } from 'node:crypto';
 import { sql, dbEnabled, newId } from './db.js';
 import { consume, ip } from './ratelimit.js';
 import { ensureRetestSchema } from './retest.js';
 import { ensureReviewSchema, latestReviews, publicReview, appendReview, reviewQueue, feedbackProgress, evaluationCases, REVIEW_STATUSES } from './feedbackReview.js';
+import { ensureAutoFeedbackSchema, enqueueFeedbackCase, autoFeedbackForReport, autoFeedbackProgress } from './feedbackAuto.js';
 
 export const feedbackRouter = express.Router();
 const ID_RE = /^[A-Za-z0-9_-]{6,20}$/;
@@ -15,9 +16,9 @@ const COOKIE = 'sutros_feedback';
 let storedIdentityKey = null;
 export const FEEDBACK_POLICY = {
   votes: 'Votes are unverified reader responses, not verified unique people or confirmed findings.',
-  notes: 'Your note is private to authorized reviewers. Counts and a reviewer\'s separate explanation are public.',
+  notes: 'Your note is processed automatically and may be sent to the configured AI provider. It is not published. Authorized reviewers can also read it.',
   identity: 'A functional browser cookie lets you change your answer. A separate connection limit helps prevent abuse.',
-  learning: 'A person reviews evidence before a case can be used for evaluation. Votes do not automatically train a model.',
+  learning: 'Feedback automatically guides verification in later checkups. No human approval is required. Votes remain unverified and do not retrain model weights or change signed reports.',
 };
 
 export async function ensureFeedbackSchema() {
@@ -55,6 +56,7 @@ export async function ensureFeedbackSchema() {
   await sql('CREATE INDEX IF NOT EXISTS finding_feedback_created_idx ON finding_feedback (created_at)');
   await ensureReviewSchema();
   await ensureRetestSchema();
+  await ensureAutoFeedbackSchema();
   return true;
 }
 
@@ -95,6 +97,7 @@ async function loadFeedback(reportId, voter) {
   const entry = (id) => (findings[id] ||= { right: 0, wrong: 0, notes: [] });
   for (const row of rows) entry(row.finding_id)[row.verdict] = row.n;
   for (const row of await latestReviews(reportId)) entry(row.finding_id).review = publicReview(row);
+  for (const [id, result] of Object.entries(await autoFeedbackForReport(reportId))) entry(id).auto = result;
   return { findings, mine: Object.fromEntries(own.map((row) => [row.finding_id, row.verdict])), policy: FEEDBACK_POLICY };
 }
 
@@ -136,6 +139,8 @@ feedbackRouter.post('/api/reports/:id/feedback', needDb, safe(async (req, res) =
       DO UPDATE SET verdict=EXCLUDED.verdict,note=EXCLUDED.note,user_id=EXCLUDED.user_id,updated_at=now() RETURNING id`,
     [receiptId, id, host, findingId, req.user?.id || null, voter, verdict, note || null]);
     receiptId = saved.id;
+    // The worker reconciles saved responses if enqueueing is interrupted.
+    await enqueueFeedbackCase(id, findingId).catch(() => console.error('feedback: queue reconciliation deferred'));
   }
   const state = await loadFeedback(id, voter);
   res.setHeader('Cache-Control', 'private, no-store');
@@ -168,7 +173,10 @@ feedbackRouter.post('/api/reports/:id/feedback/review', requireAdmin, needDb, sa
   res.status(201).json({ review });
 }));
 
-feedbackRouter.get('/api/feedback/progress', needDb, safe(async (_req, res) => { res.json(await feedbackProgress()); }));
+feedbackRouter.get('/api/feedback/progress', needDb, safe(async (_req, res) => {
+  const [progress, automatic] = await Promise.all([feedbackProgress(), autoFeedbackProgress()]);
+  res.json({ ...progress, automatic });
+}));
 feedbackRouter.get('/api/feedback/evaluation-cases', requireAdmin, needDb, safe(async (_req, res) => {
   res.setHeader('Cache-Control', 'private, no-store');
   res.json(await evaluationCases());
