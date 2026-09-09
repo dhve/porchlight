@@ -133,10 +133,8 @@ const BY_ID = {
 const BY_PREFIX = [
   { re: /^vuln-lib-/, why: "This library version has a published vulnerability (a CVE, referenced in the evidence). Exploit code for known CVEs is public, and automated scanners look for exactly this version string in page source, so the risk is not theoretical.", confirm: "Search the CVE number from the evidence to read the advisory; the version is visible in the script address in your page source." },
   { re: /^exposed-/, why: "The file is served to anyone who requests that exact address. Automated scanners request these well-known paths constantly. Files of this kind typically contain passwords, keys, or customer data that give direct access to your systems.", confirm: "Open the address in a private browser window; the file contents appear. Then have it removed." },
-  { re: /^flow-error-/, why: "The server answered with a 5xx status, which means its own code failed while handling the request. We waited and requested the page once more with the headers a normal browser sends, and it failed the same way, so this is not a case of the site blocking our checker. Visitors get an error page instead of the feature, and the failure repeats on every attempt until the underlying plugin or code is fixed.", confirm: "Open the address in the proof; you will see the error page." },
-  { re: /^flow-missing-/, why: "A 404 status means nothing exists at that address any more. We asked twice, the second time with standard browser headers, and got the same answer, so the link is dead for every visitor who clicks it.", confirm: "Click the link on the page named in the proof; it lands on a Not Found page." },
-  { re: /^broken-images/, why: "The image address answered with an error twice, once to our plain request and once more with standard browser headers after a short wait, so browsers draw a broken-image icon in its place. Sites that only refuse automated checkers answer the second request normally, which is why this one counts as really broken. Usually the file was moved, renamed, or deleted while the page still points at the old address.", confirm: "Open the page named in the proof and look for the broken-image icon, or open one of the image addresses listed; it returns an error instead of a picture." },
-  { re: /^broken-links/, why: "The link target answered with an error twice, once to our plain request and once more with standard browser headers after a short wait. Sites that only refuse automated checkers answer the second request normally, so this one is a real dead end for every visitor who clicks it.", confirm: "Click the link on the page named in the proof, or open the address directly; it lands on an error page." },
+  { re: /^broken-images/, why: "The recorded image-loading observation needs confirmation in an independent browser. A failed request in the checker's browser can reflect a missing resource, network conditions, or an access restriction.", confirm: "Open the recorded page and image addresses in your browser and compare the results with the evidence." },
+  { re: /^broken-links/, why: "The recorded link observation needs confirmation in an independent browser. A failed request can reflect a missing page, network conditions, or an access restriction.", confirm: "Open the recorded page and follow the listed links, then compare the results with the evidence." },
 ];
 
 const BY_CATEGORY = {
@@ -162,7 +160,23 @@ export const PROOF_PROMISE =
 /** Return { why, confirm } for a finding; empty strings if nothing applies. */
 export function explain(finding) {
   if (!finding) return { why: "", confirm: "" };
+  const availability = explainAvailability(finding);
+  if (availability) return availability;
   if (BY_ID[finding.id]) return BY_ID[finding.id];
   for (const p of BY_PREFIX) if (p.re.test(finding.id || "")) return { why: p.why, confirm: p.confirm };
   return BY_CATEGORY[finding.category] || { why: "", confirm: "" };
+}
+
+function explainAvailability(finding) {
+  if (!/^(broken-links|broken-images|flow-(error|missing)-.+)$/.test(String(finding.id || ''))) return null;
+  const items = Array.isArray(finding.evidence?.items) ? finding.evidence.items : [];
+  const statuses = [...new Set(items.map(item => item?.status).filter(status => Number.isInteger(status) && status >= 400 && status <= 599))];
+  const unanswered = items.some(item => item?.status === 0);
+  const observed = statuses.length ? `Sutros recorded ${statuses.map(status => `HTTP ${status}`).join(', ')} responses. ` : '';
+  const why = unanswered
+    ? observed + 'Sutros received no HTTP response for one or more recorded requests. A connection failure can reflect network conditions or access restrictions and does not establish a server error or what other visitors experienced.'
+    : statuses.length
+      ? observed + 'An HTTP error describes the response received by the checker at that time. The response may come from the website, an intermediary, or an access rule. Retrying from the same network with different headers does not establish what other visitors see.'
+      : 'The recorded evidence does not establish an HTTP error at the listed addresses. Inspect the observation and compare it with an independent browser before treating the finding as confirmed.';
+  return { why, confirm: 'Open the listed addresses in your browser and, if possible, from another network. Compare what loads with the recorded responses. If the results differ, ask the host to check its request and access logs.' };
 }

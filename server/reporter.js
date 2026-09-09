@@ -23,6 +23,7 @@ export async function writeReport({ target, facts, findings, passes, assessment 
         "The supplied observations are immutable. Do not rewrite titles, meanings, severity, evidence, or passes, and do not assess overall health. " +
         "For existing finding IDs only, suggest a short explanation, practical fixes, and ways to inspect the claim. " +
         "Preserve all uncertainty and limitations, including heuristic checks, incomplete rendering, and AI observations. Evidence does not necessarily prove the interpretation. " +
+        "A connection failure or status 0 means no HTTP response was received, not a 5xx server error. Changing request headers on the same network cannot rule out access restrictions or prove what other visitors experience. " +
         "Do not invent measurements, attacks, or successful tests. Use plain language and refer to 'this site' and 'the owner'. " +
         'Respond as JSON: {"findings":[{"id":string,"why":string,"fix":[string],"who":string,"confirm":string}]}.',
       user: JSON.stringify(payload),
