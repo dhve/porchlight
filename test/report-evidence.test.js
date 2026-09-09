@@ -47,11 +47,13 @@ test.after(async () => {
   await browser?.close();
   if (server) {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });
-async function openReport(t, fixture = report) {
+async function openReport(t, fixture = report, viewer = null, onRequest = () => {}) {
   const page = await browser.newPage({viewport:{width:390,height:844}});
   t.after(()=>page.close());
+  page.on('request',onRequest);
   await page.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
   if (fixture !== report) await page.route(origin+'/api/reports/evidence13', route => route.fulfill({json:fixture}));
+  if (viewer) await page.route(origin+'/api/me', route => route.fulfill({json:{user:viewer}}));
   await page.goto(origin+'/r/evidence13');
   await page.locator('#screen-report.is-active').waitFor();
   await page.locator('.finding, .minor-notes').first().waitFor();
@@ -104,7 +106,7 @@ test('an old refused connection is clarified before its original urgent claim an
 });
 
 test('a successful recheck of an old connection failure says loaded without claiming a fix', async t => {
-  const page = await openReport(t);
+  const page = await openReport(t, report, {id:'fixture-user',name:'Fixture reader',emailVerified:true});
   await page.route(origin+'/api/reports/evidence13/retest', route => route.fulfill({json:{
     checkedAt:new Date().toISOString(),scope:'http-availability',items:[{
       url:'https://fixture.example/contact',status:200,statusText:'OK',
@@ -118,4 +120,34 @@ test('a successful recheck of an old connection failure says loaded without clai
   assert.match(text,/200 OK/);
   assert.match(text,/does not establish a change/);
   assert.doesNotMatch(text,/unknown-baseline|same as|fixed|Could not confirm/);
+});
+
+test('an anonymous recheck opens sign-in before any recheck request', async t => {
+  const page = await openReport(t);
+  let rechecks = 0;
+  page.on('request', req => {if (new URL(req.url()).pathname.endsWith('/retest')) rechecks++;});
+  const contact = page.locator('.finding').filter({has:page.locator('[data-finding="flow-error-contact"]')});
+  await contact.locator('details.proof > summary').click();
+  await contact.getByRole('button',{name:'Recheck these addresses',exact:true}).click();
+  await page.waitForURL('**/login?**',{timeout:3000});
+  assert.equal(await page.locator('#auLoginBtn').isVisible(),true);
+  const destination = new URL(page.url());
+  assert.equal(destination.pathname,'/login');
+  assert.equal(destination.searchParams.get('next'),'/r/evidence13');
+  assert.equal(rechecks,0);
+});
+
+test('an anonymous scan opens sign-in with the website address retained', async t => {
+  const page = await openReport(t);
+  let scans = 0;
+  page.on('request', req => {if (new URL(req.url()).pathname.startsWith('/api/checkup')) scans++;});
+  await page.getByRole('button',{name:'SUTROS home',exact:true}).click();
+  await page.locator('#urlInput').fill('https://fixture.example/contact');
+  await page.locator('#checkForm button[type="submit"]').click();
+  await page.waitForURL('**/login?**',{timeout:3000});
+  assert.equal(await page.locator('#auLoginBtn').isVisible(),true);
+  const destination = new URL(page.url());
+  assert.equal(destination.pathname,'/login');
+  assert.equal(destination.searchParams.get('next'),'/?url=https%3A%2F%2Ffixture.example%2Fcontact');
+  assert.equal(scans,0);
 });

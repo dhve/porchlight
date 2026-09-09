@@ -25,7 +25,7 @@ const { llmEnabled, modelName } = await import("./llm.js");
 const { initDb, dbEnabled, getReport, listReports, saveNomination, addHelper, listHelpers } = await import("./db.js");
 const { setupRouter } = await import("./setup.js");
 const { reportsForHost } = await import("./db.js");
-const { authRouter, attachUser, csrfGuard } = await import("./auth.js");
+const { authRouter, attachUser, csrfGuard, requireVerified } = await import("./auth.js");
 const { oauthRouter } = await import("./oauth.js");
 const { verifyRouter } = await import("./verify.js");
 const { bulletinRouter } = await import("./bulletin.js");
@@ -47,16 +47,16 @@ app.use(authRouter);
 app.use(oauthRouter);
 app.use(verifyRouter);
 app.use(bulletinRouter);
+app.post('/api/reports/:id/retest', requireVerified);
 app.use(retestRouter);
 app.use(proofRouter);
 app.use(feedbackRouter);
 
-const REQUIRE_ACCOUNT = process.env.REQUIRE_ACCOUNT === "1";
 const normHost = (h) => String(h || "").toLowerCase().replace(/^www\./, "");
 
 app.get("/api/config", (_req, res) => {
   res.json({
-    requireAccount: REQUIRE_ACCOUNT,
+    requireAccount: true,
     providers: { google: Boolean(process.env.GOOGLE_CLIENT_ID), github: Boolean(process.env.GITHUB_CLIENT_ID) },
     mail: { configured: mailStatus().configured },
     agent: llmEnabled() && process.env.AGENT_BROWSE !== "0",
@@ -89,22 +89,8 @@ async function optedOut(host) {
 
 /** Account + rate + per-host cooldown gate for running a checkup. Returns an error object or null. */
 async function checkupGate(req, host) {
-  if (REQUIRE_ACCOUNT) {
-    if (!req.user) return { status: 401, error: "Please sign in to run a checkup." };
-    if (!req.user.emailVerified) return { status: 403, error: "Please confirm your email first.", code: "unverified" };
-    const r = consume("checkups", req.user.id, 20, 24 * 60 * 60_000);
-    if (!r.ok) return { status: 429, error: "This account has reached its limit of 20 checkups in 24 hours. Please wait before trying again.", retryAfterMs: r.retryAfterMs };
-  } else if (req.user) {
-    const r = consume("checkups", req.user.id, 30, 24 * 60 * 60_000);
-    if (!r.ok) return { status: 429, error: "This account has reached its limit of 30 checkups in 24 hours. Please wait before trying again.", retryAfterMs: r.retryAfterMs };
-  } else {
-    // No account needed. Anonymous checkups are paced per connection, and everyone shares a ceiling
-    // so a burst of bots cannot run up the bill.
-    const r = consume("checkups-ip", req.ip || "x", 12, 60 * 60_000);
-    if (!r.ok) return { status: 429, error: "This connection has reached its limit of 12 checkups in an hour. Please wait before trying again.", retryAfterMs: r.retryAfterMs };
-    const g = consume("checkups-anon-all", "all", 150, 60 * 60_000);
-    if (!g.ok) return { status: 429, error: "Sutros has reached its shared limit for checkups without an account. Please wait before trying again.", retryAfterMs: g.retryAfterMs };
-  }
+  const r = consume("checkups", req.user.id, 20, 24 * 60 * 60_000);
+  if (!r.ok) return { status: 429, error: "This account has reached its limit of 20 checkups in 24 hours. Please wait before trying again.", retryAfterMs: r.retryAfterMs };
   if (await optedOut(host)) return { status: 403, error: "This site's owner has asked not to be checked by Sutros." };
   try {
     const latest = (await reportsForHost(host, 1))[0];
@@ -126,7 +112,7 @@ app.get("/api/health", (_req, res) => {
 });
 
 // ---- streaming checkup (Server-Sent Events) ----
-app.get("/api/checkup/stream", async (req, res) => {
+app.get("/api/checkup/stream", requireVerified, async (req, res) => {
   // Only the site's own EventSource may start a checkup here: a typed or linked
   // navigation carries neither the event-stream Accept header nor a cors fetch mode.
   if (req.get("sec-fetch-mode") === "navigate" || !/text\/event-stream/i.test(req.get("accept") || "")) {
@@ -170,7 +156,7 @@ app.get("/api/checkup/stream", async (req, res) => {
 });
 
 // ---- one-shot checkup (JSON) ----
-app.post("/api/checkup", async (req, res) => {
+app.post("/api/checkup", requireVerified, async (req, res) => {
   const target = await prepare(req.body?.url, req.body?.consent);
   if (!target.ok) return res.status(400).json({ error: target.error });
   const gate = await checkupGate(req, target.display);

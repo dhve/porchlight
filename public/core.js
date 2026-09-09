@@ -1,7 +1,7 @@
 // core.js  window.Sutros: shared API client, user state, routing, and hooks
 (function () {
   const S = (window.Sutros = window.Sutros || {});
-  S.user = null; S.config = { requireAccount: false, providers: {}, mail: { configured: false } };
+  S.user = null; S.config = { requireAccount: true, providers: {}, mail: { configured: false } };
   const userListeners = [];
 
   S.api = async function (path, { method = "GET", body } = {}) {

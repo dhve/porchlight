@@ -539,6 +539,10 @@ async function retestFinding(btn) {
   const findingId = btn.dataset.finding;
   const out = btn.parentElement ? btn.parentElement.querySelector(".retest-out") : null;
   if (!r || !r.id || !findingId || !out) return;
+  if (window.Sutros) {
+    await Sutros.ready;
+    if (!Sutros.requireLogin('/r/' + encodeURIComponent(r.id))) return;
+  }
   const label = btn.textContent;
   btn.disabled = true; btn.textContent = "Checking...";
   out.innerHTML = "";
@@ -711,7 +715,7 @@ $("#helpersBack").addEventListener("click", () => go(currentReport ? "report" : 
 $("#copyInvite").addEventListener("click", copyInvite);
 $("#helperForm").addEventListener("submit", submitHelper);
 
-$("#checkForm").addEventListener("submit", (e) => {
+$("#checkForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   const url = $("#urlInput").value.trim();
   const err = $("#formErr");
@@ -721,7 +725,10 @@ $("#checkForm").addEventListener("submit", (e) => {
     return;
   }
   err.classList.remove("show");
-  if (window.Sutros && Sutros.config && Sutros.config.requireAccount && !Sutros.requireLogin("/?url=" + encodeURIComponent(url))) return;
+  if (window.Sutros) {
+    await Sutros.ready;
+    if (!Sutros.requireLogin("/?url=" + encodeURIComponent(url))) return;
+  }
   const host = displayHost(url);
   Promise.resolve(window.Sutros ? Sutros.beforeCheckup(host) : true).then((ok) => { if (ok) startLive(url); });
 });

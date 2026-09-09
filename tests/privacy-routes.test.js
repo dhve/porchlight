@@ -54,7 +54,9 @@ test("public routes preserve private ownership in a disposable local database", 
   )`);
   const nativeListen = express.application.listen;
   t.mock.method(express.application, "listen", function (...args) { server = nativeListen.apply(this, args); return server; });
+  let targetLookups = 0;
   t.mock.method(dns, "lookup", async (host, options) => {
+    targetLookups++;
     if (!host.endsWith(".example")) throw new Error("Unexpected external DNS request in a privacy test");
     return options?.all ? [{ address: "203.0.113.8", family: 4 }] : { address: "203.0.113.8", family: 4 };
   });
@@ -106,6 +108,26 @@ test("public routes preserve private ownership in a disposable local database", 
     return { status: response.status, cache: response.headers.get("cache-control"), body: stream ? await response.text() : await response.json() };
   }
 
+  await t.test("accounts are required for scans and rechecks before target network work", async () => {
+    const before = targetLookups;
+    assert.equal((await request('/api/config')).body.requireAccount,true);
+    for (const route of ['/api/checkup','/api/reports/report1234/retest']) {
+      const reply = await request(route,{method:'POST',body:{url:'https://gate.example/',findingId:'broken-links'}});
+      assert.equal(reply.status,401,route);
+    }
+    const stream = await request('/api/checkup/stream?url=https%3A%2F%2Fgate.example%2F',{stream:true});
+    assert.equal(stream.status,401);
+    assert.equal(targetLookups,before,'Account denial happens before DNS resolution');
+    await db.sql('UPDATE users SET email_verified=false WHERE id=$1',[people[0].id]);
+    try {
+      for (const route of ['/api/checkup','/api/reports/report1234/retest']) {
+        const reply = await request(route,{viewer:people[0],method:'POST',body:{url:'https://gate.example/',findingId:'broken-links'}});
+        assert.equal(reply.status,403);
+        assert.equal(reply.body.code,'unverified');
+      }
+    } finally { await db.sql('UPDATE users SET email_verified=true WHERE id=$1',[people[0].id]); }
+  });
+
   await t.test("saved detail, history, and recent lists omit account data for every viewer", async () => {
     for (const viewer of [null, people[0], people[1]]) {
       for (const route of ["/api/reports/report1234", "/api/reports?limit=5", "/api/checks?host=fixture.example"]) {
@@ -140,11 +162,11 @@ test("public routes preserve private ownership in a disposable local database", 
   await t.test("public input boundaries reject credentials and query values", async () => {
     for (const url of ["https://person:password@fixture.example/", "https://fixture.example/reset?token=synthetic"]) {
       for (const route of ["/api/checkup", "/api/nominate"]) {
-        const reply = await request(route, { method: "POST", body: { url } });
+        const reply = await request(route, { viewer:people[0], method: "POST", body: { url } });
         assert.equal(reply.status, 400);
         assert.equal(JSON.stringify(reply.body).includes("synthetic"), false);
       }
-      const stream = await request("/api/checkup/stream?url=" + encodeURIComponent(url), { stream: true });
+      const stream = await request("/api/checkup/stream?url=" + encodeURIComponent(url), { viewer:people[0], stream: true });
       assert.match(stream.body, /event: error/);
       assert.equal(stream.body.includes("event: report"), false);
     }
