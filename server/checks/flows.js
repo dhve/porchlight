@@ -67,6 +67,7 @@ export async function runFlows(ctx) {
   let inconclusive = 0;
   let unreachable = 0;
   let unreachableText = "";
+  const inconsistent = []; // an error answer that did not repeat: both observations are kept
   let untested = 0;
   let outOfBudget = false;
   for (const [href, { name, text }] of list) {
@@ -80,7 +81,9 @@ export async function runFlows(ctx) {
     if (r.verdict === "blocked") { blocked++; continue; }
     // No HTTP answer at all: a gap, never a finding.
     if (r.verdict !== "broken" || !(r.status > 0)) {
-      if (r.transport) { unreachable++; unreachableText = unreachableText || r.statusText; } else inconclusive++;
+      if (r.transport) { unreachable++; unreachableText = unreachableText || r.statusText; }
+      else if (r.reason === "mismatch" || r.reason === "single-error") inconsistent.push(`${r.firstStatus ? r.firstStatus : (r.firstText || "no answer")} then ${r.status}`);
+      else inconclusive++;
       continue;
     }
     broken++;
@@ -135,10 +138,11 @@ export async function runFlows(ctx) {
   let reason = `${loaded + broken} of ${list.length} sampled customer pages gave conclusive results (${loaded} working, ${broken} broken).`;
   if (blocked) reason += ` Refused or blocked by the site: ${blocked}.`;
   if (unreachable) reason += ` Could not connect from our network: ${unreachable} (${unreachableText}). A connection that fails without an answer does not show what visitors see.`;
+  if (inconsistent.length) reason += ` Error answers that did not repeat: ${inconsistent.length} (${inconsistent[0]}); one error answer is not confirmation.`;
   if (inconclusive) reason += ` No conclusive answer: ${inconclusive}.`;
   if (untested) {
     reason += throttle.reason === "unreachable"
-      ? ` Left untested after the site stopped accepting connections from our network: ${untested}.`
+      ? ` Left untested after repeated connection failures: ${untested}.`
       : ` Left untested after a site limit or the request budget: ${untested}.`;
   }
   return { findings, passes, status: "inconclusive", reason };

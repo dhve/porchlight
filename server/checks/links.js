@@ -87,7 +87,7 @@ export async function runLinks(ctx) {
     }
     const r = await probeAddress(client, item.url, { headFirst: true, throttle, pace });
     if (r.reason === "budget") outOfBudget = true;
-    results[item.kind].push({ item, verdict: r.reason === "budget" ? "untried" : r.verdict, status: r.status, statusText: r.statusText, retried: r.retried, reason: r.reason, transport: r.transport });
+    results[item.kind].push({ item, verdict: r.reason === "budget" ? "untried" : r.verdict, status: r.status, statusText: r.statusText, retried: r.retried, reason: r.reason, transport: r.transport, firstStatus: r.firstStatus, firstText: r.firstText });
   }
 
   const stopReason = throttle.reason;
@@ -185,7 +185,7 @@ function hostGuard(origin, resolve = resolveTarget) {
 }
 
 function summarize(list, stopReason = "") {
-  const out = { sampled: list.length, ok: 0, broken: [], limited: 0, inconclusive: 0, unreachable: 0, unreachableText: "", untried: 0, untested: 0, skipped: 0, tested: 0, stopReason };
+  const out = { sampled: list.length, ok: 0, broken: [], limited: 0, inconclusive: 0, inconsistent: [], unreachable: 0, unreachableText: "", untried: 0, untested: 0, skipped: 0, tested: 0, stopReason };
   for (const r of list) {
     if (r.verdict === "skipped") { out.skipped++; continue; }
     if (r.verdict === "untried") { out.untried++; continue; }
@@ -195,6 +195,7 @@ function summarize(list, stopReason = "") {
     else if (r.verdict === "broken") out.broken.push(r);
     else if (r.verdict === "blocked") out.limited++;
     else if (r.transport) { out.unreachable++; out.unreachableText = out.unreachableText || r.statusText; }
+    else if (r.reason === "mismatch" || r.reason === "single-error") out.inconsistent.push(r);
     else out.inconclusive++;
   }
   return out;
@@ -204,15 +205,22 @@ function limitations(stats) {
   let text = "";
   if (stats.limited) text += ` Refused or blocked by the site: ${stats.limited}.`;
   if (stats.unreachable) text += ` Could not connect from our network: ${stats.unreachable} (${stats.unreachableText}). A connection that fails without an answer does not show what visitors see.`;
+  if (stats.inconsistent.length) text += ` Error answers that did not repeat: ${stats.inconsistent.length} (${describeAttempts(stats.inconsistent[0])}); one error answer is not confirmation.`;
   if (stats.inconclusive) text += ` No conclusive answer: ${stats.inconclusive}.`;
   if (stats.untested) {
     text += stats.stopReason === "unreachable"
-      ? ` Left untested after the site stopped accepting connections from our network: ${stats.untested}.`
+      ? ` Left untested after repeated connection failures: ${stats.untested}.`
       : ` Left untested after a site limit: ${stats.untested}.`;
   }
   if (stats.untried) text += ` Left untested after the time or request budget: ${stats.untried}.`;
   if (stats.skipped) text += ` Not requested because of the safety guard: ${stats.skipped}.`;
   return text;
+}
+
+/** "404 then 500", or "connection refused then 500" when the first try never got an answer. */
+function describeAttempts(r) {
+  const first = r.firstStatus ? String(r.firstStatus) : (r.firstText || "no answer");
+  return `${first} then ${r.status}`;
 }
 
 function buildEvidence(stats, kind, origin) {
@@ -239,7 +247,7 @@ function buildEvidence(stats, kind, origin) {
 
   const method =
     `We selected ${stats.sampled} ${kind} addresses and attempted requests for ${stats.tested}, sending a HEAD request first and a GET when the server does not allow HEAD. ` +
-    `Any address that answered with an error was requested once more with standard browser headers after a short wait, and it counts as broken only when the second answer was also 404, 410, 500, 502, or 504. ` +
+    `Any address that answered with an error was requested once more with standard browser headers after a short wait, and it counts as broken only when both answers were the same 404, 410, 500, 502, or 504 status. ` +
     `A connection that failed without an answer is never counted as broken; it is listed as a gap in what we could test, because a failure between our network and the site does not show what visitors see.`;
 
   return { lines, items, pages, method, note };

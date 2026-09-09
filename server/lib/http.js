@@ -263,8 +263,6 @@ export function classifyError(err) {
   return { verdict: "inconclusive", statusText: "did not load", reason: "unknown", transport: true };
 }
 
-/** Reasons that mean "our connection never got an answer". */
-export const TRANSPORT_REASONS = new Set(["refused", "reset", "timeout", "dns", "unknown"]);
 
 /** The first system error code found on an error, its cause, or an AggregateError's members. */
 function errorCode(err, depth = 0) {
@@ -295,11 +293,13 @@ export function retryDelayMs(retryAfterMs) {
 
 /**
  * Per-check guard. After `limit` answers of 429 from one host the check should stop
- * asking (facts.throttled). After `connectionLimit` consecutive connections to one host
- * that never got an answer, it should stop too (facts.connectionLost): the host, or a
- * firewall in front of it, has stopped accepting our address, and every further request
- * would only add refusals that say nothing about visitors. An HTTP answer of any status
- * resets that streak. `reason` says which happened: "throttled" or "unreachable".
+ * asking (facts.throttled). After `connectionLimit` probes in a row to one host that
+ * ended without an HTTP answer (each failed probe counts once, after its own retry, not
+ * every connection attempt), it should stop too and record the observed failure in
+ * facts.connectionLost. Repeated connection failures justify backing off; they do not
+ * identify their cause, and a failure on another host says nothing about the site
+ * itself. An HTTP answer of any status resets that host's streak. `reason` says which
+ * happened: "throttled" or "unreachable".
  */
 export function createThrottleGuard(facts, limit = 2, { connectionLimit = 3 } = {}) {
   const counts = new Map();
@@ -354,9 +354,13 @@ export function createThrottleGuard(facts, limit = 2, { connectionLimit = 3 } = 
  * keep-alive sockets, which looks like a reset on the next request). A
  * connection that fails without an answer is NEVER broken: it is inconclusive
  * with its reason (refused, reset, timeout, dns), because a failure between our
- * network and theirs says nothing about what visitors see. Only an HTTP answer
- * of 404, 410, 500, 502, or 504 that repeats with standard browser headers is
- * broken. The request budget is inconclusive too.
+ * network and theirs says nothing about what visitors see. "Broken" needs two
+ * matching answers: the same 404, 410, 500, 502, or 504 status on both tries.
+ * One error answer after a failed connection or a refusal ("single-error"), or
+ * two different error statuses ("mismatch"), stay inconclusive and keep both
+ * observations (firstStatus, or firstReason and firstText for a failed first
+ * connection). A later 2xx or 3xx means the address loaded on that request.
+ * The request budget is inconclusive too.
  *
  * @returns {Promise<{ verdict: "ok"|"broken"|"blocked"|"inconclusive", status: number, statusText: string, retried: boolean, firstStatus: number|null, reason?: string }>}
  */
@@ -394,9 +398,13 @@ export async function probeAddress(client, url, { headFirst = true, throttle = n
     const again = await send("GET", { browserLike: true });
     if (again.error) return fromError(again.error, true, null);
     const status = again.res.status;
-    if (again.res.challenge) return {verdict:'blocked',status,statusText:statusText(status),retried:true,firstStatus:null,reason:'challenge'};
+    const firstTry = { firstStatus: null, firstReason: c.reason, firstText: c.statusText };
+    if (again.res.challenge) return { verdict: "blocked", status, statusText: statusText(status), retried: true, ...firstTry, reason: "challenge" };
     const verdict = classifyStatus(status);
-    return { verdict, status, statusText: statusText(status), retried: true, firstStatus: null, reason: verdict === "blocked" && throttle && throttle.stopped ? "throttled" : undefined };
+    if (verdict === "ok") return { verdict: "ok", status, statusText: statusText(status), retried: true, ...firstTry };
+    if (verdict === "blocked") return { verdict: "blocked", status, statusText: statusText(status), retried: true, ...firstTry, reason: throttle && throttle.stopped ? "throttled" : undefined };
+    // One error answer after a failed connection is a single observation, not confirmation.
+    return { verdict: "inconclusive", status, statusText: statusText(status), retried: true, ...firstTry, reason: "single-error" };
   }
 
   const firstStatus = first.res.status;
@@ -413,9 +421,17 @@ export async function probeAddress(client, url, { headFirst = true, throttle = n
   if (second.error) return fromError(second.error, true, firstStatus);
 
   const status = second.res.status;
-  if (second.res.challenge) return {verdict:'blocked',status,statusText:statusText(status),retried:true,firstStatus,reason:'challenge'};
+  const firstText = `${firstStatus} ${statusText(firstStatus)}`;
+  if (second.res.challenge) return { verdict: "blocked", status, statusText: statusText(status), retried: true, firstStatus, firstText, reason: "challenge" };
   const verdict = classifyStatus(status);
-  return { verdict, status, statusText: statusText(status), retried: true, firstStatus, reason: verdict === "blocked" && throttle && throttle.stopped ? "throttled" : undefined };
+  if (verdict === "ok") return { verdict: "ok", status, statusText: statusText(status), retried: true, firstStatus, firstText };
+  if (verdict === "blocked") return { verdict: "blocked", status, statusText: statusText(status), retried: true, firstStatus, firstText, reason: throttle && throttle.stopped ? "throttled" : undefined };
+  // Broken only when both tries gave the same supported error status.
+  if (BROKEN_STATUSES.has(firstStatus) && firstStatus === status) {
+    return { verdict: "broken", status, statusText: statusText(status), retried: true, firstStatus, firstText };
+  }
+  // A refusal then an error, or two different errors: both observations are kept, neither is confirmation.
+  return { verdict: "inconclusive", status, statusText: statusText(status), retried: true, firstStatus, firstText, reason: BROKEN_STATUSES.has(firstStatus) ? "mismatch" : "single-error" };
 }
 
 // Re-export the guards so checks can validate a URL before fetching it.

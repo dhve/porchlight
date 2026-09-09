@@ -254,3 +254,96 @@ test("recheck: real answers still resolve to working or broken with an honest ch
     await site.close();
   }
 });
+
+// ---- two attempts must agree before an address is called broken ----
+// A scripted client answers a fixed sequence: "refused" throws ECONNREFUSED, a number answers
+// that HTTP status. HEAD and GET draw from the same sequence in order.
+function scriptedClient(sequence, url) {
+  const steps = [...sequence];
+  const calls = [];
+  const answer = async (method) => {
+    const step = steps.shift();
+    calls.push({ method, step });
+    if (step === "refused") throw Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+    if (step === "timeout") throw Object.assign(new Error("timed out"), { code: "TIMEOUT", name: "TimeoutError" });
+    return { status: step, ok: step < 400, finalUrl: url, redirected: false, headers: new Headers({ "content-type": "text/html" }), contentType: "text/html", retryAfterMs: null, text: async () => "", discard() {} };
+  };
+  return { head: () => answer("HEAD"), get: () => answer("GET"), used: () => calls.length, calls };
+}
+async function probe(sequence, headFirst = false) {
+  const url = "https://site.example/page";
+  const client = scriptedClient(sequence, url);
+  const r = await probeAddress(client, url, { headFirst });
+  return { r, client };
+}
+
+test("probeAddress: one HTTP error after a failed connection or a refusal is not confirmation", async () => {
+  const a = (await probe(["refused", 500])).r;
+  assert.equal(a.verdict, "inconclusive", JSON.stringify(a));
+  assert.equal(a.status, 500);
+  assert.equal(a.firstStatus, null);
+  assert.equal(a.firstReason, "refused");
+  assert.equal(a.reason, "single-error");
+  const b = (await probe([403, 404])).r;
+  assert.equal(b.verdict, "inconclusive", JSON.stringify(b));
+  assert.equal(b.firstStatus, 403);
+  assert.equal(b.status, 404);
+  assert.equal(b.reason, "single-error");
+});
+
+test("probeAddress: two different error statuses keep their uncertainty and both statuses", async () => {
+  const r = (await probe([404, 500])).r;
+  assert.equal(r.verdict, "inconclusive", JSON.stringify(r));
+  assert.equal(r.firstStatus, 404);
+  assert.equal(r.status, 500);
+  assert.equal(r.reason, "mismatch");
+  const s = (await probe([500, 502])).r;
+  assert.equal(s.verdict, "inconclusive");
+  assert.equal(s.reason, "mismatch");
+});
+
+test("probeAddress: the same supported error twice is broken; a later 200 is working; a blocked answer stays blocked", async () => {
+  const broken = (await probe([404, 404])).r;
+  assert.equal(broken.verdict, "broken");
+  assert.equal(broken.firstStatus, 404);
+  assert.equal(broken.status, 404);
+  assert.equal(broken.retried, true);
+  const errTwice = (await probe([500, 500])).r;
+  assert.equal(errTwice.verdict, "broken");
+  assert.equal((await probe(["refused", 200])).r.verdict, "ok");
+  assert.equal((await probe([404, 200])).r.verdict, "ok");
+  assert.equal((await probe([503, 503])).r.verdict, "blocked");
+  assert.equal((await probe([404, 403])).r.verdict, "blocked");
+});
+
+test("links and flows: an error answer that did not repeat is a coverage gap that keeps both statuses", async () => {
+  const site = "https://site.example";
+  // A fresh scripted client per check: each address answers its sequence once per run.
+  const makeClient = () => {
+    const seqs = { "https://site.example/a": [404, 500], "https://site.example/contact-us/": ["refused", 500] };
+    return {
+      calls: [],
+      head(url) { return this.next(url, "HEAD"); },
+      get(url) { return this.next(url, "GET"); },
+      async next(url, method) {
+        const step = (seqs[url] || [200]).shift() ?? 200;
+        this.calls.push({ url, method, step });
+        if (step === "refused") throw Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+        return { status: step, ok: step < 400, finalUrl: url, redirected: false, headers: new Headers({ "content-type": "text/html" }), contentType: "text/html", retryAfterMs: null, text: async () => "", discard() {} };
+      },
+      used: () => 0,
+    };
+  };
+  const html = `<html><body><a href="/a">A</a><a href="/contact-us/">Contact Us</a></body></html>`;
+  const facts = factsFor(site, html);
+  const links = await runLinks({ client: makeClient(), facts, resolveTarget: async () => ({ ok: true }) });
+  assert.deepEqual(links.findings, [], JSON.stringify(links.findings.map((f) => f.id)));
+  assert.equal(links.status, "inconclusive");
+  assert.match(links.reason, /did not repeat/i);
+  assert.match(links.reason, /404 then 500/);
+  const flows = await runFlows({ client: makeClient(), facts });
+  assert.deepEqual(flows.findings, []);
+  assert.equal(flows.status, "inconclusive");
+  assert.match(flows.reason, /did not repeat/i);
+  assert.match(flows.reason, /connection refused then 500/);
+});
