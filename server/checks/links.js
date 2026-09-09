@@ -91,6 +91,8 @@ export async function runLinks(ctx) {
 
   const imgStats = summarize(results.image);
   const linkStats = summarize(results.link);
+  const stats = summarize([...results.image, ...results.link]);
+  const complete = stats.ok + stats.broken.length === stats.sampled;
 
   if (imgStats.broken.length) {
     const n = imgStats.broken.length;
@@ -122,17 +124,16 @@ export async function runLinks(ctx) {
   }
 
   const worked = imgStats.ok + linkStats.ok;
-  const limited = imgStats.limited + linkStats.limited;
-  if (!imgStats.broken.length && !linkStats.broken.length && worked > 0) {
+  if (complete && !imgStats.broken.length && !linkStats.broken.length && worked > 0) {
     const parts = [];
     if (linkStats.ok) parts.push(`${linkStats.ok} link${linkStats.ok === 1 ? "" : "s"}`);
     if (imgStats.ok) parts.push(`${imgStats.ok} image${imgStats.ok === 1 ? "" : "s"}`);
-    let text = `The ${parts.join(" and ")} we tested ${worked === 1 ? "works" : "all work"}`;
-    if (limited > 0) text += `, ${limited} could not be tested because the site limited our checker`;
-    passes.push(text + ".");
+    passes.push(`The ${parts.join(" and ")} we tested ${worked === 1 ? "works" : "all work"}.`);
   }
 
-  return { findings, passes };
+  if (complete) return { findings, passes, status: "completed" };
+  const reason = `${stats.ok + stats.broken.length} of ${stats.sampled} sampled links and images gave conclusive results (${stats.ok} working, ${stats.broken.length} broken).${limitations(stats)}`;
+  return { findings, passes, status: "inconclusive", reason };
 }
 
 // ---- helpers ----
@@ -176,17 +177,28 @@ function hostGuard(origin, resolve = resolveTarget) {
 }
 
 function summarize(list) {
-  const out = { ok: 0, broken: [], limited: 0, inconclusive: 0, untried: 0, tested: 0 };
+  const out = { sampled: list.length, ok: 0, broken: [], limited: 0, inconclusive: 0, untried: 0, untested: 0, skipped: 0, tested: 0 };
   for (const r of list) {
-    if (r.verdict === "skipped") continue; // never requested, so it is not part of the count
+    if (r.verdict === "skipped") { out.skipped++; continue; }
+    if (r.verdict === "untried") { out.untried++; continue; }
+    if (r.verdict === "untested") { out.untested++; continue; }
     out.tested++;
     if (r.verdict === "ok") out.ok++;
     else if (r.verdict === "broken") out.broken.push(r);
-    else if (r.verdict === "blocked" || r.verdict === "untested") out.limited++;
-    else if (r.verdict === "untried") out.untried++;
+    else if (r.verdict === "blocked") out.limited++;
     else out.inconclusive++;
   }
   return out;
+}
+
+function limitations(stats) {
+  let text = "";
+  if (stats.limited) text += ` Refused or blocked by the site: ${stats.limited}.`;
+  if (stats.inconclusive) text += ` No conclusive answer: ${stats.inconclusive}.`;
+  if (stats.untested) text += ` Left untested after a site limit: ${stats.untested}.`;
+  if (stats.untried) text += ` Left untested after the time or request budget: ${stats.untried}.`;
+  if (stats.skipped) text += ` Not requested because of the safety guard: ${stats.skipped}.`;
+  return text;
 }
 
 function buildEvidence(stats, kind, origin) {
@@ -209,13 +221,10 @@ function buildEvidence(stats, kind, origin) {
     if (pages.length >= MAX_PAGES) break;
   }
 
-  let note = `${stats.broken.length} broken of ${stats.tested} ${plural} tested.`;
-  if (stats.limited > 0) note += ` ${stats.limited} could not be tested because the site limited our checker.`;
-  if (stats.inconclusive > 0) note += ` ${stats.inconclusive} gave no answer in time, so we could not tell either way.`;
-  if (stats.untried > 0) note += ` ${stats.untried} were left untested because this checkup ran out of time.`;
+  const note = `${stats.broken.length} broken among ${stats.sampled} sampled ${plural}; ${stats.ok + stats.broken.length} gave conclusive results.${limitations(stats)}`;
 
   const method =
-    `We requested each of the ${stats.tested} ${kind} addresses ourselves, sending a HEAD request first and a GET when the server does not allow HEAD. ` +
+    `We selected ${stats.sampled} ${kind} addresses and attempted requests for ${stats.tested}, sending a HEAD request first and a GET when the server does not allow HEAD. ` +
     `Any address that answered with an error or failed to connect was requested once more with standard browser headers after a short wait, and it counts as broken only when the second answer was also 404, 410, 500, 502, or 504, or when the connection failed both times.`;
 
   return { lines, items, pages, method, note };

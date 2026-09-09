@@ -60,14 +60,22 @@ export async function runFlows(ctx) {
   };
 
   let loaded = 0;
+  let broken = 0;
+  let blocked = 0;
+  let inconclusive = 0;
+  let untested = 0;
+  let outOfBudget = false;
   for (const [href, { name, text }] of list) {
-    if (throttle.stopped) break; // the site asked us to slow down; leave the rest untested
+    if (throttle.stopped || outOfBudget) { untested++; continue; }
     const r = await probeAddress(client, href, { headFirst: false, throttle, pace });
+    if (r.reason === "budget") { outOfBudget = true; untested++; continue; }
     if (r.verdict === "ok") {
       loaded++;
       continue;
     }
-    if (r.verdict !== "broken") continue; // blocked or inconclusive: not a broken flow
+    if (r.verdict === "blocked") { blocked++; continue; }
+    if (r.verdict !== "broken") { inconclusive++; continue; }
+    broken++;
 
     const path = pathOf(href, origin);
     const label = text ? `link "${text}"` : "link";
@@ -114,11 +122,17 @@ export async function runFlows(ctx) {
     }
   }
 
-  if (loaded && !findings.length) {
-    passes.push("Your key customer pages (like ordering and contact) load without errors.");
+  const complete = loaded + broken === list.length;
+  if (complete && loaded && !findings.length) {
+    passes.push(`The ${loaded} sampled customer page${loaded === 1 ? "" : "s"} loaded without errors.`);
   }
 
-  return { findings, passes };
+  if (complete) return { findings, passes, status: "completed" };
+  let reason = `${loaded + broken} of ${list.length} sampled customer pages gave conclusive results (${loaded} working, ${broken} broken).`;
+  if (blocked) reason += ` Refused or blocked by the site: ${blocked}.`;
+  if (inconclusive) reason += ` No conclusive answer: ${inconclusive}.`;
+  if (untested) reason += ` Left untested after a site limit or the request budget: ${untested}.`;
+  return { findings, passes, status: "inconclusive", reason };
 }
 
 function pathOf(u, origin) {
