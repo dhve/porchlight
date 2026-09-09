@@ -9,7 +9,6 @@
 
   const REPORT_LEVEL = "_report";
   const NOTE_MAX = 400;
-  const NOTES_SHOWN = 3;
   const FEEDBACK_PATH = (id) => "/api/reports/" + encodeURIComponent(id) + "/feedback";
 
   /* ---------------- small helpers ---------------- */
@@ -37,9 +36,6 @@
     if (months < 12) return months + (months === 1 ? " month ago" : " months ago");
     return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
   }
-  function people(n) {
-    return n + (n === 1 ? " person" : " people");
-  }
   let seq = 0;
   function uid() {
     seq += 1;
@@ -53,18 +49,17 @@
 
   function stateFor(fid) {
     const f = (current && current.findings && current.findings[fid]) || {};
-    const notes = Array.isArray(f.notes) ? f.notes.filter((n) => n && typeof n.text === "string" && n.text.trim()) : [];
     return {
       right: num(f.right),
       wrong: num(f.wrong),
-      notes: notes.slice(0, NOTES_SHOWN),
+      review: f.review || null,
       mine: current && current.mine && (current.mine[fid] === "right" || current.mine[fid] === "wrong") ? current.mine[fid] : null,
     };
   }
 
   function remember(fid, d) {
     if (!current) return;
-    current.findings[fid] = { right: num(d.right), wrong: num(d.wrong), notes: Array.isArray(d.notes) ? d.notes : [] };
+    current.findings[fid] = { right: num(d.right), wrong: num(d.wrong), review: d.review || current.findings[fid]?.review || null };
     if (d.mine === "right" || d.mine === "wrong") current.mine[fid] = d.mine;
   }
 
@@ -78,17 +73,13 @@
   function countLine(st) {
     const total = st.right + st.wrong;
     if (!total) return "";
-    return `<span class="fb-count">So far: ${esc(st.right)} yes, ${esc(st.wrong)} no</span>`;
+    return `<span class="fb-count">Unverified responses: ${esc(st.right)} yes, ${esc(st.wrong)} no</span>`;
   }
   function notesList(st) {
-    if (!st.notes.length) return "";
-    const items = st.notes.map((n) => {
-      const who = n.by && String(n.by).trim() ? esc(String(n.by).trim()) + " wrote:" : "A visitor wrote:";
-      const agoText = n.when ? ago(n.when) : "";
-      const when = agoText ? `<time class="fb-when" datetime="${esc(n.when)}">${esc(agoText)}</time>` : "";
-      return `<li><span class="fb-who">${who}</span> <span class="fb-text">${esc(n.text)}</span> ${when}</li>`;
-    }).join("");
-    return `<ul class="fb-notes">${items}</ul>`;
+    const review = st.review;
+    const label = {confirmed:'Reviewer confirmed this finding',incorrect:'Reviewer found this finding incorrect',inconclusive:'Review could not confirm this finding'}[review?.status];
+    if (!label) return '<p class="fb-policy">Responses await review. A vote does not establish whether a finding is correct.</p>';
+    return `<div class="fb-review ${esc(review.status)}"><b>${esc(label)}</b><p>${esc(review.reason || '')}</p><p class="fb-policy">Review added ${esc(ago(review.reviewedAt) || 'at an unknown time')}. This is a separate review of the original report.</p></div>`;
   }
 
   function idleHtml(fid, st) {
@@ -107,8 +98,9 @@
     const id = uid();
     return `<form class="fb-form fb-open" novalidate>
       <span class="fb-q">${esc(question(fid))} <span class="fb-picked">You said no.</span></span>
-      <label class="fb-label" for="${id}">What did you see? (optional)</label>
+      <label class="fb-label" for="${id}">What did you see? (optional, private to reviewers)</label>
       <textarea class="fb-note" id="${id}" maxlength="${NOTE_MAX}" rows="2"></textarea>
+      <p class="fb-policy">Your note and account name are not published. Avoid passwords or other private information. Reviewed outcomes and a reviewer’s explanation are public.</p>
       <div class="fb-row">
         <button type="submit" class="fb-send">Send</button>
         <button type="button" class="fb-cancel">Cancel</button>
@@ -120,7 +112,7 @@
   }
 
   function doneHtml(fid, st) {
-    return `<p class="fb-thanks">Thanks. ${esc(people(st.right))} said this is right, ${esc(st.wrong)} said it is wrong.
+    return `<p class="fb-thanks">Your response was received. ${esc(st.right)} responses say this is right; ${esc(st.wrong)} say it is wrong.
       <button type="button" class="fb-change">Change my answer</button></p>${notesList(st)}`;
   }
 

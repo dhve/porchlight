@@ -41,7 +41,7 @@
       <div class="hero-inner">
         <p class="eyebrow">A free website checkup</p>
         <h1>Is your website <span class="warm">safe and working?</span></h1>
-        <p class="lede">Sutros checks your whole site for security risks, broken pages, and things that look out of date, then explains what it found in plain English, with clear steps to fix it. Free for small businesses, community groups, and local governments.</p>
+        <p class="lede">Sutros checks public pages for security risks, broken links, and layout problems, then shows the evidence and steps to investigate. Free for small businesses, community groups, and local governments.</p>
 
         <form class="checkcard" id="checkForm">
           <label class="field-label" for="urlInput">Enter a website to check</label>
@@ -52,7 +52,7 @@
             </div>
           </div>
           <div class="consent">
-            <span><b>Anyone can check any site.</b> Sutros only reads what a visitor's browser can already see, never changes anything, and every checkup is public.</span>
+            <span><b>No account needed. Every checkup is public.</b> The website address and findings are published. Your account name is not shown as the submitter. Use a public page address without passwords or query parameters. <a href="/privacy">How anonymous use works</a></span>
           </div>
           <p class="err" id="formErr">Please enter a website address.</p>
           <div id="dedupSlot"></div>
@@ -78,14 +78,14 @@
     <div class="wrap">
       <div class="sec-head">
         <p class="eyebrow">How the checkup works</p>
-        <h2>A careful read of your whole site</h2>
-        <p>Sutros checks what your site is built with, decides what matters, and looks carefully for problems. It never changes anything on your site.</p>
+        <h2>Check the evidence, understand the limits</h2>
+        <p>Sutros samples public pages and selected checks. It shows what it observed, what could not be checked, and how to investigate a finding. It never changes anything on the website.</p>
       </div>
       <div class="steps">
         <div class="stepcard">
           <div class="stepnum">1</div>
           <h3>We look around</h3>
-          <p>We see what your website is built with and how old it is. Out-of-date software is the most common reason small websites run into trouble, so if yours is behind, we'll tell you exactly what to update and why it's worth doing.</p>
+          <p>We inspect the website’s public pages and visible technology. When a software version can be identified, we check for known problems and show the evidence for a possible match.</p>
           <div class="tech-cap"><span class="mono">Recon</span> · fingerprint stack, versions, headers, SSL</div>
         </div>
         <div class="stepcard">
@@ -113,15 +113,15 @@
         </div>
         <div class="layer">
           <span class="tag llm">llm orchestrator</span>
-          <p><b>The brain.</b> Reads recon output, decides which checks to run and in what order, and prioritizes by likely impact. Judgment, not raw execution.</p>
+          <p><b>Choosing checks.</b> Uses the initial observations to select and order checks. The report records which checks completed and which could not.</p>
         </div>
         <div class="layer">
           <span class="tag agent">ai agent</span>
-          <p><b>The explorer.</b> A browser pass that navigates flows like a curious customer would, catching breakage scripts miss. Read-only: no transactions, detection not exploitation.</p>
+          <p><b>AI browsing observations.</b> Opens pages in a browser and records possible issues. These judgments need confirmation and do not affect the grade. Browsing stays read-only.</p>
         </div>
         <div class="layer">
           <span class="tag llm">llm reporter</span>
-          <p><b>The writer.</b> Turns structured findings into a plain-language report with an A&ndash;F grade, real-world impact, and a simple fix for each issue.</p>
+          <p><b>AI suggestions.</b> Adds suggested explanations and fixes separately from the measured findings. Scripted rules determine the grade. An incomplete checkup is not rated.</p>
         </div>
       </div>
     </div>
@@ -144,7 +144,7 @@
             <input type="text" id="nominateUrl" placeholder="Their website (e.g. joescoffee.com)" aria-label="Nominate a website">
             <button class="btn btn-primary" id="nominateBtn" type="button">Create an invite</button>
           </div>
-          <p class="tech-cap" style="margin-top:14px;">We never scan without the owner's OK. This creates a friendly invite and a checkup link you can send them.</p>
+          <p class="tech-cap" style="margin-top:14px;">This creates an invitation you can send. Checkups inspect public pages and publish their results without showing the submitter’s account name.</p>
           <div class="invite-box" id="nominateResult" hidden>
             <p class="invite-title">Ready to send</p>
             <p class="invite-msg" id="inviteMsg"></p>
@@ -160,7 +160,7 @@
             Checked by SUTROS
           </div>
           <h3 style="font-size:19px;">A badge that builds trust</h3>
-          <small>Sites that pass their checkup can show this to customers: a simple sign the site has been checked and is safe and working.</small>
+          <small>A badge links to the recorded checkup and its date. It is evidence that a checkup happened, not a guarantee that the website is safe.</small>
         </div>
       </div>
     </div>
@@ -174,7 +174,7 @@
       <div class="run-head">
         <div class="target"><span class="dot"></span> Checking <span class="mono" id="runHost">your website</span></div>
         <h2>Reading the website&hellip;</h2>
-        <p>Hang tight. We're going through the whole site, top to bottom.</p>
+        <p>We’re checking selected public pages. The report will show what we could and could not confirm.</p>
       </div>
 
       <div class="house" id="house">
@@ -182,7 +182,7 @@
         <div class="checklist" id="checklist">
           <div class="check-row" data-key="recon">
             <div class="check-icon" data-icon><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></div>
-            <div class="check-body"><div class="t">Looking around your website</div><div class="s" data-sub>reading the front door &amp; what it's built with</div></div>
+            <div class="check-body"><div class="t">Looking around your website</div><div class="s" data-sub>reading the homepage and visible technology</div></div>
             <div class="check-status" data-status>waiting</div>
           </div>
           <div class="check-row" data-key="plan">
@@ -236,7 +236,7 @@
       <div class="report-foot">
         <div class="rf-txt">
           <h3>Want a hand fixing these?</h3>
-          <p>We can email this report to your web person, or connect you with a vetted local helper from the Sutros community.</p>
+          <p>Share this report with your web person, or browse helpers listed by the Sutros community.</p>
         </div>
         <div class="rf-actions">
           <button class="btn btn-ghost" id="printBtn" type="button">Print / Save PDF</button>
@@ -283,6 +283,19 @@
 
 <div id="screens-extra"></div>
 
+<section class="band alt" id="learning">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="eyebrow">Learning from mistakes</p>
+      <h2>Feedback becomes evidence to test</h2>
+      <p>Tell us when a finding looks wrong. Your note stays private to reviewers. A reviewer checks the evidence and publishes a decision with a reason. Confirmed and incorrect findings can then become test cases for future checker changes.</p>
+      <p>Votes do not retrain the model or change a signed report. Improvements need a comparison against reviewed cases, including missed issues and false positives, before release.</p>
+    </div>
+    <div id="feedbackProgress" class="feedback-progress" aria-live="polite"></div>
+    <p class="definition-guide">Underlined technical terms have definitions. Select one to read it.</p>
+  </div>
+</section>
+
 <footer>
   <div class="wrap">
     <span class="brand">SUTROS</span>
@@ -291,9 +304,12 @@
 </footer>
 
 <script src="/core.js"></script>
+<script src="/evidence-view.js"></script>
 <script src="/app.js"></script>
 <script src="/auth-ui.js"></script>
 <script src="/community-ui.js"></script>
 <script src="/feedback-ui.js"></script>
+<script src="/review-ui.js"></script>
+<script type="module" src="/glossary.js"></script>
 </body>
 </html>

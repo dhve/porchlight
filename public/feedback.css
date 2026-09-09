@@ -53,3 +53,9 @@
 @media print{
   .fb{display:none !important;}
 }
+/* Reader signals and reviewed decisions are separate from signed observations. */
+.fb-policy{font-size:12.5px;line-height:1.5;color:var(--ink-soft);margin:8px 0 0;}
+.fb-review{border-left:3px solid var(--brand);padding:10px 14px;margin-top:12px;background:var(--surface);font-size:14px;}
+.fb-review.incorrect{border-color:var(--serious);}
+.fb-review.inconclusive{border-color:var(--watch);}
+.fb-review p{margin-top:5px;}

@@ -160,15 +160,16 @@ const PLAY = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke
 
 // Shown above the findings. The server sends the same text as r.proofPromise; this
 // copy is the fallback for older saved reports and the offline sample.
-const PROOF_PROMISE_FALLBACK = "Every finding in this report comes from a direct, scripted test that we ran against this site. The AI only writes the wording. It cannot add, remove, or change a finding. Notes from our browsing agent are the one exception: they are labeled, and they never change the grade. Each proof shows the request we sent, the answer we received, and where on the site we found it.";
+const PROOF_PROMISE_FALLBACK = "Inspect the recorded observations and their limits before acting on a finding. Scripted checks can make mistakes, and AI browsing notes are judgments that need confirmation. A screenshot shows what our checker received at that time. A signed report proves origin and unchanged content, not factual correctness.";
 
 // Same shapes the server accepts for report ids and screenshot keys.
 const REPORT_ID_RE = /^[A-Za-z0-9_-]{6,20}$/;
 const SHOT_KEY_RE = /^s[1-9]$/;
 
 function renderReport(r) {
+  const assessment = SutrosEvidence.assessment(r);
   const color = GRADE_COLOR[r.grade] || "var(--watch)";
-  ringTarget = RING_CIRC * (1 - Math.max(0, Math.min(100, r.ringPercent || 0)) / 100);
+  ringTarget = RING_CIRC * (1 - (assessment.incomplete ? 0 : Math.max(0, Math.min(100, r.ringPercent || 0))) / 100);
   const findings = Array.isArray(r.findings) ? r.findings : [];
   const tally = r.tally || {};
 
@@ -180,8 +181,8 @@ function renderReport(r) {
   if (goodCount) chips.push(chip("good", goodCount, "looking good"));
   if (tally.minor) chips.push(chip("minor", tally.minor, "minor"));
 
-  const throttled = r.engine && r.engine.throttled
-    ? `<p class="sc-throttled">The site limited our checker partway through, so some checks were shortened.</p>`
+  const throttled = r.engine && (r.engine.throttled || r.engine.challenged)
+    ? `<p class="sc-throttled">The site limited our checker${r.engine.challenged ? ' with a bot challenge' : ''}. Some observations could not be completed; the site may work normally for visitors.</p>`
     : "";
 
   $("#scorecard").innerHTML = `
@@ -193,13 +194,13 @@ function renderReport(r) {
           stroke-dasharray="${RING_CIRC.toFixed(1)}" stroke-dashoffset="${RING_CIRC.toFixed(1)}"
           style="transition:stroke-dashoffset 1.1s var(--step);"/>
       </svg>
-      <span class="letter" style="color:${color};">${esc(r.grade)}</span>
-      <span class="glabel">${esc(r.gradeLabel || "")}</span>
+      <span class="letter" style="color:${color};">${esc(assessment.incomplete ? '?' : r.grade)}</span>
+      <span class="glabel">${esc(assessment.incomplete ? 'Not rated' : r.gradeLabel || "")}</span>
     </div>
     <div class="sc-body">
       <h1>${esc(gradeHeadline(r))}</h1>
       <p class="host">${esc(r.target)} &middot; checked ${esc(whenText(r.scannedAt))}</p>
-      <p class="sc-summary">${esc(r.summary || "")}</p>
+      <p class="sc-summary">${esc(assessment.incomplete ? assessment.reason : r.summary || "")}</p>
       ${throttled}
       <div class="sc-tally">${chips.join("")}</div>
     </div>`;
@@ -209,7 +210,7 @@ function renderReport(r) {
   const badge = $("#engineBadge");
   const usingLLM = r.engine && r.engine.reporter === "llm";
   badge.classList.toggle("off", !usingLLM);
-  $("#engineText").textContent = usingLLM ? `AI report (${r.engine.model || "llm"})` : "Rule-based report";
+  $("#engineText").textContent = usingLLM ? 'Scripted checks + AI suggestions' : 'Scripted checks';
   const titleParts = [];
   if (r.engine) titleParts.push(`planner: ${r.engine.orchestrator}; writer: ${r.engine.reporter}; checks: ${(r.engine.checksRun || []).join(", ")}`);
   if (r.agent && typeof r.agent.steps === "number" && Number.isFinite(r.agent.steps)) titleParts.push(`agent: ${r.agent.steps} steps`);
@@ -231,16 +232,16 @@ function renderReport(r) {
   const watchList = findings.filter((f) => f.severity === "watch");
   const minorList = findings.filter((f) => f.severity === "minor");
   const hasMajor = fixFirst.length > 0;
-  const promise = findings.length ? proofPromise(r) : "";
+  const promise = proofPromise(r);
   // What the browsing agent did, when it ran. Nothing when it did not.
-  let html = agentCard(r);
+  let html = coverageCard(r) + agentCard(r);
   if (hasMajor) {
     // Lead with the things that actually matter.
     html += promise + `<p class="eyebrow">Fix these first</p>` + fixFirst.map((f) => findingCard(f, r)).join("");
     if (watchList.length) html += `<p class="eyebrow" style="margin-top:14px;">Then, smaller things worth a look</p>` + watchList.map((f) => findingCard(f, r)).join("");
   } else {
     // No urgent or serious problems: reassure first, then frame the rest as optional.
-    html += reassureBanner(watchList.length > 0) + promise;
+    html += (assessment.incomplete ? '' : reassureBanner(watchList.length > 0)) + promise;
     if (watchList.length) html += `<p class="eyebrow" style="margin-top:14px;">Optional improvements (nice to have, not urgent)</p>` + watchList.map((f) => findingCard(f, r)).join("");
   }
   if (goodCount) {
@@ -258,8 +259,29 @@ function chip(cls, n, label) {
 }
 
 function proofPromise(r) {
-  const text = r.proofPromise && String(r.proofPromise).trim() ? String(r.proofPromise).trim() : PROOF_PROMISE_FALLBACK;
-  return `<div class="proof-promise"><span class="pp-icon">${SHIELD}</span><p>${esc(text)}</p></div>`;
+  return `<div class="proof-promise"><span class="pp-icon">${SHIELD}</span><div><p>${esc(PROOF_PROMISE_FALLBACK)}</p><p class="definition-guide">Underlined terms have definitions. Select one to read it.</p></div></div>`;
+}
+
+function coverageCard(r) {
+  const coverage = Array.isArray(r.coverage) ? r.coverage : [];
+  const labels = { recon: 'Initial page access', headers: 'Browser security rules', tls: 'Connection encryption', cookies: 'Cookies', exposed: 'Publicly reachable files', exposedFiles: 'Publicly reachable files', secrets: 'Potentially exposed keys', dependencies: 'Software versions', forms: 'Forms', links: 'Links and images', flows: 'Key visitor pages', browser: 'Browser loading', modernization: 'Mobile and page layout', agent: 'AI browsing', agentBrowse: 'AI browsing', proof: 'Evidence pictures' };
+  const statuses = { completed: 'Completed', skipped: 'Not run', failed: 'Failed to complete', inconclusive: 'Could not confirm' };
+  const lines = coverage.map(c => `<li><span>${esc(labels[c.check] || c.check)}</span><b>${esc(statuses[c.status] || 'Unknown')}</b>${c.reason ? `<p>${esc(c.reason)}</p>` : ''}</li>`).join('');
+  const version = r.engine?.version;
+  return `<details class="coverage-card"><summary>What was checked and what could not be checked</summary><p>This checkup samples public pages and selected tests. It cannot establish that the entire site is safe or working.</p>${coverage.length ? `<ul class="coverage-list">${lines}</ul>` : '<p>This older report did not record completion status for each check. Its grade should be read with that limitation.</p>'}${version ? `<p class="provenance">Checker version: ${esc(version)}. Recorded ${esc(r.scannedAt || 'at an unknown time')}.</p>` : ''}</details>`;
+}
+
+function observationMeta(f) {
+  const p = f.provenance || {};
+  const source = f.source === 'agent' || String(f.id).startsWith('agent-') ? 'AI browsing observation. Requires confirmation; does not affect the grade.' : f.source === 'scripted' ? 'Scripted observation. Review the evidence and its limits.' : 'Recorded finding. This older report may include AI-written explanations.';
+  return `<p class="observation-source">${esc(source)}${p.observedAt ? ` <time datetime="${esc(p.observedAt)}">Observed ${esc(p.observedAt)}.</time>` : ''}${p.check ? ` Check: ${esc(p.check)}.` : ''}</p>`;
+}
+
+function aiAdviceBlock(f) {
+  const a = f.aiAdvice;
+  if (!a || typeof a !== 'object') return '';
+  const fixes = Array.isArray(a.fix) ? a.fix.map(s => `<li>${esc(s)}</li>`).join('') : '';
+  return `<details class="ai-advice"><summary>AI suggestions to review</summary><p>These suggestions are separate from the recorded observation and may be wrong.</p>${a.why ? `<p>${esc(a.why)}</p>` : ''}${fixes ? `<ol>${fixes}</ol>` : ''}${a.confirm ? `<p><b>Suggested confirmation:</b> ${esc(a.confirm)}</p>` : ''}${a.who ? `<p>${esc(a.who)}</p>` : ''}</details>`;
 }
 
 function findingCard(f, r) {
@@ -280,6 +302,7 @@ function findingCard(f, r) {
       </div>
       ${fixes ? `<div class="f-fix"><div class="fx-label">${WRENCH}How to fix it</div><ol>${fixes}</ol>${f.who ? `<div class="who">${PERSON} ${esc(f.who)}</div>` : ""}</div>` : ""}
       ${proofPanel(f, r)}
+      ${aiAdviceBlock(f)}
       <div class="f-slot" data-finding="${esc(f.id)}"></div>
     </div>`;
 }
@@ -293,6 +316,7 @@ function proofPanel(f, r) {
   const e = ev || {};
   const lines = cleanLines(e.lines);
   const body =
+    observationMeta(f) +
     (e.why ? `<p class="proof-why"><b>Why this is a problem.</b> ${esc(e.why)}</p>` : "") +
     (e.method ? `<p class="proof-method"><b>How we tested this.</b> ${esc(e.method)}</p>` : "") +
     (lines.length ? `<p class="proof-k">What we observed</p><pre>${lines.map((l) => linkifyLine(l, r)).join("\n")}</pre>` : "") +
@@ -401,9 +425,10 @@ function shotsBlock(e, r) {
 
 function retestBlock(f, e, r) {
   if (!r.id || !REPORT_ID_RE.test(String(r.id))) return "";
+  if (!SutrosEvidence.retestSupported(f)) return "";
   const n = (Array.isArray(e.items) ? e.items : []).filter((it) => it && isHttpUrl(it.url)).length;
   if (!n) return "";
-  return `<div class="proof-retest"><button type="button" class="btn btn-ghost btn-sm retest-btn" data-finding="${esc(f.id)}">Check this again right now</button><div class="retest-out" aria-live="polite"></div></div>`;
+  return `<div class="proof-retest"><p class="retest-note">Recheck whether the recorded addresses load over HTTP. This does not repeat a browser interaction or verify the whole finding.</p><button type="button" class="btn btn-ghost btn-sm retest-btn" data-finding="${esc(f.id)}">Recheck these addresses</button><div class="retest-out" aria-live="polite"></div></div>`;
 }
 
 /* ---------------- the browsing agent ---------------- */
@@ -463,13 +488,8 @@ function disputeBlock(f) {
   if (!d) return "";
   const wrong = Number(d.wrong) || 0;
   const right = Number(d.right) || 0;
-  const notes = (Array.isArray(d.notes) ? d.notes : []).filter((n) => n && String(n.text || "").trim()).slice(0, 3);
-  const people = (n) => `${n} ${n === 1 ? "person" : "people"}`;
-  const sum = `On earlier checkups of this site, ${people(wrong)} said this finding was wrong and ${people(right)} said it was right.`;
-  const list = notes.length
-    ? `<ul class="proof-said-list">${notes.map((n) => `<li><span class="q">${esc(String(n.text).trim())}</span>${n.when && agoText(n.when) ? ` <span class="when">${esc(agoText(n.when))}</span>` : ""}</li>`).join("")}</ul>`
-    : "";
-  return `<div class="proof-said"><p class="proof-k">What visitors said</p><p class="proof-said-sum">${esc(sum)}</p>${list}</div>`;
+  const sum = `Earlier checkups received ${wrong} responses saying this finding was wrong and ${right} saying it was right. These responses are unverified and may refer to older website content. Notes are private to reviewers.`;
+  return `<div class="proof-said"><p class="proof-k">Earlier feedback</p><p class="proof-said-sum">${esc(sum)}</p></div>`;
 }
 
 /* ---------------- check again right now ---------------- */
@@ -511,16 +531,17 @@ function retestLines(data, r) {
     const ref = href && linkTarget(href, reportBase(r)) ? pageLink(href, r) : esc(href ? pathLabel(href, r) : (it.url || "this address"));
     const status = Number(it.status) || 0;
     const now = status ? `${status} ${it.statusText || ""}`.trim() : (it.statusText || "did not load");
-    const tail = it.changed ? (it.ok ? "this one works now" : "this one worked when we checked") : "same as when we checked";
-    return `<li class="retest-line ${it.ok ? "ok" : "bad"}">Right now: ${esc(now)} for ${ref} (${esc(tail)})</li>`;
+    const state = SutrosEvidence.recheckState(it);
+    const cls = state.classification === 'working' ? 'ok' : state.classification === 'broken' ? 'bad' : 'inconclusive';
+    return `<li class="retest-line ${cls}"><b>${esc(state.label)}:</b> ${ref}. ${esc(now)}. ${esc(state.detail)}</li>`;
   }).join("");
   const when = agoText(data.checkedAt) || "just now";
-  return `<p class="retest-note">Checked ${esc(when)}.</p><ul class="retest-list">${lines}</ul>`;
+  return `<p class="retest-note">HTTP availability checked ${esc(when)}. This does not validate appearance, security, or an AI judgment. The original report is unchanged.</p><ul class="retest-list">${lines}</ul>`;
 }
 
 function goodCard(passes) {
   const list = passes.map((p) => esc(String(p == null ? "" : p).replace(/\.+$/, ""))).join(". ") + ".";
-  return `<div class="finding good"><div class="f-head"><span class="sev-chip good">${SEV.good.icon}All clear</span><div class="f-main"><h3>${passes.length} thing${passes.length > 1 ? "s are" : " is"} working well</h3><p class="f-mean">${list}</p></div></div></div>`;
+  return `<div class="finding good"><div class="f-head"><span class="sev-chip good">${SEV.good.icon}Passed checks</span><div class="f-main"><h3>${passes.length} positive observation${passes.length > 1 ? 's' : ''}</h3><p class="f-mean">${list}</p></div></div></div>`;
 }
 
 function minorNotes(list, r) {
@@ -534,7 +555,7 @@ function minorNotes(list, r) {
       ? `<div class="mn-block"><span class="mn-k">How to fix it</span><ol class="mn-fix">${f.fix.map((st) => `<li>${esc(st)}</li>`).join("")}</ol>${f.who ? `<div class="mn-who">${PERSON} ${esc(f.who)}</div>` : ""}</div>`
       : "";
     const whyTech = ev.why ? `<div class="mn-block"><span class="mn-k">Why it's flagged</span><p class="mn-whytech">${esc(ev.why)}</p></div>` : "";
-    return `<div class="mn-item"><h4>${esc(f.title)}${agentChip(f)}${disputeChip(f)}</h4><p class="mn-why">${esc(f.meaning)}</p>${where}${whyTech}${fix}${disputeBlock(f)}<div class="f-slot" data-finding="${esc(f.id)}"></div></div>`;
+    return `<div class="mn-item"><h4>${esc(f.title)}${agentChip(f)}${disputeChip(f)}</h4><p class="mn-why">${esc(f.meaning)}</p>${observationMeta(f)}${where}${whyTech}${fix}${aiAdviceBlock(f)}${disputeBlock(f)}<div class="f-slot" data-finding="${esc(f.id)}"></div></div>`;
   }).join("");
   return `<details class="minor-notes"><summary><span>${list.length} minor note${list.length > 1 ? "s" : ""}</span> <span class="mn-hint">low priority. Each one says where it is, why it matters, and how to fix it.</span> ${CHEV}</summary><div class="mn-body">${items}</div></details>`;
 }
@@ -545,8 +566,8 @@ function reassureBanner(hasMinor) {
     <div class="rb-body">
       <h3>No major issues found</h3>
       <p>${hasMinor
-        ? "This website is in good shape. There is nothing urgent to fix. The items below are small, optional improvements that can wait for a convenient time."
-        : "This website is in good shape and nothing needs attention right now. Nice work."}</p>
+        ? "The completed checks found no urgent or serious issues. Review the smaller observations below and the limits of what we checked."
+        : "The completed checks found no urgent or serious issues. This is a limited checkup, not a guarantee about the whole website."}</p>
     </div>
   </div>`;
 }
@@ -560,11 +581,7 @@ function applyRing() {
 }
 
 function gradeHeadline(r) {
-  if (r.grade === "A") return "This website is in great shape";
-  if (r.grade === "B") return "This website is in good shape";
-  if (r.grade === "C") return "This website needs some care";
-  if (r.grade === "D") return "This website needs some work";
-  return "This website needs urgent help";
+  return SutrosEvidence.assessment(r).headline;
 }
 function whenText(iso) {
   if (!iso) return "just now";

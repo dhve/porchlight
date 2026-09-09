@@ -35,6 +35,44 @@ button{font-family:inherit;}
 ::selection{background:var(--glow); color:var(--ink);}
 :focus-visible{outline:3px solid var(--glow); outline-offset:2px; border-radius:6px;}
 
+/* Definitions remain inline, with native dialog keyboard and focus behavior. */
+.defined-term{display:inline;background:none;border:0;padding:0;margin:0;font:inherit;color:inherit;letter-spacing:inherit;text-align:inherit;cursor:pointer;text-decoration-line:underline;text-decoration-style:dotted;text-decoration-thickness:1.5px;text-underline-offset:.18em;border-radius:2px;}
+.defined-term:hover{color:var(--brand);text-decoration-style:solid;}
+.definition-guide{font-size:14px;color:var(--ink-soft);margin-top:12px;}
+.definition-dialog{width:min(520px,calc(100% - 32px));max-height:calc(100dvh - 32px);overflow:auto;border:1px solid var(--border-strong);border-radius:var(--radius);padding:28px;color:var(--ink);background:var(--surface);box-shadow:0 20px 80px rgb(var(--shadow)/.3);}
+.definition-dialog::backdrop{background:rgb(18 38 28/.5);}
+.definition-dialog h2{font-size:27px;overflow-wrap:anywhere;}
+.definition-dialog #definitionText{margin:18px 0 24px;line-height:1.6;}
+.definition-dialog .btn{min-height:44px;}
+.coverage-card,.ai-advice{border:1px solid var(--border);border-radius:12px;padding:16px 20px;background:var(--surface);font-size:15px;}
+.coverage-card{margin-bottom:18px;}
+.coverage-card summary,.ai-advice summary{font-weight:700;cursor:pointer;}
+.coverage-card p,.ai-advice p{margin-top:12px;}
+.coverage-list{list-style:none;padding:0;margin:12px 0;}
+.coverage-list li{display:flex;flex-wrap:wrap;gap:4px 16px;justify-content:space-between;padding:10px 0;border-top:1px solid var(--border);}
+.coverage-list li p{width:100%;margin:0;color:var(--ink-soft);}
+.provenance,.observation-source{font-size:13px;color:var(--ink-soft);overflow-wrap:anywhere;}
+.observation-source{margin:8px 0 14px;}
+.ai-advice{margin:12px 20px 18px;background:var(--ground);}
+.mn-item .ai-advice{margin:12px 0;}
+.retest-line.inconclusive{color:var(--ink-soft);}
+.feedback-progress{max-width:720px;margin:20px auto;color:var(--ink-soft);}
+.review-intro{max-width:750px;margin:18px 0;}
+.review-actions{display:flex;flex-wrap:wrap;gap:12px;margin:24px 0;}
+.review-actions p{width:100%;}
+.review-case{border:1px solid var(--border-strong);border-radius:var(--radius);background:var(--surface);padding:24px;margin:20px 0;overflow-wrap:anywhere;}
+.review-case h2{font-size:23px;margin-bottom:14px;}
+.review-case p,.review-case details{margin:10px 0;}
+.review-case pre{max-height:320px;overflow:auto;font-size:12px;white-space:pre-wrap;background:var(--ground-2);padding:14px;border-radius:8px;}
+.review-notes small{display:block;color:var(--ink-soft);}
+.review-form{display:grid;gap:10px;margin-top:20px;}
+.review-form label{font-weight:700;font-size:15px;}
+.review-form select,.review-form textarea{width:100%;font:inherit;border:1px solid var(--border-strong);border-radius:8px;padding:12px;background:var(--surface);color:var(--ink);}
+.review-form .btn{justify-self:start;}
+.review-error{font-size:14px;color:var(--ink-soft);}
+@media(max-width:600px){.definition-dialog{padding:22px;}.review-case{padding:18px;}.coverage-card{padding:14px;}.coverage-list li{display:block;}.coverage-list li b{display:block;}}
+@media print{.defined-term{text-decoration:none;}.definition-guide,.definition-dialog,#learning{display:none;}}
+
 .wrap{max-width:var(--maxw); margin:0 auto; padding:0 24px;}
 .eyebrow{font-size:12.5px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-faint); margin:0 0 14px;}
 
