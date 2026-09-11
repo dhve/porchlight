@@ -7,7 +7,7 @@
   const LABELS = { supported: 'Supported in this check', 'not-reproduced': 'Not seen in this sample', inconclusive: 'Still needs verification', unsupported: 'Original claim lacks support' };
   const host = document.createElement('div');
   host.id = 'wekupWidget';
-  host.innerHTML = `<button type="button" class="wekup-launcher" aria-label="Talk to wekup" aria-haspopup="dialog" aria-expanded="false" aria-controls="wekupDialog"><span class="wekup-mark">${icon}</span><span>Talk to <b>wekup</b></span><span class="wekup-launch-arrow" aria-hidden="true">↗</span></button>
+  host.innerHTML = `<button type="button" class="wekup-launcher" aria-label="Talk to wekup" aria-haspopup="dialog" aria-expanded="false" aria-controls="wekupDialog"><span class="wekup-mark">${icon}</span><span>Talk to <b>wekup</b></span></button>
     <dialog id="wekupDialog" class="wekup-dialog" aria-labelledby="wekupTitle">
       <header class="wekup-header"><span class="wekup-mark">${icon}</span><div><h2 id="wekupTitle">wekup</h2><p>Sutros's AI website checkup</p></div><button type="button" class="wekup-close" aria-label="Close wekup">×</button></header>
       <div class="wekup-context"><label for="wekupFinding">Discuss</label><select id="wekupFinding" aria-label="Finding to discuss"></select></div>
@@ -201,7 +201,7 @@
     document.getElementById('findingsRoot')?.prepend(overview);
     document.querySelectorAll('.f-slot[data-finding]').forEach(slot => {
       const block = document.createElement('div'); block.className = 'wekup-finding-tools';
-      block.innerHTML = `<div class="wekup-assessment" data-finding="${esc(slot.dataset.finding)}" aria-live="polite" hidden></div><button type="button" class="wekup-discuss" data-wekup-finding="${esc(slot.dataset.finding)}">${icon}<span>Discuss with wekup</span><span aria-hidden="true">↗</span></button>`;
+      block.innerHTML = `<div class="wekup-assessment" data-finding="${esc(slot.dataset.finding)}" aria-live="polite" hidden></div><button type="button" class="wekup-discuss" data-wekup-finding="${esc(slot.dataset.finding)}">${icon}<span>Discuss with wekup</span></button>`;
       slot.before(block);
     });
     loadPublic();
