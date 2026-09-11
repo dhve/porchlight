@@ -4,10 +4,11 @@
   if (!S) return;
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const icon = '<svg viewBox="0 0 28 28" fill="none" aria-hidden="true"><path d="m5 9 4 11 5-8 5 8 4-11" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 5h2" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>';
+  const arrow = '<svg class="site-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M7 17 17 7M7 7h10v10"/></svg>';
   const LABELS = { supported: 'Supported in this check', 'not-reproduced': 'Not seen in this sample', inconclusive: 'Still needs verification', unsupported: 'Original claim lacks support' };
   const host = document.createElement('div');
   host.id = 'wekupWidget';
-  host.innerHTML = `<button type="button" class="wekup-launcher" aria-label="Talk to wekup" aria-haspopup="dialog" aria-expanded="false" aria-controls="wekupDialog"><span class="wekup-mark">${icon}</span><span>Talk to <b>wekup</b></span></button>
+  host.innerHTML = `<button type="button" class="wekup-launcher" aria-label="Talk to wekup" aria-haspopup="dialog" aria-expanded="false" aria-controls="wekupDialog"><span class="wekup-mark">${icon}</span><span>Talk to <b>wekup</b></span>${arrow}</button>
     <dialog id="wekupDialog" class="wekup-dialog" aria-labelledby="wekupTitle">
       <header class="wekup-header"><span class="wekup-mark">${icon}</span><div><h2 id="wekupTitle">wekup</h2><p>Sutros's AI website checkup</p></div><button type="button" class="wekup-close" aria-label="Close wekup">×</button></header>
       <div class="wekup-context"><label for="wekupFinding">Discuss</label><select id="wekupFinding" aria-label="Finding to discuss"></select></div>
@@ -201,7 +202,7 @@
     document.getElementById('findingsRoot')?.prepend(overview);
     document.querySelectorAll('.f-slot[data-finding]').forEach(slot => {
       const block = document.createElement('div'); block.className = 'wekup-finding-tools';
-      block.innerHTML = `<div class="wekup-assessment" data-finding="${esc(slot.dataset.finding)}" aria-live="polite" hidden></div><button type="button" class="wekup-discuss" data-wekup-finding="${esc(slot.dataset.finding)}">${icon}<span>Discuss with wekup</span></button>`;
+      block.innerHTML = `<div class="wekup-assessment" data-finding="${esc(slot.dataset.finding)}" aria-live="polite" hidden></div><button type="button" class="wekup-discuss" data-wekup-finding="${esc(slot.dataset.finding)}">${icon}<span>Discuss with wekup</span>${arrow}</button>`;
       slot.before(block);
     });
     loadPublic();
