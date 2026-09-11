@@ -35,6 +35,7 @@ const { retestRouter } = await import("./retest.js");
 const { proofRouter, ensureProofSchema, sweepOldShots } = await import("./proof.js");
 const { feedbackRouter, ensureFeedbackSchema } = await import("./feedback.js");
 const { startFeedbackWorker } = await import('./feedbackAuto.js');
+const { wekupRouter, ensureWekupSchema, startWekupWorker } = await import('./wekup.js');
 
 const app = express();
 app.set("trust proxy", ["loopback", "172.16.0.0/12"]);
@@ -52,6 +53,16 @@ app.post('/api/reports/:id/retest', requireVerified);
 app.use(retestRouter);
 app.use(proofRouter);
 app.use(feedbackRouter);
+// Bind an open chat to the account it was composed under, even if another tab
+// changes the session cookie between the browser's session check and submission.
+app.use('/api/reports/:id/wekup', (req, res, next) => {
+  const expectedAccount = req.get('X-Sutros-Account');
+  if (expectedAccount && expectedAccount !== req.user?.id) {
+    return res.status(401).json({ error: 'Your sign-in changed. Reopen wekup to continue.', code: 'account-changed' });
+  }
+  next();
+});
+app.use(wekupRouter);
 
 const normHost = (h) => String(h || "").toLowerCase().replace(/^www\./, "");
 
@@ -272,7 +283,9 @@ const dbOn = await initDb().catch((err) => {
 if (dbOn) {
   await ensureProofSchema().catch((err) => console.error("  proof schema: " + err.message));
   await ensureFeedbackSchema();
+  await ensureWekupSchema();
   startFeedbackWorker();
+  startWekupWorker();
   const sweep = () => sweepOldShots(60).then((n) => { if (n) console.log(`  swept ${n} old page pictures`); }).catch((err) => console.error("  sweep: " + err.message));
   sweep();
   setInterval(sweep, 24 * 60 * 60_000).unref();

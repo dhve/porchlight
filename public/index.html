@@ -4,10 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SUTROS</title>
-<meta name="description" content="A free website checkup for small businesses, community groups, and local governments. Sutros finds security risks, broken pages, and dated design, and explains it all in plain English with clear steps to fix it.">
+<meta name="description" content="Sutros is a community for better websites. Find help, share your skills, and use wekup, our AI website checkup, to investigate issues together.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><ellipse cx='16' cy='25.5' rx='13' ry='4.6' fill='%231E8C63'/><path d='M4.5 15 C 7 19.5 11 22.5 16 23.5 C 12.5 21 8.5 18.5 4.5 15Z' fill='%23C99B33'/><path d='M27.5 15 C 25 19.5 21 22.5 16 23.5 C 19.5 21 23.5 18.5 27.5 15Z' fill='%23C99B33'/><path d='M8.5 8.5 C 7.5 14 10.5 20 16 23.5 C 14.5 17 12 12 8.5 8.5Z' fill='%23DAB14A'/><path d='M23.5 8.5 C 24.5 14 21.5 20 16 23.5 C 17.5 17 20 12 23.5 8.5Z' fill='%23DAB14A'/><path d='M16 3.5 C 12.5 9 12.5 16.5 16 23.5 C 19.5 16.5 19.5 9 16 3.5Z' fill='%23E6C462'/></svg>">
 <link rel="stylesheet" href="/styles.css">
 <link rel="stylesheet" href="/feedback.css">
+<link rel="stylesheet" href="/wekup.css">
 </head>
 <body>
 <canvas id="leaves" aria-hidden="true"></canvas>
@@ -26,8 +27,8 @@
       SUTROS
     </button>
     <div class="spacer"></div>
-    <button class="navlink hide-sm" data-nav="how">How it works</button>
-    <button class="navlink hide-sm" data-nav="community">Community</button>
+    <a class="navlink hide-sm" href="/bulletin" data-spa style="text-decoration:none">Community</a>
+    <button class="navlink hide-sm" data-nav="checkForm">wekup</button>
     <button class="navlink" id="sampleNav">See a sample</button>
     <span id="authSlot"></span>
   </div>
@@ -35,15 +36,21 @@
 
 <!-- ============ HOME / INTAKE ============ -->
 <div class="screen is-active" id="screen-home">
-  <section class="hero">
+  <section class="hero community-hero">
     <div class="hero-glow"></div>
     <div class="wrap">
       <div class="hero-inner">
-        <p class="eyebrow">A free website checkup</p>
-        <h1>Is your website <span class="warm">safe and working?</span></h1>
-        <p class="lede">Sutros checks public pages for security risks, broken links, and layout problems, then shows the evidence and steps to investigate. Free for small businesses, community groups, and local governments.</p>
-
+        <div class="community-intro">
+          <p class="eyebrow">People helping people</p>
+          <h1>A community for <span class="warm">better websites.</span></h1>
+          <p class="lede">Sutros brings local businesses, community groups, and people who build websites together. Find help, share what you know, and make the websites around you work better.</p>
+          <div class="community-actions"><a class="btn btn-primary" href="/bulletin" data-spa>Explore the community <span aria-hidden="true">↗</span></a><button class="btn btn-ghost" type="button" data-community-helpers>Find a helper</button></div>
+          <p class="community-note">Start with a question, offer a hand, or give a local website a free checkup with wekup.</p>
+        </div>
+        <div class="wekup-feature">
         <form class="checkcard" id="checkForm">
+          <div class="wekup-feature-head"><span class="wekup-mark" aria-hidden="true"><svg viewBox="0 0 28 28" fill="none"><path d="m5 9 4 11 5-8 5 8 4-11" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 5h2" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg></span><div><span class="feature-label">An AI feature of Sutros</span><h2>Meet wekup.</h2></div></div>
+          <p class="feature-description">Your AI website checkup, open to questions. Find possible issues, inspect the evidence, and talk it through with wekup.</p>
           <label class="field-label" for="urlInput">Enter a website to check</label>
           <div class="url-row">
             <div class="url-input">
@@ -58,10 +65,11 @@
           <div id="dedupSlot"></div>
           <button class="btn btn-primary btn-lg" type="submit" id="startBtn">
             <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-            Give my website a free checkup
+            Check my website with wekup
           </button>
           <p class="sample-link">Not your site? <button type="button" id="sampleBtn">See a sample report first</button></p>
         </form>
+        </div>
 
         <div class="reassure">
           <span><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg> Free for local businesses</span>
@@ -74,12 +82,54 @@
     </div>
   </section>
 
+  <section class="band" id="community">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">The Sutros community</p>
+        <h2>Everyone has a way to help.</h2>
+        <p>Bring a website that needs attention, a skill you can share, or a local business you care about.</p>
+      </div>
+      <div class="community-paths">
+        <a class="community-path" href="/bulletin" data-spa><small>ASK FOR A HAND</small><h3>Community bulletin</h3><p>See websites that need help and connect over a public checkup.</p><span class="path-arrow" aria-hidden="true">↗</span></a>
+        <button class="community-path" type="button" data-community-helpers><small>SHARE YOUR SKILLS</small><h3>People who can help</h3><p>Find someone who builds websites, or add yourself to the directory.</p><span class="path-arrow" aria-hidden="true">↗</span></button>
+        <button class="community-path" type="button" data-wekup-open><small>MEET YOUR CHECKUP AGENT</small><h3>Ask wekup</h3><p>Use AI to investigate a website, then question what it finds.</p><span class="path-arrow" aria-hidden="true">↗</span></button>
+      </div>
+      <div class="commgrid">
+        <div class="commcard">
+          <h3>Nominate a local business</h3>
+          <p>Know a local business or group whose website looks broken or out of date? Create a friendly, no-jargon invite to a free checkup. They decide whether to run it.</p>
+          <div class="nominate">
+            <input type="text" id="nominateUrl" placeholder="Their website (e.g. joescoffee.com)" aria-label="Nominate a website">
+            <button class="btn btn-primary" id="nominateBtn" type="button">Create an invite</button>
+          </div>
+          <p class="tech-cap" style="margin-top:14px;">This creates an invitation you can send. Checkups inspect public pages and publish their results without showing the submitter’s account name.</p>
+          <div class="invite-box" id="nominateResult" hidden>
+            <p class="invite-title">Ready to send</p>
+            <p class="invite-msg" id="inviteMsg"></p>
+            <div class="invite-actions">
+              <button class="btn btn-primary" type="button" id="copyInvite">Copy invite</button>
+              <a class="btn btn-ghost" id="inviteLink" href="#" target="_blank" rel="noopener">Open their checkup</a>
+            </div>
+          </div>
+        </div>
+        <div class="commcard badge-demo">
+          <div class="verified">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+            Checked by SUTROS
+          </div>
+          <h3 style="font-size:19px;">A badge that builds trust</h3>
+          <small>A badge links to the recorded checkup and its date. It is evidence that a checkup happened, not a guarantee that the website is safe.</small>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <section class="band alt" id="how">
     <div class="wrap">
       <div class="sec-head">
         <p class="eyebrow">How the checkup works</p>
         <h2>Check the evidence, understand the limits</h2>
-        <p>Sutros samples public pages and selected checks. It shows what it observed, what could not be checked, and how to investigate a finding. It never changes anything on the website.</p>
+        <p>wekup samples public pages and selected checks. It shows what it observed, what could not be checked, and how to investigate a finding. Open the chat to ask questions or challenge a conclusion.</p>
       </div>
       <div class="steps">
         <div class="stepcard">
@@ -90,14 +140,14 @@
         </div>
         <div class="stepcard">
           <div class="stepnum">2</div>
-          <h3>We make a checklist</h3>
-          <p>Based on what we found, we decide what's actually worth checking on your site, so you're not buried in things that don't matter.</p>
+          <h3>wekup checks the evidence</h3>
+          <p>Scripted checks record what happened. AI adds suggestions and explains possible issues. You can ask wekup to take another look when a finding seems wrong.</p>
           <div class="tech-cap"><span class="mono">Orchestrator</span> · LLM plans &amp; prioritizes probes</div>
         </div>
         <div class="stepcard">
           <div class="stepnum">3</div>
-          <h3>We gently try things</h3>
-          <p>We look through your pages for security risks and broken parts: files that should be private, weak encryption, out-of-date code, forms that don't work. Nothing on your site is changed. You get a clear list of what to fix, what it means for you, and the steps to do it.</p>
+          <h3>You help improve the checks</h3>
+          <p>Describe what you see. wekup checks supported evidence again and shows a new assessment beside the original. Your responses guide what the AI verifies on later checkups.</p>
           <div class="tech-cap"><span class="mono">Agent + checks</span> · browse, probe, collect evidence</div>
         </div>
       </div>
@@ -129,42 +179,7 @@
 
   <section class="band alt" id="recentChecks" hidden></section>
 
-  <section class="band" id="community">
-    <div class="wrap">
-      <div class="sec-head">
-        <p class="eyebrow">Help a local business</p>
-        <h2>Built for small businesses, community groups, and local governments</h2>
-        <p>A small business running a five-year-old website deserves the same protection as a big company. Anyone can flag a local site that needs a hand.</p>
-      </div>
-      <div class="commgrid">
-        <div class="commcard">
-          <h3>Nominate a local business</h3>
-          <p>Know a local business or group whose website looks broken or out of date? Create a friendly, no-jargon invite to a free checkup. They decide whether to run it.</p>
-          <div class="nominate">
-            <input type="text" id="nominateUrl" placeholder="Their website (e.g. joescoffee.com)" aria-label="Nominate a website">
-            <button class="btn btn-primary" id="nominateBtn" type="button">Create an invite</button>
-          </div>
-          <p class="tech-cap" style="margin-top:14px;">This creates an invitation you can send. Checkups inspect public pages and publish their results without showing the submitter’s account name.</p>
-          <div class="invite-box" id="nominateResult" hidden>
-            <p class="invite-title">Ready to send</p>
-            <p class="invite-msg" id="inviteMsg"></p>
-            <div class="invite-actions">
-              <button class="btn btn-primary" type="button" id="copyInvite">Copy invite</button>
-              <a class="btn btn-ghost" id="inviteLink" href="#" target="_blank" rel="noopener">Open their checkup</a>
-            </div>
-          </div>
-        </div>
-        <div class="commcard badge-demo">
-          <div class="verified">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-            Checked by SUTROS
-          </div>
-          <h3 style="font-size:19px;">A badge that builds trust</h3>
-          <small>A badge links to the recorded checkup and its date. It is evidence that a checkup happened, not a guarantee that the website is safe.</small>
-        </div>
-      </div>
-    </div>
-  </section>
+
 </div>
 
 <!-- ============ RUN SCREEN ============ -->
@@ -224,7 +239,7 @@
     <div class="wrap">
       <div class="report-top">
         <button class="back-btn" id="backBtn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M19 12H5M12 19l-7-7 7-7"/></svg> New checkup</button>
-        <span class="eyebrow" style="margin:0;">Website health report</span>
+        <span class="eyebrow" style="margin:0;">Website checkup by wekup</span>
         <span class="engine-badge" id="engineBadge"><span class="pip"></span> <span id="engineText">AI report</span></span>
         <span class="share-box" id="shareBox"><span>Share</span> <code id="shareLink"></code> <button type="button" id="shareCopy">Copy</button></span>
       </div>
@@ -287,8 +302,8 @@
   <div class="wrap">
     <div class="sec-head">
       <p class="eyebrow">Learning from mistakes</p>
-      <h2>Your feedback guides the next checkup</h2>
-      <p>Tell us whether a finding looks right or wrong. The engine processes each response automatically, compares it with the recorded evidence, and rechecks supported website addresses when a finding is disputed. No human approval is needed.</p>
+      <h2>Help wekup get the next check right.</h2>
+      <p>Tell wekup what looks wrong, ask why it reached a conclusion, or describe what you see on your own screen. The engine checks supported evidence again and publishes a new assessment as the conversation progresses. No human approval is needed.</p>
       <p>Feedback becomes guidance for what the AI should verify on later checkups. Reports show which guidance was used. Notes are not published, but may be sent to the AI provider for analysis. A vote alone does not prove a mistake, retrain the model, or change a saved report.</p>
     </div>
     <div id="feedbackProgress" class="feedback-progress" aria-live="polite"></div>
@@ -299,7 +314,7 @@
 <footer>
   <div class="wrap">
     <span class="brand">SUTROS</span>
-    <p class="disc">Sutros only reads what any visitor can see, never changes anything, and detects issues rather than exploiting them. Every checkup is public. Sample report uses fictional data. <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></p>
+    <p class="disc">Sutros is the community. wekup is our AI website checkup. Checkups read public pages and publish their findings. Conversations stay private to your account. Sample report uses fictional data. <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></p>
   </div>
 </footer>
 
@@ -310,6 +325,7 @@
 <script src="/community-ui.js"></script>
 <script src="/feedback-ui.js"></script>
 <script src="/review-ui.js"></script>
+<script src="/wekup-ui.js"></script>
 <script type="module" src="/glossary.js"></script>
 </body>
 </html>

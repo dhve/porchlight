@@ -11,7 +11,10 @@ import { formatFeedbackGuidance, LESSON_CATALOG } from '../server/feedbackLesson
 import { SUMMARY_TEMPLATES, feedbackRevision } from '../server/feedbackAnalysis.js';
 
 let db, fixture, port, log = [];
-const t0 = new Date('2026-09-10T12:00:00.000Z');
+// Keep queue creation and processing on one clock, independent of the run date.
+const t0 = new Date();
+t0.setUTCHours(12, 0, 0, 0);
+const tomorrow = new Date(Date.UTC(t0.getUTCFullYear(), t0.getUTCMonth(), t0.getUTCDate() + 1, 0, 0, 1));
 const clock = { now: t0 };
 const now = () => clock.now;
 const at = (path) => `http://127.0.0.1:${port}${path}`;
@@ -73,7 +76,7 @@ async function vote(reportId, findingId, { voter = 'PRIVATE_VOTER', verdict = 'w
   await sql(`INSERT INTO finding_feedback (id,report_id,target_host,finding_id,user_id,voter_key,verdict,note) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
     ON CONFLICT (report_id,finding_id,voter_key) DO UPDATE SET verdict=EXCLUDED.verdict,note=EXCLUDED.note,user_id=EXCLUDED.user_id,updated_at=now()`,
   [newId(), reportId, hosts.get(reportId), findingId, user, 'browser:' + voter, verdict, note]);
-  return enqueue ? enqueueFeedbackCase(reportId, findingId) : null;
+  return enqueue ? enqueueFeedbackCase(reportId, findingId, { now }) : null;
 }
 const job = async (reportId, findingId) => (await sql('SELECT * FROM feedback_auto_jobs WHERE report_id=$1 AND finding_id=$2', [reportId, findingId]))[0];
 const results = (reportId, findingId) => sql('SELECT * FROM feedback_auto_results WHERE report_id=$1 AND finding_id=$2 ORDER BY sequence', [reportId, findingId]);
@@ -273,12 +276,12 @@ test('reconciliation compares content, so a change that committed with an older 
   if (!available(t)) return;
   await report('rep-late', 'late.invalid', [agentFinding()]);
   await vote('rep-late', 'agent-overlay', { note: 'first' });
-  assert.equal(await reconcileFeedbackQueue(), 0, 'a case the queue already reflects is not queued again');
+  assert.equal(await reconcileFeedbackQueue({ now }), 0, 'a case the queue already reflects is not queued again');
   await sql(`UPDATE finding_feedback SET note='second', updated_at = updated_at - interval '1 hour' WHERE report_id='rep-late'`);
-  assert.equal(await reconcileFeedbackQueue(), 1);
+  assert.equal(await reconcileFeedbackQueue({ now }), 1);
   const rows = await sql('SELECT voter_key, verdict, note FROM finding_feedback WHERE report_id=$1', ['rep-late']);
   assert.equal((await job('rep-late', 'agent-overlay')).revision, feedbackRevision(rows));
-  assert.equal(await reconcileFeedbackQueue(), 0);
+  assert.equal(await reconcileFeedbackQueue({ now }), 0);
 });
 
 test('an enqueue whose snapshot is older than the queued revision is rejected', async (t) => {
@@ -347,9 +350,9 @@ test('concurrent workers cannot exceed the daily budget', async (t) => {
   assert.equal(await count('feedback_auto_results'), 2);
   assert.deepEqual(await sql('SELECT scope, used FROM feedback_auto_budget ORDER BY scope'), [{ scope: 'global', used: 2 }, { scope: 'host:conc.invalid', used: 2 }]);
   // Next day: a host limit that refuses after the global unit was taken gives the global unit back.
-  clock.now = new Date('2026-09-11T00:00:01.000Z');
+  clock.now = new Date(tomorrow);
   await sql('DELETE FROM feedback_auto_budget');
-  await sql(`INSERT INTO feedback_auto_budget (day, scope, used) VALUES ('2026-09-11', 'host:conc.invalid', 10)`);
+  await sql(`INSERT INTO feedback_auto_budget (day, scope, used) VALUES ($1, 'host:conc.invalid', 10)`, [clock.now.toISOString().slice(0, 10)]);
   assert.equal((await processFeedbackJob(options({ budget }))).result, 'deferred');
   assert.deepEqual(await sql('SELECT scope, used FROM feedback_auto_budget ORDER BY scope'), [{ scope: 'global', used: 0 }, { scope: 'host:conc.invalid', used: 10 }]);
   assert.equal(log.length, 2, 'no request was made without a funded unit');
@@ -374,9 +377,9 @@ test('daily budgets defer network and model work but let rule-only cases finish'
   assert.equal(deferred.attempts, 0);
   assert.ok(new Date(deferred.next_run_at) > clock.now);
   assert.equal((await autoFeedbackProgress()).pending, 1);
-  clock.now = new Date('2026-09-11T00:00:01.000Z');
-  const tomorrow = await drain({ budget, model });
-  assert.deepEqual(tomorrow.map((r) => [r.findingId, r.result]), [['broken-images', 'processed']]);
+  clock.now = new Date(tomorrow);
+  const nextDayResults = await drain({ budget, model });
+  assert.deepEqual(nextDayResults.map((r) => [r.findingId, r.result]), [['broken-images', 'processed']]);
   assert.equal(log.length, 2);
 });
 

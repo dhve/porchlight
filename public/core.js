@@ -4,10 +4,10 @@
   S.user = null; S.config = { requireAccount: true, providers: {}, mail: { configured: false } };
   const userListeners = [];
 
-  S.api = async function (path, { method = "GET", body } = {}) {
+  S.api = async function (path, { method = "GET", body, expectedAccount } = {}) {
     const res = await fetch(path, {
       method, credentials: "same-origin",
-      headers: { "X-Requested-With": "fetch", ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
+      headers: { "X-Requested-With": "fetch", ...(body !== undefined ? { "Content-Type": "application/json" } : {}), ...(expectedAccount ? { "X-Sutros-Account": expectedAccount } : {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     let data = null; try { data = await res.json(); } catch {}
@@ -29,6 +29,7 @@
     document.querySelectorAll(".screen").forEach((s) => s.classList.remove("is-active"));
     const el = document.getElementById(id); if (el) el.classList.add("is-active");
     window.scrollTo({ top: 0 });
+    document.dispatchEvent(new CustomEvent('sutros:screen', { detail: { id } }));
   };
   S.dispatch = function () {
     const p = location.pathname;

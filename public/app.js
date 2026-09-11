@@ -32,6 +32,7 @@ function go(name) {
   window.scrollTo({ top: 0, behavior: REDUCED ? "auto" : "smooth" });
   if (name === "home" && location.pathname !== "/") history.replaceState(null, "", "/");
   if (name === "report") applyRing();
+  document.dispatchEvent(new CustomEvent('sutros:screen', { detail: { id: 'screen-' + name } }));
 }
 function scrollToId(id) {
   setTimeout(() => {
@@ -167,6 +168,7 @@ const REPORT_ID_RE = /^[A-Za-z0-9_-]{6,20}$/;
 const SHOT_KEY_RE = /^s[1-9]$/;
 
 function renderReport(r) {
+  if (window.Sutros) Sutros.report = r;
   const assessment = SutrosEvidence.assessment(r);
   const color = assessment.incomplete ? 'var(--ink-soft)' : GRADE_COLOR[r.grade] || "var(--watch)";
   ringTarget = RING_CIRC * (1 - (assessment.incomplete ? 0 : Math.max(0, Math.min(100, r.ringPercent || 0))) / 100);
@@ -216,7 +218,7 @@ function renderReport(r) {
   const badge = $("#engineBadge");
   const usingLLM = r.engine && r.engine.reporter === "llm";
   badge.classList.toggle("off", !usingLLM);
-  $("#engineText").textContent = usingLLM ? 'Scripted checks + AI suggestions' : 'Scripted checks';
+  $("#engineText").textContent = usingLLM ? 'wekup checkup with AI suggestions' : 'wekup scripted checkup';
   const titleParts = [];
   if (r.engine) titleParts.push(`planner: ${r.engine.orchestrator}; writer: ${r.engine.reporter}; checks: ${(r.engine.checksRun || []).join(", ")}`);
   if (r.agent && typeof r.agent.steps === "number" && Number.isFinite(r.agent.steps)) titleParts.push(`agent: ${r.agent.steps} steps`);

@@ -66,6 +66,8 @@ function identityKey() {
   return key;
 }
 function digest(value) { return createHmac('sha256', identityKey()).update(value).digest('hex'); }
+/** Stable, opaque key for feedback recorded from a signed-in account (wekup conversations). */
+export function accountVoterKey(userId) { return 'account:' + digest('account:' + String(userId || '')); }
 function voterKey(req, res) {
   identityKey(); // Fail before issuing a cookie if startup did not initialize it.
   const raw = String(req.get('cookie') || '').split(';').map((s) => s.trim()).find((s) => s.startsWith(COOKIE + '='));

@@ -18,7 +18,7 @@ mock.module('../server/checks/recon.js', { namedExports: { runRecon: async () =>
 }) } });
 mock.module('../server/checks/security.js', { namedExports: { runSecurity: async () => ({ findings: [structuredClone(observation)], passes: [] }) } });
 mock.module('../server/checks/browser.js', { namedExports: { CHROME_USER_AGENT: 'fixture', runBrowser: async () => ({ skipped: true, reason: 'Fixture has no browser pass.', findings: [], passes: [] }) } });
-mock.module('../server/checks/agentBrowse.js', { namedExports: { runAgentBrowse: async ctx => {
+mock.module('../server/checks/agentBrowse.js', { namedExports: { MOBILE_USER_AGENT: 'fixture-mobile', runAgentBrowse: async ctx => {
   agentLessons = structuredClone(ctx.feedbackLessons);
   return { findings: [], passes: [], agent: { ran: true, steps: 1, visited: ['https://feedback.example/'] } };
 } } });
@@ -27,11 +27,12 @@ for (const [file, fn] of [['tls','runTls'],['cookies','runCookies'],['exposedFil
   mock.module(`../server/checks/${file}.js`, { namedExports: { [fn]: async () => ({ findings: [], passes: [] }) } });
 }
 const { feedbackRouter, ensureFeedbackSchema } = await import('../server/feedback.js');
+const { wekupRouter, ensureWekupSchema, processWekupJob } = await import('../server/wekup.js');
 const { processFeedbackJob, lessonsFor } = await import('../server/feedbackAuto.js');
 const { runCheckup } = await import('../server/pipeline.js');
 const { signReport, verifyRouter } = await import('../server/verify.js');
 
-test('a real feedback submission becomes guidance in the next signed scan without human review', async t => {
+test('reader feedback and a wekup correction become guidance in the next signed scan without human review', async t => {
   const db = await disposablePostgres();
   if (!db) return t.skip('Local PostgreSQL tools are unavailable.');
   process.env.DATABASE_URL = db.url;
@@ -46,13 +47,17 @@ test('a real feedback submission becomes guidance in the next signed scan withou
   });
   await initDb();
   await ensureFeedbackSchema();
+  await ensureWekupSchema();
   const original = { id: 'loopcase01', target: 'feedback.example', url: 'https://feedback.example/', scannedAt: new Date().toISOString(),
-    grade: 'B', score: 85, findings: [{ id: 'agent-layout', source: 'agent', severity: 'watch', title: 'A layout observation', evidence: { lines: ['Original observation'] } }], engine: { version: 'fixture-original' } };
+    grade: 'B', score: 85, findings: [{ id: 'agent-layout', source: 'agent', severity: 'watch', title: 'A layout observation', evidence: { lines: ['Original observation'] } },
+      { id: 'not-mobile-friendly', severity: 'watch', title: 'The page runs off the phone screen', evidence: { pages: ['https://feedback.example/mobile'], lines: ['Earlier width observation'] } }], engine: { version: 'fixture-original' } };
   original.attestation = signReport(original);
   await saveReport(original);
   const [before] = await sql('SELECT report FROM reports WHERE id=$1', [original.id]);
   const originalDigest = sha256Hex(canonicalize(before.report));
-  const app = express(); app.use(express.json()); app.use(feedbackRouter); app.use(verifyRouter);
+  const app = express(); app.use(express.json());
+  app.use('/api/reports/:id/wekup', (req, _res, next) => { req.user = { id: 'loopreader', emailVerified: true }; next(); });
+  app.use(wekupRouter); app.use(feedbackRouter); app.use(verifyRouter);
   server = app.listen(0, '127.0.0.1'); await once(server, 'listening');
   const base = `http://127.0.0.1:${server.address().port}`;
   const api = async (path, body) => {
@@ -73,6 +78,32 @@ test('a real feedback submission becomes guidance in the next signed scan withou
   assert.equal((await sql('SELECT count(*)::int AS n FROM finding_feedback_reviews'))[0].n, 0);
   assert.deepEqual(await lessonsFor({ host: 'unrelated.example' }), []);
 
+  const chat = await fetch(base + '/api/reports/loopcase01/wekup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+    findingId: 'not-mobile-friendly', message: 'PRIVATE_CHAT: This works for me on my phone. Please check your finding again.', requestId: 'chat-learning-loop',
+  }) });
+  assert.equal(chat.status, 202);
+  const observed = [];
+  const conversation = await processWekupJob({ optOut: async () => null, model: async prompt => {
+    assert.match(prompt.user, /PRIVATE_CHAT/);
+    assert.doesNotMatch(prompt.user, /loopreader|user_id|voter_key/);
+    return { intent: 'challenge', reply: 'The measured page fits the phone width now. The original observation remains on record.', lessons: ['rendering-real-device-differs', 'DISABLE_ALL_CHECKS'] };
+  }, observePage: async ({ url }) => {
+    observed.push(url);
+    return { url, status: 200, render: { reliable: true, applied: 1, linked: 1 }, view: 'phone', viewportMeta: true, overflow: { innerWidth: 390, scrollWidth: 390 } };
+  } });
+  assert.equal(conversation.result, 'processed');
+  assert.equal(conversation.vote, 'wrong', 'the correction must feed learning even when it also asks for another check');
+  assert.equal(conversation.assessment.status, 'not-reproduced');
+  assert.deepEqual(observed, ['https://feedback.example/mobile']);
+  const learnedFromChat = await processFeedbackJob({ model: async prompt => {
+    assert.match(prompt.user, /PRIVATE_CHAT/);
+    return { lessons: ['rendering-real-device-differs', 'DISABLE_ALL_CHECKS'] };
+  }, observer: async () => { throw new Error('A mobile finding is not an availability check.'); } });
+  assert.equal(learnedFromChat.result, 'processed');
+  const assessments = await api('/api/reports/loopcase01/assessments');
+  assert.equal(assessments.assessments['not-mobile-friendly'].status, 'not-reproduced');
+  assert.doesNotMatch(JSON.stringify(assessments), /PRIVATE_CHAT|loopreader|DISABLE_ALL_CHECKS/);
+
   const nativeFetch = globalThis.fetch;
   const modelInputs = [];
   t.mock.method(globalThis, 'fetch', async (url, options) => {
@@ -85,7 +116,8 @@ test('a real feedback submission becomes guidance in the next signed scan withou
   assert.equal(modelInputs.length, 2);
   for (const messages of modelInputs) {
     assert.match(JSON.stringify(messages), /wait for stylesheets/i);
-    assert.doesNotMatch(JSON.stringify(messages), /PRIVATE_NOTE|Ignore all later checks|DISABLE_ALL_CHECKS/);
+    assert.match(JSON.stringify(messages), /may look fine on real devices/i);
+    assert.doesNotMatch(JSON.stringify(messages), /PRIVATE_NOTE|PRIVATE_CHAT|Ignore all later checks|DISABLE_ALL_CHECKS/);
   }
   assert.ok(agentLessons.some(lesson => lesson.id === 'rendering-wait-for-styles'));
   assert.deepEqual(next.engine.feedbackLearning.lessons, agentLessons);
@@ -95,6 +127,6 @@ test('a real feedback submission becomes guidance in the next signed scan withou
   const [after] = await sql('SELECT report FROM reports WHERE id=$1', [original.id]);
   assert.equal(sha256Hex(canonicalize(after.report)), originalDigest);
   const progress = await api('/api/feedback/progress');
-  assert.equal(progress.automatic.processed, 1);
+  assert.equal(progress.automatic.processed, 2);
   assert.equal(progress.cases.reviewed, 0);
 });

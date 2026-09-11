@@ -148,6 +148,60 @@ test("public routes preserve private ownership in a disposable local database", 
     assert.equal((await db.getReport("report1234")).userId, "owner12345", "Internal ownership remains available");
   });
 
+  await t.test('wekup is mounted with verified sessions, private histories and automatic processing', async () => {
+    const route = '/api/reports/report1234/wekup';
+    const before = targetLookups;
+    for (const method of ['GET', 'POST']) {
+      const response = await fetch(base + route + '?findingId=_report', { method, headers: { 'X-Requested-With': 'fetch' } });
+      assert.equal(response.status, 401, 'anonymous chat processing must be denied at the live app route');
+    }
+    await db.sql('UPDATE users SET email_verified=false WHERE id=$1', [people[0].id]);
+    try {
+      assert.equal((await request(route + '?findingId=_report', { viewer: people[0] })).status, 403);
+    } finally { await db.sql('UPDATE users SET email_verified=true WHERE id=$1', [people[0].id]); }
+    const crossSite = await fetch(base + route, { method: 'POST', headers: {
+      Cookie: `sutros_session=${people[0].cookie}`, Origin: 'https://untrusted.example', 'Content-Type': 'application/json',
+    }, body: JSON.stringify({ findingId: '_report', message: 'Unrequested message', requestId: 'cross-site' }) });
+    assert.equal(crossSite.status, 403, 'foreign sites cannot cause a signed-in reader to submit chat');
+    for (const method of ['GET', 'POST']) {
+      const changedSession = await fetch(base + route + '?findingId=_report', { method, headers: {
+        Cookie: `sutros_session=${people[1].cookie}`, 'X-Requested-With': 'fetch',
+        'X-Sutros-Account': people[0].id, 'Content-Type': 'application/json',
+      }, ...(method === 'POST' ? { body: JSON.stringify({ findingId: '_report', message: 'Previous account private draft', requestId: 'changed-session' }) } : {}) });
+      assert.equal(changedSession.status, 401, 'a changed session cannot read or submit under the previous open chat');
+      assert.equal((await changedSession.json()).code, 'account-changed');
+    }
+    const posted = await request(route, { viewer: people[0], method: 'POST', body: {
+      findingId: '_report', message: 'PRIVATE_CONVERSATION: What is this checkup about?', requestId: 'mounted-chat-fixture',
+    } });
+    assert.equal(posted.status, 202);
+    assert.match(posted.cache, /private.*no-store/);
+    let conversation;
+    const deadline = Date.now() + 8000;
+    do {
+      conversation = await request(route + '?findingId=_report', { viewer: people[0] });
+      if (conversation.body.job?.status === 'completed') break;
+      await new Promise(done => setTimeout(done, 100));
+    } while (Date.now() < deadline);
+    assert.equal(conversation.body.job?.status, 'completed', 'startup must initialize and run the durable conversation worker');
+    assert.equal(conversation.body.messages.filter(m => m.role === 'assistant').length, 1);
+    const other = await request(route + '?findingId=_report&userId=owner12345', { viewer: people[1] });
+    assert.deepEqual(other.body.messages, [], 'a client-supplied owner cannot reveal another account conversation');
+    const repeated = await request(route, { viewer: people[0], method: 'POST', body: {
+      findingId: '_report', message: 'PRIVATE_CONVERSATION: What is this checkup about?', requestId: 'mounted-chat-fixture',
+    } });
+    assert.equal(repeated.status, 202);
+    assert.equal(repeated.body.messages.length, 2, 'retry reuses the existing turn');
+    const publicResult = await request('/api/reports/report1234/assessments');
+    assert.equal(publicResult.status, 200);
+    assert.doesNotMatch(JSON.stringify(publicResult.body), /PRIVATE_CONVERSATION|owner12345|private@example.test/);
+    assertNoPrivateIdentity(assert, publicResult.body);
+    assert.equal(targetLookups, before, 'a general explanation must not cause website visits');
+    const original = await db.sql('SELECT report FROM reports WHERE id=$1', ['report1234']);
+    assert.deepEqual(original[0].report.findings, stored.findings);
+    assert.deepEqual(original[0].report.attestation, stored.attestation);
+  });
+
   await t.test("completed JSON and SSE checkups use the same public projection", async () => {
     const json = await request("/api/checkup", { viewer: people[0], method: "POST", body: { url: "https://fixture.example/about#private-fragment" } });
     assert.equal(json.status, 200);

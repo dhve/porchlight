@@ -1,6 +1,11 @@
 // Definitions are separate from page decoration so matching can be tested without a browser.
 const term = (key, label, definition, aliases = []) => ({ key, label, definition, aliases: [label, ...aliases] });
 export const glossary = [
+  term('ai', 'AI', 'Software that learns patterns from examples to generate text or make suggestions. wekup uses AI to explain evidence, but its replies can be mistaken.', ['artificial intelligence']),
+  term('reassessment', 'reassessment', 'A newer conclusion based on another look at the evidence. Here it appears beside the original finding, which stays on record.', ['reassessments']),
+  term('verification-guidance', 'verification guidance', 'Reminders that tell the checker what evidence to gather or double-check next time. A reminder does not establish whether a website has a problem.'),
+  term('model-weights', 'model weights', 'The learned numbers inside an AI model. User feedback here changes the instructions given to the checker, without retraining these numbers.'),
+  term('overlay', 'overlay', 'An element shown over other page content, such as a cookie notice or chat window. Its presence alone does not prove that the website is hard to use.', ['overlays']),
   term('robots', 'robots.txt', 'A public file that asks cooperating search engines and other crawlers which parts of a site they may visit. It is not a password or access restriction, and it does not guarantee a page will stay out of search results.'),
   term('sitemap', 'sitemap', 'A file listing pages a site wants search engines to discover. A missing sitemap alone does not mean the site is broken.', ['sitemaps']),
   term('https', 'HTTPS', 'The encrypted form of HTTP. It protects data while it travels between a browser and a website. It does not guarantee the website itself is trustworthy.'),

@@ -1,7 +1,7 @@
 import { glossary, findGlossaryTerms } from './glossary-data.js';
 
 const terms = new Map(glossary.map(t => [t.key, t]));
-const skip = 'a,button,input,textarea,select,option,script,style,pre,code,svg,summary,dialog,[contenteditable],[data-no-glossary]';
+const skip = 'a,button,input,textarea,select,option,script,style,pre,code,svg,summary,dialog:not(#wekupDialog),[contenteditable],[data-no-glossary]';
 const dialog = document.createElement('dialog');
 dialog.className = 'definition-dialog';
 dialog.setAttribute('aria-labelledby', 'definitionTitle');
