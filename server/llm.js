@@ -23,11 +23,12 @@ export function modelName() {
 /**
  * Ask the model for a JSON object. Uses JSON response mode so we always get
  * parseable output.
- * @param {{system:string, user:string, temperature?:number, maxTokens?:number}} opts
+ * @param {{system:string, user:string|object[], temperature?:number, maxTokens?:number, timeoutMs?:number}} opts
  * @returns {Promise<object>}
  */
-export async function chatJSON({ system, user, temperature = 0.4, maxTokens = 4000 }) {
+export async function chatJSON({ system, user, temperature = 0.4, maxTokens = 4000, timeoutMs = 90_000 }) {
   if (!llmEnabled()) throw new Error("LLM is not configured (no OPENAI_API_KEY).");
+  const deadline = Date.now() + Math.max(1, Math.min(90_000, Number(timeoutMs) || 90_000));
 
   const base = {
     model: modelName(),
@@ -42,18 +43,20 @@ export async function chatJSON({ system, user, temperature = 0.4, maxTokens = 40
 
   // First try with temperature; if this model refuses it, retry without.
   try {
-    return await call({ ...base, temperature });
+    return await call({ ...base, temperature }, deadline);
   } catch (err) {
     if (/temperature/i.test(err.message) && /unsupported|not supported|does not support/i.test(err.message)) {
-      return await call(base);
+      return await call(base, deadline);
     }
     throw err;
   }
 }
 
-async function call(body) {
+async function call(body, deadline) {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) throw new DOMException('AI request deadline exceeded', 'AbortError');
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 90_000);
+  const timer = setTimeout(() => controller.abort(), remaining);
   try {
     const res = await fetch(API_URL, {
       method: "POST",
