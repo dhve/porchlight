@@ -5,7 +5,8 @@
 // validated before it is followed, counts and bytes bounded. Service workers and
 // WebSockets are blocked. The browser never types or submits. What comes back is
 // measured: status, bot check, stylesheet state, visible text, controls, width,
-// overlays, and the fate of recorded images. No picture is read by a model here.
+// overlays, and the fate of recorded images. An explicit content-screening visit
+// can return bounded image samples in memory; ordinary conversations never do.
 import dns from 'node:dns/promises';
 import http from 'node:http';
 import https from 'node:https';
@@ -17,6 +18,7 @@ import { classifyStylesheetResponse, assessStyling } from './lib/styling.js';
 import { BROKEN_STATUSES } from './lib/http.js';
 import { MOBILE_USER_AGENT } from './checks/agentBrowse.js';
 import { CHROME_USER_AGENT } from './checks/browser.js';
+import { waitForPageReady } from './lib/pageReadiness.js';
 
 export const PHONE = Object.freeze({ width: 390, height: 844 });
 export const DESKTOP = Object.freeze({ width: 1280, height: 800 });
@@ -87,7 +89,7 @@ export function guardedFetch({ url, ip, method = 'GET', headers = {}, maxBytes =
  * `{ url, error }` when the visit failed, otherwise the measured observation.
  */
 export async function observeRecordedPage({ url: rawUrl, view = 'phone', siteHost, session: givenSession = null, resolve = resolveTarget,
-  allowPort = defaultAllowPort, budgetMs = 45_000, images = [], maxRequests = LIMITS.maxRequests, maxTotalBytes = LIMITS.maxTotalBytes, maxResponseBytes = LIMITS.maxResponseBytes } = {}) {
+  allowPort = defaultAllowPort, budgetMs = 45_000, images = [], captureScreening = false, maxRequests = LIMITS.maxRequests, maxTotalBytes = LIMITS.maxTotalBytes, maxResponseBytes = LIMITS.maxResponseBytes } = {}) {
   const started = Date.now();
   const remaining = () => started + budgetMs - Date.now();
   const target = parse(rawUrl);
@@ -112,7 +114,7 @@ export async function observeRecordedPage({ url: rawUrl, view = 'phone', siteHos
       isMobile: phone, hasTouch: phone, acceptDownloads: false, reducedMotion: 'reduce', serviceWorkers: 'block', extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9' },
     });
     const limits = { maxRequests, maxTotalBytes, maxResponseBytes };
-    return await withTimeout(visit(context, { url: target, view: phone ? 'phone' : 'desktop', siteHost, pin, images, remaining, limits }), Math.max(1, remaining()))
+    return await withTimeout(visit(context, { url: target, view: phone ? 'phone' : 'desktop', siteHost, pin, images, captureScreening, remaining, limits }), Math.max(1, remaining()))
       .catch((err) => ({ url, error: err?.name === 'TimeoutError' || /timeout/i.test(String(err?.message)) ? 'timeout' : 'navigation-failed' }));
   } catch (err) {
     return { url, error: err?.name === 'TimeoutError' ? 'timeout' : 'browser-unavailable' };
@@ -122,7 +124,7 @@ export async function observeRecordedPage({ url: rawUrl, view = 'phone', siteHos
   }
 }
 
-async function visit(context, { url, view, siteHost, pin, images, remaining, limits }) {
+async function visit(context, { url, view, siteHost, pin, images, captureScreening, remaining, limits }) {
   const state = { blocked: null, redirectTo: null, finalUrl: url.href, stylesheets: new Map(), pending: [], docChallenge: null, documents: 0, imageStatus: new Map(), redirectedCode: false,
     requests: { count: 0, bytes: 0, aborted: 0, denied: 0, failed: 0 } };
   const wanted = new Set((Array.isArray(images) ? images : []).map((u) => parse(u)?.href).filter(Boolean));
@@ -242,6 +244,7 @@ async function visit(context, { url, view, siteHost, pin, images, remaining, lim
   // Navigate hop by hop: the handler validates each document redirect and hands the
   // target back here, so the browser lands on the final page by its own address.
   let res = null, current = url.href;
+  const navigationStartedAt = Date.now();
   for (let hop = 0; hop <= LIMITS.maxHops; hop++) {
     state.redirectTo = null;
     const navTimeout = Math.max(1000, Math.min(15_000, remaining() - 1000));
@@ -262,6 +265,10 @@ async function visit(context, { url, view, siteHost, pin, images, remaining, lim
   state.finalUrl = page.url() || res.url() || state.finalUrl;
   await page.waitForTimeout(Math.max(0, Math.min(800, remaining() - 2500)));
   if (state.pending.length) await withTimeout(Promise.allSettled(state.pending.splice(0)), 1500).catch(() => {});
+  const readiness = captureScreening ? await waitForPageReady(page, {
+    budgetMs: 7000, remainingMs: Math.max(0, remaining() - 2000), requestedUrl: url.href, navigationStartedAt,
+    isBlocked: () => state.docChallenge || state.blocked || (status >= 400 ? 'The page did not answer successfully.' : null),
+  }) : null;
   let counts = await withTimeout(page.evaluate(countStylesheetsInPage), 1500).catch(() => ({ linked: 0, applied: 0 }));
   const settle = Date.now() + Math.max(0, Math.min(1500, remaining() - 2000));
   while (counts.linked > counts.applied && Date.now() < settle) {
@@ -278,6 +285,27 @@ async function visit(context, { url, view, siteHost, pin, images, remaining, lim
     ? await withTimeout(page.evaluate(readPageInBrowser, { textLimit: TEXT_LIMIT, maxControls: MAX_CONTROLS, coverPercent: OVERLAY_COVER_PERCENT, screenWidth: screen.width, screenHeight: screen.height }), 4000).catch(() => null)
     : null;
   const decoded = new Set(read?.decodedImages || []);
+  let screening;
+  if (captureScreening) {
+    screening = { status: 'unavailable', images: [], readiness };
+    if (read && status >= 200 && status < 400 && !challenged && !styling.unreliable && !state.redirectedCode && readiness?.status === 'ready') {
+      try {
+        const captured = [];
+        const height = await withTimeout(page.evaluate(() => Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight || 0)), 1000);
+        const bottom = Math.max(0, Math.min(30_000, height - screen.height));
+        const offsets = [...new Set([0, Math.round(bottom / 2), bottom])];
+        for (const offset of offsets) {
+          if (remaining() < 1200 || state.blocked || state.docChallenge) throw new Error('Content sampling interrupted');
+          await withTimeout(page.evaluate(y => scrollTo(0, y), offset), 1000);
+          await page.waitForTimeout(350);
+          const bytes = await page.screenshot({ type: 'jpeg', quality: 65, fullPage: false, animations: 'disabled', timeout: Math.min(2000, Math.max(1, remaining() - 300)) });
+          if (!bytes.length || bytes.length > 1_450_000) throw new Error('Image sample exceeds its limit');
+          captured.push(`data:image/jpeg;base64,${bytes.toString('base64')}`);
+        }
+        screening = { status: 'captured', images: captured, readiness };
+      } catch { /* An incomplete capture is not evidence that content is safe. */ }
+    }
+  }
   return {
     url: url.href, finalUrl: state.finalUrl, status, view,
     challenged: challenged ? String(challenged.reason || 'A bot check answered instead of the page') : null,
@@ -291,6 +319,7 @@ async function visit(context, { url, view, siteHost, pin, images, remaining, lim
       return { url: u, ...image, outcome: image.outcome === 'loaded' && !decoded.has(u) ? 'unavailable' : image.outcome };
     }),
     requests: { ...state.requests },
+    ...(screening ? { screening } : {}),
   };
 }
 
