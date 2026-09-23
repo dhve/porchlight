@@ -7,7 +7,6 @@
 // Both endpoints validate public input and pass targets through the safety guards.
 
 import express from "express";
-import dns from "node:dns/promises";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,6 +38,7 @@ const { proofRouter, ensureProofSchema, sweepOldShots } = await import("./proof.
 const { feedbackRouter, ensureFeedbackSchema } = await import("./feedback.js");
 const { startFeedbackWorker } = await import('./feedbackAuto.js');
 const { wekupRouter, ensureWekupSchema, startWekupWorker } = await import('./wekup.js');
+const { siteOptedOut } = await import('./wekupBrowser.js');
 
 const app = express();
 app.set("trust proxy", ["loopback", "172.16.0.0/12"]);
@@ -81,35 +81,11 @@ app.get("/api/config", (_req, res) => {
   });
 });
 
-/** Site owners can opt out: a DNS TXT record _sutros.<host> containing "optout",
- *  or a robots.txt group "User-agent: SutrosBot" with "Disallow: /". */
-async function optedOut(host) {
-  try {
-    const txt = await dns.resolveTxt(`_sutros.${host}`);
-    if (txt.flat().some((t) => /optout/i.test(t))) return "dns";
-  } catch {}
-  try {
-    const r = await fetch(`https://${host}/robots.txt`, { signal: AbortSignal.timeout(5000), headers: { "User-Agent": "SutrosBot/0.1 (+https://sutros.org)" }, redirect: "follow" });
-    if (r.ok && /text\/plain/i.test(r.headers.get("content-type") || "")) {
-      const body = (await r.text()).slice(0, 20000);
-      let mine = false;
-      for (const raw of body.split(/\r?\n/)) {
-        const line = raw.replace(/#.*$/, "").trim();
-        if (!line) { mine = false; continue; }
-        const ua = line.match(/^user-agent:\s*(.+)$/i);
-        if (ua) { mine = mine || /^sutrosbot$/i.test(ua[1].trim()); continue; }
-        if (mine && /^disallow:\s*\/\s*$/i.test(line)) return "robots";
-      }
-    }
-  } catch {}
-  return null;
-}
-
 /** Account + rate + per-host cooldown gate for running a checkup. Returns an error object or null. */
 async function checkupGate(req, host) {
   const r = consume("checkups", req.user.id, 20, 24 * 60 * 60_000);
   if (!r.ok) return { status: 429, error: "This account has reached its limit of 20 checkups in 24 hours. Please wait before trying again.", retryAfterMs: r.retryAfterMs };
-  if (await optedOut(host)) return { status: 403, error: "This site's owner has asked not to be checked by Sutros." };
+  if (await siteOptedOut(host)) return { status: 403, error: "This site's owner has asked not to be checked by Sutros." };
   try {
     const latest = (await reportsForHost(host, 1, { userId: req.user.id }))[0];
     if (latest && Date.now() - new Date(latest.created_at).getTime() < 10 * 60_000) {
@@ -279,9 +255,8 @@ app.post("/api/helpers", requireVerified, async (req, res) => {
   try {
     const checked = await validateCommunityContact(req.body?.contact, req.user);
     if (!checked.ok) return res.status(400).json({ error: checked.error });
-    const [usage] = await sql("SELECT count(*)::int AS n FROM helpers WHERE user_id=$1 AND created_at > now() - interval '1 day'", [req.user.id]);
-    if (usage.n >= 10) return res.status(429).json({ error: 'You have added 10 helper listings today. Please try again tomorrow.' });
     const helper = await addHelper({ name, contact: checked.value, area, blurb, userId: req.user.id });
+    if (!helper) return res.status(429).json({ error: 'You have added 10 helper listings today. Please try again tomorrow.' });
     res.status(201).json({ ok: true, helper: helperView(helper, req.user) });
   } catch (err) {
     console.error("add helper:", err);

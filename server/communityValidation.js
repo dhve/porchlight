@@ -1,39 +1,42 @@
 import { load } from 'cheerio';
+import net from 'node:net';
 import { normalizePublicUrl, resolveTarget } from './safety.js';
-import { createClient } from './lib/http.js';
+import { guardedFetch } from './wekupBrowser.js';
+import { headerValue, isChallenge } from './lib/challenge.js';
 
 const fail = (error) => ({ ok: false, error });
 
 // A successful read confirms a reachable web page, not the identity of a business.
-export async function validateCommunityWebsite(raw, { resolve = resolveTarget, makeClient = createClient } = {}) {
+export async function validateCommunityWebsite(raw, { resolve = resolveTarget, fetchGuarded = guardedFetch } = {}) {
   if (typeof raw !== 'string' || raw.length > 2000) return fail('Please enter a website address.');
   const normalized = normalizePublicUrl(raw);
   if (!normalized.ok) return fail('Use a public website address without login details, query values, or a custom port.');
   const original = normalized.url.href;
   let current = normalized.url;
   const seen = new Set();
-  const client = makeClient();
   try {
     for (let hop = 0; hop < 5; hop++) {
       if (seen.has(current.href)) return fail('The website redirects in a loop. Please use a working page.');
       seen.add(current.href);
-      if (!(await resolve(current)).ok) return fail('We could not confirm a public website at that address.');
-      const response = await client.get(current.href, { redirect: 'manual', timeoutMs: 5000 });
+      const scope = await resolve(current);
+      const ip = scope?.ok && Array.isArray(scope.addresses) ? String(scope.addresses[0] || '') : '';
+      if (!net.isIP(ip)) return fail('We could not confirm a public website at that address.');
+      // Connect to the approved answer, without another DNS lookup or automatic redirects.
+      const response = await fetchGuarded({ url: current, ip, method: 'GET',
+        headers: { 'user-agent': 'SutrosBot/0.1 (+https://sutros.org)' }, maxBytes: 100_000, timeoutMs: 5000 });
       if ([301, 302, 303, 307, 308].includes(response.status)) {
-        const location = response.headers.get('location');
-        response.discard();
+        const location = headerValue(response.headers, 'location');
         if (!location) return fail('The website redirect has no destination.');
         const next = normalizePublicUrl(new URL(location, current).href);
         if (!next.ok) return fail('The website redirects to an address we cannot check safely.');
         current = next.url;
         continue;
       }
-      if (!response.ok || !/^(text\/html|application\/xhtml\+xml)(?:;|$)/i.test(response.contentType || '')) {
-        response.discard();
+      if (response.status < 200 || response.status >= 300 || !/^(text\/html|application\/xhtml\+xml)(?:;|$)/i.test(headerValue(response.headers, 'content-type'))) {
         return fail('We could not load a web page there. Check the address and try again.');
       }
-      const html = await response.text(100_000);
-      if (response.challenge) return fail('The website blocked this check. Try again when the page can be read.');
+      const html = response.body.toString('utf8');
+      if (isChallenge({ status: response.status, headers: response.headers, bodyStart: html, url: current.href })) return fail('The website blocked this check. Try again when the page can be read.');
       const $ = load(html);
       $('script,style,noscript').remove();
       if (!$('body').text().trim() && !$('title').text().trim()) return fail('That address did not return a readable web page.');

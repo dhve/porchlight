@@ -13,7 +13,7 @@
 //   DELETE /api/bulletin/:id/offers/:offerId                           offer owner, poster, or admin
 
 import express from "express";
-import { sql, newId, dbEnabled } from "./db.js";
+import { sql, newId, dbEnabled, withCommunityAccountLock } from "./db.js";
 import { requireAuth, requireVerified, csrfGuard } from "./auth.js";
 import { publicReport } from "./publicReport.js";
 import { validateCommunityContact, validateCommunityWebsite } from './communityValidation.js';
@@ -52,7 +52,7 @@ const POST_FIELDS = `
             WHERE e.value->>'severity' = ANY($POSTFIELDS_SEV)
             ORDER BY e.ordinality
             LIMIT 3) f) AS top_findings,
-  (SELECT count(*)::int FROM bulletin_offers o WHERE o.post_id = p.id) AS offers_count`;
+  (SELECT count(*)::int FROM bulletin_offers o WHERE o.post_id = p.id AND o.deleted_at IS NULL) AS offers_count`;
 
 const POST_FROM = `
   FROM bulletin_posts p
@@ -267,10 +267,10 @@ const DAILY_TABLES = { post: "bulletin_posts", offer: "bulletin_offers" };
  * How many rows this user added to a table in the last 24 hours, plus the
  * oldest one in that window so a Retry-After can be worked out.
  */
-async function dailyUsage(kind, userId) {
+async function dailyUsage(kind, userId, query = sql) {
   const table = DAILY_TABLES[kind];
   if (!table) throw new Error(`Unknown daily limit kind: ${kind}`);
-  const rows = await sql(
+  const rows = await query(
     `SELECT count(*)::int AS n, min(created_at) AS oldest
        FROM ${table}
       WHERE user_id = $1 AND created_at > now() - interval '1 day'`,
@@ -287,8 +287,8 @@ function retryAfterSeconds(oldest) {
 }
 
 /** True when the response has been sent because the user is over the daily limit. */
-async function overDailyLimit(res, kind, userId, max, message) {
-  const usage = await dailyUsage(kind, userId);
+async function overDailyLimit(res, kind, userId, max, message, query = sql) {
+  const usage = await dailyUsage(kind, userId, query);
   if (usage.n < max) return false;
   res.setHeader("Retry-After", String(retryAfterSeconds(usage.oldest)));
   res.status(429).json({ error: message });
@@ -330,7 +330,7 @@ bulletinRouter.get(
     const offerRows = await sql(
       `SELECT o.id, o.message, o.contact, o.created_at, o.user_id
          FROM bulletin_offers o
-        WHERE o.post_id = $1
+        WHERE o.post_id = $1 AND o.deleted_at IS NULL
         ORDER BY o.created_at ASC, o.id
         LIMIT $2`,
       [id, OFFERS_SHOWN]
@@ -365,27 +365,24 @@ bulletinRouter.post(
       return res.status(409).json({ error: "This checkup is already on the bulletin.", postId: existing[0].id });
     }
 
-    if (
-      await overDailyLimit(
-        res,
-        "post",
-        req.user.id,
-        POSTS_PER_DAY,
-        `You've posted ${POSTS_PER_DAY} checkups today, which is the daily limit. Please try again tomorrow.`
-      )
-    ) return;
+    const limitMessage = `You've posted ${POSTS_PER_DAY} checkups today, which is the daily limit. Please try again tomorrow.`;
+    if (await overDailyLimit(res, 'post', req.user.id, POSTS_PER_DAY, limitMessage)) return;
 
     const website = await validateCommunityWebsite(reportRows[0].url);
     if (!website.ok) return res.status(400).json({ error: website.error });
 
     const id = newId();
-    const inserted = await sql(
-      `INSERT INTO bulletin_posts (id, report_id, user_id, note)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (report_id) WHERE deleted_at IS NULL DO NOTHING
-       RETURNING id`,
-      [id, reportId, req.user.id, note]
-    );
+    const inserted = await withCommunityAccountLock(req.user.id, async query => {
+      if (await overDailyLimit(res, 'post', req.user.id, POSTS_PER_DAY, limitMessage, query)) return null;
+      return query(
+        `INSERT INTO bulletin_posts (id, report_id, user_id, note)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (report_id) WHERE deleted_at IS NULL DO NOTHING
+         RETURNING id`,
+        [id, reportId, req.user.id, note]
+      );
+    });
+    if (!inserted) return;
     if (!inserted.length) {
       // Someone posted the same report a moment ago.
       const again = await sql(`SELECT id FROM bulletin_posts WHERE report_id = $1 AND deleted_at IS NULL`, [reportId]);
@@ -455,36 +452,27 @@ bulletinRouter.post(
     const posts = await sql(`SELECT id, user_id FROM bulletin_posts WHERE id = $1 AND deleted_at IS NULL`, [id]);
     if (!posts.length) return res.status(404).json({ error: "We couldn't find that bulletin post." });
 
-    // One offer per person per post. They can remove theirs and write a new one.
-    const mine = await sql(`SELECT id FROM bulletin_offers WHERE post_id = $1 AND user_id = $2 LIMIT 1`, [id, req.user.id]);
-    if (mine.length) {
-      return res.status(409).json({ error: "You already offered to help on this post.", offerId: mine[0].id });
-    }
-
-    if (
-      await overDailyLimit(
-        res,
-        "offer",
-        req.user.id,
-        OFFERS_PER_DAY,
-        `You've sent ${OFFERS_PER_DAY} offers today, which is the daily limit. Please try again tomorrow.`
-      )
-    ) return;
+    const limitMessage = `You've sent ${OFFERS_PER_DAY} offers today, which is the daily limit. Please try again tomorrow.`;
+    if (await overDailyLimit(res, 'offer', req.user.id, OFFERS_PER_DAY, limitMessage)) return;
 
     const checkedContact = await validateCommunityContact(contact, req.user);
     if (!checkedContact.ok) return res.status(400).json({ error: checkedContact.error });
 
     const offerId = newId();
-    await sql(
-      `INSERT INTO bulletin_offers (id, post_id, user_id, message, contact) VALUES ($1, $2, $3, $4, $5)`,
-      [offerId, id, req.user.id, message, checkedContact.value]
-    );
-    const rows = await sql(
-      `SELECT o.id, o.message, o.contact, o.created_at, o.user_id
-         FROM bulletin_offers o
-        WHERE o.id = $1`,
-      [offerId]
-    );
+    const rows = await withCommunityAccountLock(req.user.id, async query => {
+      // One offer per person per post, including concurrent submissions.
+      const mine = await query(`SELECT id FROM bulletin_offers WHERE post_id = $1 AND user_id = $2 AND deleted_at IS NULL LIMIT 1`, [id, req.user.id]);
+      if (mine.length) {
+        res.status(409).json({ error: "You already offered to help on this post.", offerId: mine[0].id });
+        return null;
+      }
+      if (await overDailyLimit(res, 'offer', req.user.id, OFFERS_PER_DAY, limitMessage, query)) return null;
+      return query(
+        `INSERT INTO bulletin_offers (id, post_id, user_id, message, contact) VALUES ($1, $2, $3, $4, $5) RETURNING id, message, contact, created_at, user_id`,
+        [offerId, id, req.user.id, message, checkedContact.value]
+      );
+    });
+    if (!rows) return;
     res.status(201).json({ offer: shapeOffer(rows[0], req.user, posts[0].user_id) });
   })
 );
@@ -503,7 +491,7 @@ bulletinRouter.delete(
     const rows = await sql(
       `SELECT o.id, o.user_id, p.user_id AS post_user_id
          FROM bulletin_offers o JOIN bulletin_posts p ON p.id = o.post_id
-        WHERE o.id = $1 AND o.post_id = $2 AND p.deleted_at IS NULL`,
+        WHERE o.id = $1 AND o.post_id = $2 AND o.deleted_at IS NULL AND p.deleted_at IS NULL`,
       [offerId, id]
     );
     if (!rows.length) return res.status(404).json({ error: "We couldn't find that offer." });
@@ -511,7 +499,7 @@ bulletinRouter.delete(
     const allowed = offer.user_id === req.user.id || offer.post_user_id === req.user.id || isAdmin(req.user);
     if (!allowed) return res.status(403).json({ error: "Only the person who wrote this offer or the poster can remove it." });
 
-    await sql(`DELETE FROM bulletin_offers WHERE id = $1`, [offerId]);
+    await sql(`UPDATE bulletin_offers SET deleted_at=now() WHERE id=$1 AND deleted_at IS NULL`, [offerId]);
     res.json({ ok: true });
   })
 );

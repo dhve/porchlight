@@ -133,6 +133,7 @@ export async function initDb() {
   await pool.query(`ALTER TABLE bulletin_posts ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS bulletin_posts_active_report_idx ON bulletin_posts (report_id) WHERE deleted_at IS NULL`);
   await pool.query(`ALTER TABLE bulletin_posts DROP CONSTRAINT IF EXISTS bulletin_posts_report_id_key`);
+  await pool.query(`ALTER TABLE bulletin_offers ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE helpers ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(id)`);
   await pool.query(`ALTER TABLE helpers ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`);
   await pool.query(`CREATE INDEX IF NOT EXISTS helpers_user_idx ON helpers (user_id, created_at DESC)`);
@@ -148,6 +149,23 @@ export async function sql(text, params = []) {
   if (!pool) throw new Error("Database is not configured.");
   const { rows } = await pool.query(text, params);
   return rows;
+}
+
+/** Serialize one account's community quota checks and writes across server processes. */
+export async function withCommunityAccountLock(userId, work) {
+  if (!pool) throw new Error("Database is not configured.");
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', ['community:' + userId]);
+    const query = async (text, params = []) => (await client.query(text, params)).rows;
+    const result = await work(query);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally { client.release(); }
 }
 
 // ---- reports ----
@@ -211,12 +229,15 @@ export async function saveNomination(target, note) {
 // ---- helpers directory ----
 export async function addHelper({ name, contact, area, blurb, userId }) {
   if (!pool) return null;
-  const id = newId();
-  await pool.query(
-    `INSERT INTO helpers (id, name, contact, area, blurb, user_id) VALUES ($1,$2,$3,$4,$5,$6)`,
-    [id, name, contact, area || null, blurb || null, userId]
-  );
-  return { id, name, contact, area, blurb, user_id: userId };
+  return withCommunityAccountLock(userId, async query => {
+    const [usage] = await query("SELECT count(*)::int AS n FROM helpers WHERE user_id=$1 AND created_at > now() - interval '1 day'", [userId]);
+    if (usage.n >= 10) return null;
+    const [row] = await query(
+      `INSERT INTO helpers (id, name, contact, area, blurb, user_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [newId(), name, contact, area || null, blurb || null, userId]
+    );
+    return row;
+  });
 }
 export async function listHelpers(limit = 50, { userId, offset = 0 } = {}) {
   if (!pool) return [];

@@ -7,6 +7,8 @@ import { execFileSync } from "node:child_process";
 import { registerHooks } from "node:module";
 import { once } from "node:events";
 import dns from "node:dns/promises";
+import http from "node:http";
+import https from "node:https";
 import express from "express";
 import pg from "pg";
 import { reportFixture, assertNoPrivateIdentity } from "./privacy-fixtures.js";
@@ -61,11 +63,23 @@ test("public routes preserve private ownership in a disposable local database", 
     return options?.all ? [{ address: "203.0.113.8", family: 4 }] : { address: "203.0.113.8", family: 4 };
   });
   t.mock.method(dns, "resolveTxt", async () => []);
+  // Node's pinned HTTP transport has its own boundary; fetch stubs cannot intercept it.
+  for (const transport of [http, https]) t.mock.method(transport, "request", () => { throw new Error("Unexpected Node network request in a privacy test"); });
+  const browserModule = await import("../server/wekupBrowser.js");
+  const guardedRequests = [];
+  const fetchGuarded = async ({ url, ip }) => {
+    assert.ok(url.hostname.endsWith(".example"), "Only synthetic website hosts may use this fixture");
+    assert.equal(ip, "203.0.113.8", "The fixture must receive the validated public address");
+    guardedRequests.push({ url: url.href, ip });
+    const robots = url.pathname === "/robots.txt";
+    return { status: 200, headers: { "content-type": robots ? "text/plain" : "text/html" }, truncated: false,
+      body: Buffer.from(robots ? (url.hostname === "optout.example" ? "User-agent: SutrosBot\nDisallow: /\n" : "") : "<!doctype html><html><title>Fixture</title><body>A working website for the local test.</body></html>") };
+  };
+  t.mock.module("../server/wekupBrowser.js", { namedExports: { ...browserModule, guardedFetch: fetchGuarded,
+    siteOptedOut: (host, options = {}) => browserModule.siteOptedOut(host, { ...options, fetchGuarded }) } });
   const nativeFetch = globalThis.fetch;
   t.mock.method(globalThis, "fetch", async (input, options) => {
     const url = new URL(input);
-    if (url.hostname.endsWith(".example") && url.pathname === "/robots.txt") return new Response("", { headers: { "content-type": "text/plain" } });
-    if (url.hostname.endsWith(".example")) return new Response("<!doctype html><html><title>Fixture</title><body>A working website for the local test.</body></html>", { headers: { "content-type": "text/html" } });
     if (url.hostname !== "127.0.0.1") throw new Error("Unexpected external fetch in a privacy test");
     return nativeFetch(input, options);
   });
@@ -135,6 +149,20 @@ test("public routes preserve private ownership in a disposable local database", 
       assert.equal(JSON.parse(unverifiedStream.body).code,'unverified');
       assert.equal(targetLookups,before,'Unconfirmed accounts are denied before DNS resolution');
     } finally { await db.sql('UPDATE users SET email_verified=true WHERE id=$1',[people[0].id]); }
+  });
+
+  await t.test('scan entry points use the pinned robots check before starting work', async () => {
+    const before = guardedRequests.length;
+    const blocked = await request('/api/checkup', { viewer: people[0], method: 'POST', body: { url: 'https://optout.example/' } });
+    assert.equal(blocked.status, 403);
+    assert.match(blocked.body.error, /owner has asked not/);
+    const streamed = await request('/api/checkup/stream?url=https%3A%2F%2Foptout.example%2F', { viewer: people[0], stream: true });
+    assert.match(streamed.body, /owner has asked not/);
+    assert.doesNotMatch(streamed.body, /event: report/);
+    assert.deepEqual(guardedRequests.slice(before), [
+      { url: 'https://optout.example/robots.txt', ip: '203.0.113.8' },
+      { url: 'https://optout.example/robots.txt', ip: '203.0.113.8' },
+    ]);
   });
 
   await t.test("saved detail, history, and recent lists omit account data for every viewer", async () => {
@@ -236,6 +264,70 @@ test("public routes preserve private ownership in a disposable local database", 
     assert.equal(response.status, 401);
     assert.equal(response.body.code, 'account-changed');
     assert.equal((await db.sql("SELECT id FROM helpers WHERE name='Previous account draft'")).length, 0);
+  });
+
+  await t.test('concurrent helper creation cannot overspend the daily allowance, including deleted rows', async () => {
+    const viewer = { id: 'quotahelper', email: 'quotahelper@example.test', cookie: 'quotahelper_session_fixture_12345' };
+    await db.sql("INSERT INTO users (id,email,email_verified) VALUES ($1,$2,true)", [viewer.id, viewer.email]);
+    await db.sql("INSERT INTO sessions (id,user_id,expires_at) VALUES ($1,$2,now()+interval '1 day')", [viewer.cookie, viewer.id]);
+    for (let i = 0; i < 9; i++) await db.sql("INSERT INTO helpers (id,name,contact,user_id,deleted_at) VALUES ($1,'Earlier helper',$2,$3,now())", ['quotahelp'+i, viewer.email, viewer.id]);
+    // A slow write makes overlapping requests deterministic without mocking SQL.
+    await db.sql("CREATE FUNCTION pause_helper_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(0.1); RETURN NEW; END $$");
+    await db.sql("CREATE TRIGGER pause_helper_insert BEFORE INSERT ON helpers FOR EACH ROW EXECUTE FUNCTION pause_helper_insert()");
+    let replies;
+    try { replies = await Promise.all(Array.from({ length: 8 }, (_, i) => request('/api/helpers', { viewer, method: 'POST', body: { name: 'Concurrent helper ' + i, contact: viewer.email } }))); }
+    finally { await db.sql('DROP TRIGGER pause_helper_insert ON helpers'); await db.sql('DROP FUNCTION pause_helper_insert()'); }
+    assert.deepEqual(replies.map(r => r.status).sort(), [201,429,429,429,429,429,429,429]);
+    assert.equal((await db.sql('SELECT count(*)::int AS n FROM helpers WHERE user_id=$1', [viewer.id]))[0].n, 10);
+    const created = replies.find(r => r.status === 201).body.helper.id;
+    assert.equal((await request('/api/helpers/'+created, { viewer, method: 'DELETE' })).status, 200);
+    assert.equal((await request('/api/helpers', { viewer, method: 'POST', body: { name: 'After removal', contact: viewer.email } })).status, 429);
+  });
+
+  await t.test('concurrent bulletin publication counts retained deleted posts toward the daily limit', async () => {
+    const viewer = { id: 'quotaposter', email: 'quotaposter@example.test', cookie: 'quotaposter_session_fixture_12345' };
+    await db.sql('INSERT INTO users (id,email,email_verified) VALUES ($1,$2,true)', [viewer.id, viewer.email]);
+    await db.sql("INSERT INTO sessions (id,user_id,expires_at) VALUES ($1,$2,now()+interval '1 day')", [viewer.cookie, viewer.id]);
+    for (let i = 0; i < 8; i++) await db.saveReport({ ...stored, id: 'quotareport'+i, userId: viewer.id });
+    for (let i = 0; i < 9; i++) await db.sql("INSERT INTO bulletin_posts (id,report_id,user_id,deleted_at) VALUES ($1,'quotareport0',$2,now())", ['quotapost'+i, viewer.id]);
+    await db.sql('CREATE FUNCTION pause_post_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(0.1); RETURN NEW; END $$');
+    await db.sql('CREATE TRIGGER pause_post_insert BEFORE INSERT ON bulletin_posts FOR EACH ROW EXECUTE FUNCTION pause_post_insert()');
+    let replies;
+    try { replies = await Promise.all(Array.from({ length: 8 }, (_, i) => request('/api/bulletin', { viewer, method: 'POST', body: { reportId: 'quotareport'+i } }))); }
+    finally { await db.sql('DROP TRIGGER pause_post_insert ON bulletin_posts'); await db.sql('DROP FUNCTION pause_post_insert()'); }
+    assert.deepEqual(replies.map(r => r.status).sort(), [201,429,429,429,429,429,429,429]);
+    assert.equal((await db.sql('SELECT count(*)::int AS n FROM bulletin_posts WHERE user_id=$1', [viewer.id]))[0].n, 10);
+    const created = replies.find(r => r.status === 201).body.post;
+    assert.equal((await request('/api/bulletin/'+created.id, { viewer, method: 'DELETE' })).status, 200);
+    assert.equal((await request('/api/bulletin', { viewer, method: 'POST', body: { reportId: created.report.id } })).status, 429);
+  });
+
+  await t.test('concurrent offers cannot overspend the daily allowance', async () => {
+    const viewer = { id: 'quotaoffer', email: 'quotaoffer@example.test', cookie: 'quotaoffer_session_fixture_12345' };
+    await db.sql('INSERT INTO users (id,email,email_verified) VALUES ($1,$2,true)', [viewer.id, viewer.email]);
+    await db.sql("INSERT INTO sessions (id,user_id,expires_at) VALUES ($1,$2,now()+interval '1 day')", [viewer.cookie, viewer.id]);
+    for (let i = 0; i < 8; i++) {
+      await db.saveReport({ ...stored, id: 'offreport'+i, userId: viewer.id });
+      await db.sql("INSERT INTO bulletin_posts (id,report_id,user_id,created_at) VALUES ($1,$2,$3,now()-interval '2 days')", ['offpost'+i, 'offreport'+i, viewer.id]);
+    }
+    await db.saveReport({ ...stored, id: 'offseedrep', userId: viewer.id });
+    await db.sql("INSERT INTO bulletin_posts (id,report_id,user_id,created_at) VALUES ('offseedpost','offseedrep',$1,now()-interval '2 days')", [viewer.id]);
+    for (let i = 0; i < 19; i++) await db.sql("INSERT INTO bulletin_offers (id,post_id,user_id,message,contact) VALUES ($1,'offseedpost',$2,'Earlier offer to help',$3)", ['quotaoff'+i, viewer.id, viewer.email]);
+    await db.sql('CREATE FUNCTION pause_offer_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(0.1); RETURN NEW; END $$');
+    await db.sql('CREATE TRIGGER pause_offer_insert BEFORE INSERT ON bulletin_offers FOR EACH ROW EXECUTE FUNCTION pause_offer_insert()');
+    let replies;
+    try { replies = await Promise.all(Array.from({ length: 8 }, (_, i) => request('/api/bulletin/offpost'+i+'/offers', { viewer, method: 'POST', body: { message: 'I can help with the site navigation.', contact: viewer.email } }))); }
+    finally { await db.sql('DROP TRIGGER pause_offer_insert ON bulletin_offers'); await db.sql('DROP FUNCTION pause_offer_insert()'); }
+    assert.deepEqual(replies.map(r => r.status).sort(), [201,429,429,429,429,429,429,429]);
+    assert.equal((await db.sql('SELECT count(*)::int AS n FROM bulletin_offers WHERE user_id=$1', [viewer.id]))[0].n, 20);
+    const createdIndex = replies.findIndex(r => r.status === 201);
+    const created = replies[createdIndex].body.offer;
+    const postPath = '/api/bulletin/offpost'+createdIndex;
+    assert.equal((await request(postPath+'/offers/'+created.id, { viewer, method: 'DELETE' })).status, 200);
+    assert.equal((await request(postPath)).body.offers.length, 0);
+    assert.equal((await request(postPath)).body.post.offersCount, 0);
+    assert.equal((await db.sql('SELECT count(*)::int AS n FROM bulletin_offers WHERE user_id=$1', [viewer.id]))[0].n, 20, 'Removed offers retain creation accounting');
+    assert.equal((await request(postPath+'/offers', { viewer, method: 'POST', body: { message: 'A new offer after removal.', contact: viewer.email } })).status, 429);
   });
 
   await t.test('community creation refuses unsafe website links and unconfirmed contact email', async () => {
