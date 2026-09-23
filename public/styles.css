@@ -38,7 +38,9 @@ button{font-family:inherit;}
 /* Definitions remain inline, with native dialog keyboard and focus behavior. */
 .defined-term{display:inline;background:none;border:0;padding:0;margin:0;font:inherit;color:inherit;letter-spacing:inherit;text-align:inherit;cursor:pointer;text-decoration-line:underline;text-decoration-style:dotted;text-decoration-thickness:1.5px;text-underline-offset:.18em;border-radius:2px;}
 .defined-term:hover{color:var(--brand);text-decoration-style:solid;}
-.definition-guide{font-size:14px;color:var(--ink-soft);margin-top:12px;}
+.definition-guide{font-size:14px;color:var(--ink-soft);margin-top:12px;text-align:center;}
+.runtime-locations a,.page-loads a{overflow-wrap:anywhere;word-break:break-word;}
+.runtime-locations pre{white-space:pre-wrap;overflow-wrap:anywhere;}
 .definition-dialog{width:min(520px,calc(100% - 32px));max-height:calc(100dvh - 32px);overflow:auto;border:1px solid var(--border-strong);border-radius:var(--radius);padding:28px;color:var(--ink);background:var(--surface);box-shadow:0 20px 80px rgb(var(--shadow)/.3);}
 .definition-dialog::backdrop{background:rgb(18 38 28/.5);}
 .definition-dialog h2{font-size:27px;overflow-wrap:anywhere;}

@@ -9,7 +9,7 @@ test('the review display keeps supported observations distinct from verification
   assert.match(html, /1 need further verification/);
   assert.match(html, /does not guarantee/);
   assert.equal(view.reviewCard({}), '');
-  assert.match(view.findingReview({proofReview:{status:'needs-verification',reason:'No interaction tested.'}}), /Not used to calculate the grade/);
+  assert.match(view.findingReview({proofReview:{status:'needs-verification',reason:'No interaction tested.'}}), /Adds no numeric penalty/);
 });
 test('load results show elapsed time, seven-second limit, and page address without claiming timeouts loaded', () => {
   const html = view.pageLoadsCard({engine:{browser:{pageLoads:[{page:'https://example.com/',status:'ready',elapsedMs:5200,budgetMs:7000}]}},agent:{pageLoads:[{page:'https://example.com/contact',status:'timed-out',elapsedMs:7200,budgetMs:7000,reason:'Still loading'}]}});

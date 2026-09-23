@@ -247,10 +247,8 @@ a.back-btn{text-decoration:none}
   });
 
   /* ---------------- opening a saved report inside the SPA ---------------- */
-  let bootDispatchPending = true;
-  S.ready.then(() => Promise.resolve().then(() => { bootDispatchPending = false; }));
-
   async function openReport(id) {
+    if (typeof window.loadSavedReport === 'function') return window.loadSavedReport(id);
     const canRender = typeof window.renderReport === "function" && typeof window.go === "function";
     if (!canRender) { location.href = "/r/" + id; return; }
     const account = S.user?.id || null;
@@ -270,7 +268,6 @@ a.back-btn{text-decoration:none}
     if (typeof window.go === "function") go("home"); else S.showScreen("screen-home");
   });
   S.route(new RegExp("^/r/" + ID_RE + "/?$"), (m) => {
-    if (bootDispatchPending) return; // app.js already loads a report from the URL on first paint
     openReport(m[1]);
   });
   S.route(/^\/bulletin\/?$/, (_m, q) => renderBulletin(q.get("sort") === "worst" ? "worst" : "new"));
@@ -782,20 +779,31 @@ a.back-btn{text-decoration:none}
 
   /* ================= DEDUP PROMPT (before a checkup) ================= */
   let pendingDedup = null;
+  let dedupRequest = 0;
   function settleDedup(value) {
     if (pendingDedup) { const r = pendingDedup; pendingDedup = null; r(value); }
     const slot = document.getElementById("dedupSlot");
     if (slot) slot.innerHTML = "";
   }
   const urlInput = document.getElementById("urlInput");
-  if (urlInput) urlInput.addEventListener("input", () => { if (pendingDedup) settleDedup(false); });
+  if (urlInput) urlInput.addEventListener("input", () => { ++dedupRequest; settleDedup(false); });
+  let dedupAccount = S.user?.id || null;
+  S.onUser(user => {
+    const account = user?.id || null;
+    if (account === dedupAccount) return;
+    dedupAccount = account; ++dedupRequest; settleDedup(false);
+  });
 
   S.beforeCheckup = async function (host) {
     settleDedup(false);
+    const request = ++dedupRequest;
+    const account = S.user?.id || null;
+    const active = () => request === dedupRequest && account === (S.user?.id || null);
     const slot = document.getElementById("dedupSlot");
     if (!slot || !host) return true;
     let data;
-    try { data = await S.api("/api/checks?host=" + encodeURIComponent(host)); } catch { return true; }
+    try { data = await S.api("/api/checks?host=" + encodeURIComponent(host), {expectedAccount:account}); } catch { return active(); }
+    if (!active()) return false;
     const reports = data && Array.isArray(data.reports) ? data.reports.filter((r) => r && r.id) : [];
     const count = Math.max(Number(data && data.count) || 0, reports.length);
     if (!count || !reports.length) return true;
@@ -821,9 +829,9 @@ a.back-btn{text-decoration:none}
           <button type="button" class="cu-link-btn" data-dedup="cancel">Not now</button>
         </div>
       </div>`;
-      $("[data-dedup=view]", slot).addEventListener("click", () => { settleDedup(false); S.navigate("/r/" + latest.id); });
+      $("[data-dedup=view]", slot).addEventListener("click", () => { const valid=active();settleDedup(false); if(valid)S.navigate("/r/" + latest.id); });
       const freshBtn = $("[data-dedup=fresh]", slot);
-      if (freshBtn) freshBtn.addEventListener("click", () => settleDedup(true));
+      if (freshBtn) freshBtn.addEventListener("click", () => settleDedup(active()));
       $("[data-dedup=cancel]", slot).addEventListener("click", () => settleDedup(false));
     });
   };
@@ -960,5 +968,6 @@ a.back-btn{text-decoration:none}
   });
 
   /* ---------------- boot ---------------- */
+  document.addEventListener('sutros:report-cleared', () => { lastReport = null; ++reportPermissionsRequest; ++dedupRequest; settleDedup(false); });
   document.getElementById('recentChecks')?.remove();
 })();

@@ -77,7 +77,7 @@
     const review = finding.proofReview;
     if (!review) return '';
     const supported = review.status === 'supported';
-    return `<p class="observation-source proof-review-status"><b>${supported ? 'Supported by the recorded evidence.' : 'Needs further verification. Not used to calculate the grade.'}</b> ${escape(review.reason)}</p>`;
+    return `<p class="observation-source proof-review-status"><b>${supported ? 'Supported by the recorded evidence.' : 'Needs further verification. Adds no numeric penalty; unresolved non-minor observations prevent an A+.'}</b> ${escape(review.reason)}</p>`;
   }
   function pageLoadsCard(report = {}) {
     const loads = [

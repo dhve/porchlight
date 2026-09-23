@@ -58,7 +58,7 @@ function displayHost(input) {
 // The stages a checkup passes through, in order. Progress is stage-based: each finished
 // stage adds one share, a running stage adds half, and the bar only reaches 100% when the
 // report itself arrives, whatever the server reported for the stages.
-const STAGES = ["recon", "plan", "probe", "customer", "report", "review"];
+const STAGES = ["recon", "content", "plan", "probe", "customer", "report", "review"];
 const STAGE_SHARE = Math.floor(96 / STAGES.length);
 // Every row's icon and caption as first rendered, so a new checkup starts from a clean list.
 const ROW_DEFAULTS = new Map($$("#checklist .check-row").map((row) => [row.dataset.key,
@@ -153,6 +153,7 @@ function onRunError(message) {
 }
 
 function startLive(url) {
+  if (liveStream) liveStream.close();
   resetRun();
   $("#runHost").textContent = displayHost(url);
   currentReport = null;
@@ -164,10 +165,11 @@ function startLive(url) {
   liveStream = es;
   const epoch = sessionEpoch;
 
-  es.addEventListener("step", (e) => onStep(JSON.parse(e.data)));
-  es.addEventListener("log", (e) => addLog(JSON.parse(e.data)));
+  const active = () => epoch === sessionEpoch && liveStream === es;
+  es.addEventListener("step", (e) => { if (active()) onStep(JSON.parse(e.data)); });
+  es.addEventListener("log", (e) => { if (active()) addLog(JSON.parse(e.data)); });
   es.addEventListener("report", (e) => {
-    if (epoch !== sessionEpoch) return; // the session changed while this checkup ran
+    if (!active()) return;
     gotReport = true;
     currentReport = JSON.parse(e.data);
     renderReport(currentReport);
@@ -177,18 +179,15 @@ function startLive(url) {
     setAgentHint(false);
   });
   es.addEventListener("error", (e) => {
-    let msg = "Something went wrong during the checkup. Please try again.";
-    try { if (e.data) msg = JSON.parse(e.data).message; } catch {}
+    if (!active()) { es.close(); return; }
+    let msg = "Lost connection to the checkup. Please try again.";
+    try { const message = e.data && JSON.parse(e.data).message; if (typeof message === 'string' && message) msg = message; } catch {}
     es.close();
+    if (liveStream === es) liveStream = null;
     setAgentHint(false);
     if (!gotReport) onRunError(msg);
   });
   es.addEventListener("done", () => { es.close(); setAgentHint(false); if (liveStream === es) liveStream = null; });
-  es.onerror = () => {
-    es.close();
-    setAgentHint(false);
-    if (!gotReport) onRunError("Lost connection to the checkup. Please try again.");
-  };
 }
 
 /* ---------------- report rendering ---------------- */
@@ -223,9 +222,9 @@ function renderReport(r) {
   const color = assessment.incomplete ? 'var(--ink-faint)' : GRADE_COLOR[r.grade] || "var(--watch)";
   ringTarget = RING_CIRC * (1 - (assessment.incomplete ? 0 : Math.max(0, Math.min(100, r.ringPercent || 0))) / 100);
   const findings = Array.isArray(r.findings) ? r.findings : [];
-  const uncertain = findings.filter(f => SutrosEvidence.connectionLimitation(f));
-  const assessed = findings.filter(f => !SutrosEvidence.connectionLimitation(f));
-  const tally = assessment.networkLimited ? assessed.reduce((counts, f) => {
+  const uncertain = findings.filter(f => SutrosEvidence.connectionLimitation(f) || f.proofReview?.status === 'needs-verification');
+  const assessed = findings.filter(f => !uncertain.includes(f));
+  const tally = uncertain.length ? assessed.reduce((counts, f) => {
     counts[f.severity] = (counts[f.severity] || 0) + 1; return counts;
   }, {}) : r.tally || {};
 
@@ -278,6 +277,7 @@ function renderReport(r) {
   const share = $("#shareBox");
   if (r.id) {
     const link = `${location.origin}/r/${r.id}`;
+    $('#shareBox > span').textContent = r.visibility === 'public' ? 'Public link' : 'Private link';
     $("#shareLink").textContent = link;
     share.dataset.link = link;
     share.classList.add("show");
@@ -292,17 +292,17 @@ function renderReport(r) {
   const hasMajor = fixFirst.length > 0;
   const promise = proofPromise(r);
   // What the browsing agent did, when it ran. Nothing when it did not.
-  let html = coverageCard(r) + feedbackGuidanceCard(r) + agentCard(r);
+  let html = SutrosEvidence.reviewCard(r) + coverageCard(r) + SutrosEvidence.pageLoadsCard(r) + feedbackGuidanceCard(r) + agentCard(r);
   if (hasMajor) {
     // Lead with the things that actually matter.
     html += promise + `<p class="eyebrow">Fix these first</p>` + fixFirst.map((f) => findingCard(f, r)).join("");
     if (watchList.length) html += `<p class="eyebrow" style="margin-top:14px;">Then, smaller things worth a look</p>` + watchList.map((f) => findingCard(f, r)).join("");
   } else {
     // No urgent or serious problems: reassure first, then frame the rest as optional.
-    html += (assessment.incomplete ? '' : reassureBanner(watchList.length > 0)) + promise;
+    html += (assessment.incomplete || uncertain.length ? '' : reassureBanner(watchList.length > 0)) + promise;
     if (watchList.length) html += `<p class="eyebrow" style="margin-top:14px;">Optional improvements (nice to have, not urgent)</p>` + watchList.map((f) => findingCard(f, r)).join("");
   }
-  if (uncertain.length) html += `<p class="eyebrow" style="margin-top:14px;">Connection results to verify</p>` + uncertain.map(f => findingCard(f, r)).join('');
+  if (uncertain.length) html += `<p class="eyebrow" style="margin-top:14px;">Observations needing verification</p>` + uncertain.map(f => findingCard(f, r)).join('');
   if (goodCount) {
     html += `<p class="eyebrow" style="margin-top:14px;">Looking good</p>` + goodCard(r.passes);
   }
@@ -323,7 +323,7 @@ function proofPromise(r) {
 
 function coverageCard(r) {
   const coverage = Array.isArray(r.coverage) ? r.coverage : [];
-  const labels = { recon: 'Initial page access', headers: 'Browser security rules', tls: 'Connection encryption', cookies: 'Cookies', exposed: 'Publicly reachable files', exposedFiles: 'Publicly reachable files', secrets: 'Potentially exposed keys', dependencies: 'Software versions', forms: 'Forms', links: 'Links and images', flows: 'Key visitor pages', browser: 'Browser loading', modernization: 'Mobile and page layout', agent: 'AI browsing', agentBrowse: 'AI browsing', proof: 'Evidence pictures' };
+  const labels = { recon: 'Initial page access', content: 'Page image screening', review: 'Final evidence review', headers: 'Browser security rules', tls: 'Connection encryption', cookies: 'Cookies', exposed: 'Publicly reachable files', exposedFiles: 'Publicly reachable files', secrets: 'Potentially exposed keys', dependencies: 'Software versions', forms: 'Forms', links: 'Links and images', flows: 'Key visitor pages', browser: 'Browser loading', modernization: 'Mobile and page layout', agent: 'AI browsing', agentBrowse: 'AI browsing', proof: 'Evidence pictures' };
   const statuses = { completed: 'Completed', skipped: 'Not run', failed: 'Failed to complete', inconclusive: 'Could not confirm' };
   const lines = coverage.map(c => `<li><span>${esc(labels[c.check] || c.check)}</span><b>${esc(statuses[c.status] || 'Unknown')}</b>${c.reason ? `<p>${esc(c.reason)}</p>` : ''}</li>`).join('');
   const version = r.engine?.version;
@@ -340,7 +340,7 @@ function feedbackGuidanceCard(r) {
 
 function observationMeta(f) {
   const p = f.provenance || {};
-  const source = f.source === 'agent' || String(f.id).startsWith('agent-') ? 'AI browsing observation. Requires confirmation; does not affect the grade.' : f.source === 'scripted' ? 'Scripted observation. Review the evidence and its limits.' : 'Recorded finding. This older report may include AI-written explanations.';
+  const source = f.source === 'agent' || String(f.id).startsWith('agent-') ? 'AI browsing observation. Requires confirmation and adds no numeric penalty. Non-minor observations prevent an A+.' : f.source === 'scripted' ? 'Scripted observation. Review the evidence and its limits.' : 'Recorded finding. This older report may include AI-written explanations.';
   return `<p class="observation-source">${esc(source)}${p.observedAt ? ` <time datetime="${esc(p.observedAt)}">Observed ${esc(p.observedAt)}.</time>` : ''}${p.check ? ` Check: ${esc(p.check)}.` : ''}</p>`;
 }
 
@@ -353,8 +353,9 @@ function aiAdviceBlock(f) {
 
 function findingCard(f, r) {
   const limitation = SutrosEvidence.connectionLimitation(f);
-  const severity = limitation ? 'unverified' : f.severity;
-  const meta = limitation ? {icon:PROOF_ICON, label:'Needs verification'} : SEV[f.severity] || SEV.watch;
+  const needsReview = f.proofReview?.status === 'needs-verification';
+  const severity = limitation || needsReview ? 'unverified' : f.severity;
+  const meta = limitation || needsReview ? {icon:PROOF_ICON, label:'Needs verification'} : SEV[f.severity] || SEV.watch;
   const fixes = (f.fix || []).map((step) => `<li>${esc(step)}</li>`).join("");
   const fixBlock = fixes ? `<div class="f-fix"><div class="fx-label">${WRENCH}How to fix it</div><ol>${fixes}</ol>${f.who ? `<div class="who">${PERSON} ${esc(f.who)}</div>` : ""}</div>` : '';
   return `
@@ -370,7 +371,7 @@ function findingCard(f, r) {
           <p class="f-mean">${esc(limitation ? limitation.message : f.meaning)}</p>
         </div>
       </div>
-      ${limitation ? `<p class="observation-source connection-clarification">Clarification from the saved evidence, not a new check or a reviewer decision.</p><details class="original-finding"><summary>Original finding and suggested fixes</summary><p class="observation-source">The original ${esc(f.severity)} label and explanation are unverified.</p><h4>${esc(f.title)}</h4><p>${esc(f.meaning)}</p>${fixBlock}</details>` : fixBlock}
+      ${limitation ? `<p class="observation-source connection-clarification">Clarification from the saved evidence, not a new check or a reviewer decision.</p><details class="original-finding"><summary>Original finding and suggested fixes</summary><p class="observation-source">The original ${esc(f.severity)} label and explanation are unverified.</p><h4>${esc(f.title)}</h4><p>${esc(f.meaning)}</p>${fixBlock}</details>` : needsReview ? `<details class="original-finding"><summary>Suggested fixes to review after confirmation</summary>${fixBlock}</details>` : fixBlock}
       ${proofPanel(f, r)}
       ${aiAdviceBlock(f)}
       <div class="f-slot" data-finding="${esc(f.id)}"></div>
@@ -394,10 +395,10 @@ function proofPanel(f, r) {
     (e.confirm ? `<p class="proof-confirm"><b>${limitation ? 'Original confirmation suggestion.' : 'See it yourself.'}</b> ${esc(e.confirm)}</p>` : '') +
     (e.note ? `<p class="proof-note">${esc(e.note)}</p>` : '');
   const body =
-    observationMeta(f) +
+    observationMeta(f) + SutrosEvidence.findingReview(f) +
     (limitation ? '' : interpretation) +
     (lines.length ? `<p class="proof-k">What we observed</p><pre>${lines.map((l) => linkifyLine(l, r)).join("\n")}</pre>` : "") +
-    addresses +
+    addresses + SutrosEvidence.runtimeLocations(f) +
     pagesList(e, r) +
     shotsBlock(e, r) +
     retestBlock(f, e, r) +
@@ -540,7 +541,7 @@ function dropFragment(href) {
 }
 
 const AGENT_SUMMARY_FALLBACK = "Our browsing agent opened this site in a real browser on a phone-sized screen and read it the way a visitor would.";
-const AGENT_NOTES_LINE = "Its notes are labeled Browsing agent below. They count in the list but never change the grade.";
+const AGENT_NOTES_LINE = "Its notes are labeled Browsing agent below. They add no numeric penalties. Non-minor observations prevent an A+.";
 
 // The card under the scorecard: what the agent did, the pages it opened, and the session replay when there is one.
 function agentCard(r) {
@@ -652,7 +653,7 @@ function minorNotes(list, r) {
       ? `<div class="mn-block"><span class="mn-k">How to fix it</span><ol class="mn-fix">${f.fix.map((st) => `<li>${esc(st)}</li>`).join("")}</ol>${f.who ? `<div class="mn-who">${PERSON} ${esc(f.who)}</div>` : ""}</div>`
       : "";
     const whyTech = ev.why ? `<div class="mn-block"><span class="mn-k">Why it's flagged</span><p class="mn-whytech">${esc(ev.why)}</p></div>` : "";
-    return `<div class="mn-item"><h4>${esc(f.title)}${agentChip(f)}${disputeChip(f)}</h4><p class="mn-why">${esc(f.meaning)}</p>${observationMeta(f)}${where}${whyTech}${fix}${aiAdviceBlock(f)}${disputeBlock(f)}<div class="f-slot" data-finding="${esc(f.id)}"></div></div>`;
+    return `<div class="mn-item"><h4>${esc(f.title)}${agentChip(f)}${disputeChip(f)}</h4><p class="mn-why">${esc(f.meaning)}</p>${observationMeta(f)}${where}${whyTech}${fix}${proofPanel(f,r)}${aiAdviceBlock(f)}${disputeBlock(f)}<div class="f-slot" data-finding="${esc(f.id)}"></div></div>`;
   }).join("");
   return `<details class="minor-notes"><summary><span>${list.length} minor note${list.length > 1 ? "s" : ""}</span> <span class="mn-hint">low priority. Each one says where it is, why it matters, and how to fix it.</span> ${CHEV}</summary><div class="mn-body">${items}</div></details>`;
 }
@@ -799,7 +800,8 @@ $("#checkForm").addEventListener("submit", async (e) => {
     }
   }
   const host = displayHost(url);
-  Promise.resolve(window.Sutros ? Sutros.beforeCheckup(host) : true).then((ok) => { if (ok) startLive(url); });
+  const account = window.Sutros?.user?.id || null;
+  Promise.resolve(window.Sutros ? Sutros.beforeCheckup(host) : true).then((ok) => { if (ok && account === (window.Sutros?.user?.id || null)) startLive(url); });
 });
 
 $("#shareCopy").addEventListener("click", async () => {
@@ -813,27 +815,29 @@ $("#shareCopy").addEventListener("click", async () => {
   }
 });
 
-// Deep link: /r/<id> opens a saved report.
-(function loadFromPath() {
-  const m = location.pathname.match(/^\/r\/([A-Za-z0-9_-]{6,20})$/);
-  if (!m) return;
+// All initial and in-app report routes share one cancellable, account-bound loader.
+function loadSavedReport(id) {
+  if (!/^[A-Za-z0-9_-]{6,20}$/.test(id)) return;
+  if (reportFetch) reportFetch.abort();
   const controller = new AbortController();
   reportFetch = controller;
   const epoch = sessionEpoch;
-  fetch(`/api/reports/${m[1]}`, { signal: controller.signal })
+  const account = window.Sutros?.user?.id || null;
+  return fetch(`/api/reports/${encodeURIComponent(id)}`, { signal: controller.signal, headers: account ? {'X-Sutros-Account':account} : {} })
     .then((res) => (res.ok ? res.json() : Promise.reject(new Error("not found"))))
     .then((report) => {
-      if (epoch !== sessionEpoch || controller.signal.aborted) return; // the account changed while this loaded
+      if (epoch !== sessionEpoch || controller.signal.aborted || account !== (window.Sutros?.user?.id || null) || location.pathname.replace(/\/$/,'') !== `/r/${id}`) return;
       currentReport = report; renderReport(report); go("report");
     })
     .catch((err) => {
       if (err && err.name === "AbortError") return;
       if (epoch !== sessionEpoch) return;
-      $("#formErr").textContent = "We couldn't find that saved report. It may have been removed.";
+      go('home');
+      $("#formErr").textContent = "We couldn't open that report. Sign in to its account, or ask its owner to share it through the community.";
       $("#formErr").classList.add("show");
     })
     .finally(() => { if (reportFetch === controller) reportFetch = null; });
-})();
+}
 
 /* ---------------- session changes ---------------- */
 // A saved report is private to its account unless it was published. When the signed-in
@@ -852,15 +856,15 @@ function forgetReport() {
   if (share) { share.classList.remove("show"); delete share.dataset.link; }
   const link = $("#shareLink");
   if (link) link.textContent = "";
+  document.dispatchEvent(new CustomEvent('sutros:report-cleared'));
   const onPrivateScreen = ["screen-report", "screen-run"].some((id) => $("#" + id).classList.contains("is-active"));
   if (onPrivateScreen) go("home");
   else if (/^\/r\//.test(location.pathname)) history.replaceState(null, "", "/");
 }
 if (window.Sutros) {
-  let knownAccount;
+  let knownAccount = Sutros.user?.id || null;
   Sutros.onUser((user) => {
     const id = user ? user.id : null;
-    if (knownAccount === undefined) { knownAccount = id; return; }
     if (id === knownAccount) return;
     knownAccount = id;
     const shown = currentReport && currentReport.id && currentReport.visibility !== "public";
@@ -927,7 +931,8 @@ function sevWord(s) { return ({ urgent: "Urgent", serious: "Serious", watch: "Wo
 // The listing form is bound to the account signed in when it was opened, so a draft
 // written under one account can never be published under a replacement session.
 let helperFormAccount = null;
-function openHelpers() {
+async function openHelpers() {
+  if (window.Sutros) await Sutros.ready;
   helperFormAccount = (window.Sutros && Sutros.user && Sutros.user.id) || null;
   go("helpers");
   loadHelpers();
@@ -961,6 +966,15 @@ function helperCard(h) {
 async function submitHelper(e) {
   e.preventDefault();
   const err = $("#helperErr");
+  if (window.Sutros) {
+    await Sutros.ready;
+    if (!Sutros.requireLogin('/')) return;
+    if (!Sutros.user.emailVerified || !helperFormAccount) {
+      err.textContent = !Sutros.user.emailVerified ? 'Please confirm your email before listing yourself as a helper.' : 'Your sign-in changed. Open the helper directory again before posting.';
+      err.classList.add('show');
+      return;
+    }
+  }
   const payload = {
     name: $("#hfName").value.trim(),
     contact: $("#hfContact").value.trim(),
@@ -1096,4 +1110,5 @@ async function submitHelper(e) {
     open(t.getAttribute("data-lightbox"), t.getAttribute("data-caption") || "");
   });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+  document.addEventListener('sutros:report-cleared', close);
 })();

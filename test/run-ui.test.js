@@ -75,13 +75,22 @@ const progress = page => page.getByRole('progressbar', { name: 'Checkup progress
 const value = async page => Number(await progress(page).getAttribute('aria-valuenow'));
 const row = (page, key) => page.locator(`#checklist .check-row[data-key="${key}"]`);
 
+test('a content screening error keeps its specific message instead of a lost-connection message', async t => {
+  const page = await homePage(t);
+  await startCheckup(page);
+  const message = 'The image content check could not finish. This does not mean the website contains sexual content.';
+  sse('error', {code:'content-screening-unavailable',message});
+  await page.locator('#screen-home.is-active').waitFor();
+  assert.equal(await page.locator('#formErr').textContent(),message);
+});
+
 test('the progress bar advances by stage and only reaches 100% when the report arrives', async t => {
   const page = await homePage(t);
   await startCheckup(page);
   await progress(page).waitFor();
   assert.equal(await value(page), 0);
   const seen = [];
-  for (const key of ['recon', 'plan', 'probe', 'customer', 'report', 'review']) {
+  for (const key of ['recon', 'content', 'plan', 'probe', 'customer', 'report', 'review']) {
     sse('step', { key, status: 'start' });
     await row(page, key).and(page.locator('.active')).waitFor();
     seen.push(await value(page));
@@ -117,13 +126,13 @@ test('a report delivered while a stage is still running completes the bar and ev
 test('a second checkup starts with every icon, status, and the bar reset', async t => {
   const page = await homePage(t);
   await startCheckup(page);
-  for (const key of ['recon', 'plan', 'probe', 'customer', 'report', 'review']) { sse('step', { key, status: 'start' }); sse('step', { key, status: 'done' }); }
+  for (const key of ['recon', 'content', 'plan', 'probe', 'customer', 'report', 'review']) { sse('step', { key, status: 'start' }); sse('step', { key, status: 'done' }); }
   sse('report', report('C'));
   await page.locator('#runCta.show').waitFor();
   sse('done', {});
-  assert.equal(await page.locator('#checklist .check-row.done').count(), 6);
+  assert.equal(await page.locator('#checklist .check-row.done').count(), 7);
   const doneIcons = await page.locator('#checklist .check-icon svg path[d^="M20 6L9 17"]').count();
-  assert.equal(doneIcons, 6, 'every row shows a checkmark after the first checkup');
+  assert.equal(doneIcons, 7, 'every row shows a checkmark after the first checkup');
   await page.locator('#viewReportBtn').click();
   await page.locator('#screen-report.is-active').waitFor();
   await page.locator('#backBtn').click();
@@ -132,7 +141,7 @@ test('a second checkup starts with every icon, status, and the bar reset', async
   assert.equal(await page.locator('#checklist .check-row.done').count(), 0);
   assert.equal(await page.locator('#checklist .check-row.active').count(), 0);
   assert.equal(await page.locator('#checklist .check-icon svg path[d^="M20 6L9 17"]').count(), 0, 'no checkmark from the earlier checkup persists');
-  assert.deepEqual(await page.locator('#checklist [data-status]').allTextContents(), ['waiting', 'waiting', 'waiting', 'waiting', 'waiting', 'waiting']);
+  assert.deepEqual(await page.locator('#checklist [data-status]').allTextContents(), ['waiting', 'waiting', 'waiting', 'waiting', 'waiting', 'waiting', 'waiting']);
   assert.equal(await value(page), 0);
   assert.equal(await page.locator('#runCta.show').count(), 0);
   sse('step', { key: 'probe', status: 'start' });
@@ -191,6 +200,58 @@ async function reportPage(t, configure = async () => {}) {
 const privateReport = { ...report('C'), id: 'privatereport', visibility: 'private', summary: 'PRIVATE_SUMMARY of the checkup.',
   findings: [{ id: 'broken-links', severity: 'watch', title: 'PRIVATE_FINDING title', meaning: 'A private detail.', source: 'scripted', evidence: { items: [{ url: 'https://fixture.example/contact', status: 404 }], lines: ['404 /contact'] } }] };
 
+test('a fast account response before app.js loads still clears private content on the first signout', async t => {
+  let viewer = {id:'owner1',emailVerified:true}, reads = 0;
+  const page = await reportPage(t, async page => {
+    await page.route(origin+'/api/me', route=>route.fulfill({json:{user:viewer}}));
+    await page.route(origin+'/api/reports/privatereport', route=>{reads++;return route.fulfill({json:privateReport});});
+    await page.route(origin+'/app.js', async route=>{await new Promise(resolve=>setTimeout(resolve,500));await route.continue();});
+  });
+  await page.goto(origin+'/r/privatereport');
+  await page.getByRole('heading',{name:'PRIVATE_FINDING title',exact:true}).waitFor();
+  await page.waitForTimeout(200);
+  assert.equal(reads,1,'the initial route must load the report once');
+  viewer=null;await page.evaluate(()=>window.Sutros.refreshMe());
+  await page.locator('#screen-home.is-active').waitFor();
+  assert.equal(await page.getByText('PRIVATE_', {exact:false}).count(),0);
+  assert.equal(new URL(page.url()).pathname,'/');
+});
+
+test('private website history arriving after an account switch cannot appear or start a checkup', async t => {
+  let viewer = {id:'owner1',emailVerified:true}, release, started;
+  const held = new Promise(resolve=>{release=resolve;});
+  const requested = new Promise(resolve=>{started=resolve;});
+  t.after(()=>release());
+  const page = await reportPage(t, async page=>{
+    await page.route(origin+'/api/me',route=>route.fulfill({json:{user:viewer}}));
+    await page.route(origin+'/api/checks?*',async route=>{started();await held;await route.fulfill({json:{count:7,reports:[{id:'private-history',grade:'F',score:5,scannedAt:'2020-01-01'}]}}).catch(()=>{});});
+  });
+  await page.goto(origin+'/');
+  await page.locator('#urlInput').fill('private-target.example');
+  await page.locator('#startBtn').click();await requested;
+  const before = streams.length;
+  viewer={id:'other1',emailVerified:true};await page.evaluate(()=>window.Sutros.refreshMe());
+  release();await page.waitForTimeout(250);
+  assert.equal(await page.locator('#dedupSlot').textContent(),'');
+  assert.equal(streams.length,before);
+});
+
+test('signout closes an enlarged private screenshot as well as the report', async t => {
+  let viewer={id:'owner1',emailVerified:true};
+  const page=await reportPage(t,async page=>{
+    await page.route(origin+'/api/me',route=>route.fulfill({json:{user:viewer}}));
+    await page.route(origin+'/api/reports/privatereport',route=>route.fulfill({json:privateReport}));
+  });
+  await page.goto(origin+'/r/privatereport');await page.locator('#screen-report.is-active').waitFor();
+  await page.evaluate(()=>{
+    const button=document.createElement('button');button.setAttribute('data-lightbox','data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="green"/></svg>');button.setAttribute('data-caption','PRIVATE_SCREENSHOT_CAPTION');document.querySelector('#findingsRoot').append(button);button.click();
+  });
+  await page.locator('.lightbox').waitFor();
+  viewer=null;await page.evaluate(()=>window.Sutros.refreshMe());
+  assert.equal(await page.locator('.lightbox').count(),0);
+  assert.equal(await page.getByText('PRIVATE_SCREENSHOT_CAPTION',{exact:false}).count(),0);
+});
+
 test('signing out clears the open report, its address, and its share link', async t => {
   let viewer = { id: 'owner1', emailVerified: true };
   const page = await reportPage(t, async page => {
@@ -219,13 +280,10 @@ test('a report fetch still in flight when the account changes is never shown', a
   const held = new Promise(resolve => { release = resolve; });
   const requested = new Promise(resolve => { started = resolve; });
   t.after(() => release());
-  let requests = 0;
   const page = await reportPage(t, async page => {
     await page.route(origin + '/api/me', route => route.fulfill({ json: { user: viewer } }));
-    // Only the page's own first fetch is held. (community-ui may fetch the same report again
-    // from its boot dispatch; that path is owned elsewhere and answers at once here.)
+    // Hold every boot and core fetch: neither may render after the account changes.
     await page.route(origin + '/api/reports/privatereport', async route => {
-      if (++requests > 1) return route.fulfill({ json: privateReport });
       started(); await held; await route.fulfill({ json: privateReport }).catch(() => {});
     });
   });
@@ -299,4 +357,3 @@ test('a helper listing is bound to the account that opened the form', async t =>
   assert.equal(posts.length, 2);
   assert.equal(posts[1].expected, 'helper2');
 });
-

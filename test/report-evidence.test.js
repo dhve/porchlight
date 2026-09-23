@@ -61,6 +61,34 @@ async function openReport(t, fixture = report, viewer = null, onRequest = () => 
   return page;
 }
 
+test('review, loading times and exact runtime source locations are readable on phones', async t => {
+  const source = `https://fixture.example/${'folder/'.repeat(35)}framework.js`;
+  const fixture = {...report,grade:'A',score:100,assessment:{status:'complete'},tally:{minor:1},
+    engine:{reporter:'llm',browser:{pageLoads:[{page:report.url,status:'ready',elapsedMs:5200,budgetMs:7000}]},proof:{review:{status:'completed',summary:'Recorded evidence reviewed.',counts:{supported:1,needsVerification:0}}}},
+    findings:[{id:'runtime-errors',severity:'minor',title:'A browser runtime error was recorded',proofReview:{status:'supported',reason:'Observed error only.'},evidence:{runtimeErrors:[{page:report.url,message:'Minified React error #418',hydration:true,source:{url:source,line:17,column:46459},stack:'at render'}]}}]};
+  const page = await openReport(t, fixture);
+  await page.locator('.final-proof-review > summary').click();
+  assert.match(await page.locator('.final-proof-review').innerText(), /does not guarantee correctness/);
+  await page.locator('.page-loads > summary').click();
+  assert.match(await page.locator('.page-loads').innerText(), /Ready after 5\.2 seconds/);
+  await page.locator('.minor-notes > summary').click();
+  await page.locator('details.proof > summary').click();
+  const location = page.locator('.runtime-location');
+  assert.equal(await location.locator(`a[href="${source}"]`).count(), 1);
+  assert.match(await location.innerText(), /line 17, column 46459/);
+  assert.match(await location.innerText(), /affected HTML element was not identified/);
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 2));
+});
+
+test('an unsupported finding is separated from instructions to fix confirmed issues', async t => {
+  const fixture = {...report,grade:'A',score:100,tally:{},findings:[{id:'unconfirmed-control',severity:'urgent',title:'A menu may be broken',meaning:'Impact was not observed.',proofReview:{status:'needs-verification',reason:'No failed interaction recorded.'},evidence:{lines:['Runtime message observed.']}}]};
+  const page = await openReport(t, fixture);
+  assert.match(await page.locator('#findingsRoot').innerText(), /Observations needing verification/i);
+  assert.doesNotMatch(await page.locator('#findingsRoot').innerText(), /Fix these first/i);
+  await page.locator('details.proof > summary').click();
+  assert.match(await page.locator('#findingsRoot').innerText(), /Adds no numeric penalty/);
+});
+
 test('feedback processes automatically and polling preserves an unfinished correction', async t => {
   let answer = null;
   let processed = false;

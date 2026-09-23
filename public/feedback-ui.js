@@ -284,6 +284,14 @@
   }
 
   /* ---------------- hook ---------------- */
+  document.addEventListener('sutros:report-cleared', () => mount(null));
+  let feedbackAccount = S.user?.id || null;
+  S.onUser(user => {
+    const account = user?.id || null;
+    if (account === feedbackAccount) return;
+    feedbackAccount = account;
+    mount(S.report?.visibility === 'public' ? S.report : null);
+  });
   const prev = S.onReportRendered;
   S.onReportRendered = function (r) {
     if (typeof prev === "function") { try { prev.call(this, r); } catch (e) { console.error(e); } }
