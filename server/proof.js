@@ -21,6 +21,7 @@ import { resolveTarget, isPrivateIp } from "./safety.js";
 import { CHROME_USER_AGENT } from "./checks/browser.js";
 import { isChallenge, isChallengeUrl, CHALLENGE_REASON, headerValue } from "./lib/challenge.js";
 import { classifyStylesheetResponse, assessStyling } from "./lib/styling.js";
+import { waitForPageReady } from './lib/pageReadiness.js';
 
 export const proofRouter = express.Router();
 
@@ -306,6 +307,11 @@ async function takeShot(page, url, marks, { remaining, onLimited, onChallenged =
       return null;
     }
     await page.waitForTimeout(Math.max(0, Math.min(SETTLE_MS, remaining() - 1200)));
+    const readiness = await waitForPageReady(page, {requestedUrl:url,remainingMs:Math.max(0,remaining()-2500),isBlocked:()=>page.__render?.docChallenge});
+    if (readiness.status !== 'ready') {
+      declined.push({page:url,reason:readiness.reason});
+      return null;
+    }
 
     // A page whose stylesheets did not load for us would be pictured unstyled, which shows
     // our checker being refused rather than the site. Such a page is not pictured.

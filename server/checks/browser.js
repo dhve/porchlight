@@ -25,6 +25,8 @@
 
 import { openBrowser, browserMode as configuredBrowserMode } from "../lib/browserConnect.js";
 import { isChallenge, isChallengeUrl, CHALLENGE_REASON, headerValue } from "../lib/challenge.js";
+import { waitForPageReady } from '../lib/pageReadiness.js';
+import { collectRuntimeErrors, runtimeErrorLine } from '../lib/runtimeErrors.js';
 
 export const CHROME_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36";
@@ -107,7 +109,10 @@ export async function runBrowser(ctx) {
         return { findings, passes, skipped: true, reason: "The site refused our checker", browserMode };
       }
     }
-    const { page, mainStatus, mainUrl, loadMs, consoleErrors, failed, responses, challengedSubs } = obs;
+    const { page, mainStatus, mainUrl, loadMs, consoleErrors, failed, responses, challengedSubs, readiness } = obs;
+    const pageLoads = [readiness];
+    if (readiness.status !== 'ready') return { findings, passes, browserMode, pageLoads,
+      inconclusive: true, reason: readiness.reason, render: {usable:false} };
     // Files answered by a bot check were neither loaded nor broken: they were held back from
     // our checker. They are set aside, counted, and reported to the pipeline.
     for (const u of challengedSubs.keys()) { failed.delete(u); responses.delete(u); }
@@ -256,26 +261,28 @@ export async function runBrowser(ctx) {
     // facts.challenged and says the checkup was shortened.
 
     if (consoleErrors.length) {
+      const runtimePages = [...new Set(consoleErrors.map(error => error.record.page).filter(value => /^https?:\/\//i.test(value)))];
       // Scripts the errors came from, leaving out the homepage itself (inline scripts), which is already the page item.
       const scriptUrls = [...new Set(consoleErrors.map((e) => e.url).filter((u) => u && !isMainDocument(u) && responses.has(u)))].slice(0, 5);
       findings.push({
         id: "console-errors",
         category: "quality",
         severity: "watch",
-        title: "Your website's code is reporting errors in visitors' browsers",
+        title: "JavaScript errors were recorded on this page",
         meaning:
-          "As the page loaded, its own scripts reported errors (each one is listed with the file and line it came from). Visitors do not see the messages, but errors like these are often why a menu, form, or button quietly stops working.",
-        fix: ["Show your web person the errors under the technical proof; each names the script and line that failed."],
+          "The browser recorded JavaScript errors while opening this page. Their effect on visitor actions was not tested. A source location identifies where an error was reported; it does not identify a broken button or another affected element.",
+        fix: ["Ask the maintainer to inspect the recorded error messages and available source locations, then check whether any visitor action is affected."],
         who: "Your web person.",
         evidence: {
           lines: [...new Set(consoleErrors.map((e) => e.text))].slice(0, 5),
+          runtimeErrors: consoleErrors.map(e => e.record),
           note: `${consoleErrors.length} JavaScript error(s) seen while loading the homepage.`,
           method:
-            "We opened the homepage in a real browser and recorded every JavaScript error the page's own scripts reported while it loaded, with the file and line each came from.",
-          pages,
+            "We recorded browser error events and the source locations supplied by the browser. No DOM element was mapped to these errors and no related interaction failure was established. Minified React hydration errors can involve recovery; these messages alone do not establish a persistent broken page.",
+          pages: runtimePages.length ? runtimePages : pages,
           items: [
-            { url: homepage, status: mainStatus, statusText: statusText(mainStatus), page: homepage, kind: "page" },
-            ...scriptUrls.map((u) => ({ url: u, status: responses.get(u), statusText: statusText(responses.get(u)), page: homepage, kind: "resource" })),
+            { url: mainUrl, status: mainStatus, statusText: statusText(mainStatus), page: runtimePages[0] || mainUrl, kind: "page" },
+            ...scriptUrls.map((u) => ({ url: u, status: responses.get(u), statusText: statusText(responses.get(u)), page: runtimePages[0] || mainUrl, kind: "resource" })),
           ],
         },
       });
@@ -289,14 +296,15 @@ export async function runBrowser(ctx) {
         category: "performance",
         severity: "watch",
         title: "Your site is slow to load on a phone",
-        meaning: `Your homepage took about ${(loadMs / 1000).toFixed(1)} seconds to appear on a phone-sized screen. Many visitors leave after three. Oversized images are the usual cause.`,
-        fix: ["Compress your largest images, or ask your web person to add an image optimizer."],
+        meaning: `The homepage took about ${(loadMs / 1000).toFixed(1)} seconds from navigation until our phone-sized browser observed content without a loading screen. This is one observation from the checker's network.`,
+        fix: ["Ask the maintainer to measure which requests or application work delayed the page content."],
         who: "Your web person; free tools can automate it.",
         evidence: {
           lines: [`homepage load: ${(loadMs / 1000).toFixed(1)}s on a simulated phone`],
           note: "Measured in a headless browser.",
           method:
-            "We opened the homepage in a real browser with a phone sized screen and measured the time from the request until the browser reported the page fully loaded.",
+            "We measured from navigation until the browser load event and any visible application loading screen had cleared, with a bounded render wait.",
+          load: readiness,
           pages,
           items: [{ url: homepage, status: mainStatus, statusText: statusText(mainStatus), page: homepage, kind: "page" }],
         },
@@ -335,7 +343,7 @@ export async function runBrowser(ctx) {
       });
     }
 
-    return { findings, passes, browserMode, challenged: challengedCount, challengeReason: challengedCount ? CHALLENGE_REASON : null };
+    return { findings, passes, browserMode, pageLoads, render: {usable:true}, challenged: challengedCount, challengeReason: challengedCount ? CHALLENGE_REASON : null };
   } catch (err) {
     return { findings, passes, skipped: true, reason: `Browser pass failed: ${String((err && err.message) || err).slice(0, 120)}`, browserMode };
   } finally {
@@ -358,7 +366,7 @@ async function observe(context, url) {
   const page = await context.newPage();
   page.on("dialog", (d) => d.dismiss().catch(() => {}));
 
-  const consoleErrors = []; // { text, url }
+  const runtimeErrors = collectRuntimeErrors(page);
   const failed = new Map();  // url -> { status, reason, errorText, retryAfterMs }
   const responses = new Map(); // url -> status, every response we saw
   const challengedSubs = new Map(); // url -> detail, files answered by a hosting bot check instead
@@ -366,23 +374,6 @@ async function observe(context, url) {
   let docChallenge = null; // a bot check that answered the current document, read eagerly
   let documents = 0; // main-frame answers seen, so a late body read cannot mark a later document
 
-  const obsHost = hostOf(url);
-  page.on("pageerror", (err) => {
-    const frames = String(err.stack || "").split("\n").filter((l) => /\(?https?:\/\/[^)]+:\d+:\d+\)?/.test(l));
-    const own = frames.find((l) => { const mm = l.match(/(https?:\/\/[^\s()]+?):\d+:\d+/); return mm && sameSite(mm[1], obsHost); });
-    const frame = (own || frames[0] || "").trim();
-    const where = frame ? ` (at ${frame.replace(/^at\s+/, "").slice(0, 120)})` : "";
-    const m = frame.match(/(https?:\/\/[^\s()]+?):\d+:\d+/);
-    consoleErrors.push({ text: (String(err.message).slice(0, 160) + where).slice(0, 260), url: m ? m[1] : "", raw: String(err.message) });
-  });
-  page.on("console", (msg) => {
-    if (msg.type() !== "error") return;
-    const text = msg.text();
-    if (/^Failed to load resource/i.test(text)) return; // captured below with its URL
-    const loc = msg.location && msg.location();
-    const where = loc && loc.url ? ` (at ${loc.url}${loc.lineNumber ? ":" + loc.lineNumber : ""})` : "";
-    consoleErrors.push({ text: (text.slice(0, 160) + where).slice(0, 260), url: loc && loc.url ? loc.url : "", raw: text });
-  });
   page.on("response", (res) => {
     const u = res.url();
     const st = res.status();
@@ -442,7 +433,7 @@ async function observe(context, url) {
 
   const start = Date.now();
   const mainRes = await page.goto(url, { waitUntil: "load", timeout: NAV_TIMEOUT_MS });
-  const loadMs = Date.now() - start;
+  const loadEventMs = Date.now() - start;
   const mainStatus = mainRes ? mainRes.status() : 0;
   const mainUrl = mainRes ? mainRes.url() : url;
 
@@ -451,9 +442,13 @@ async function observe(context, url) {
   }
   // Was the homepage itself answered by a bot check? (Read eagerly above: a SiteGround check
   // refreshes to its own page at once, and the first body is gone by then.)
+  const readiness = await waitForPageReady(page, {requestedUrl:url,navigationStartedAt:start,isBlocked:()=>docChallenge});
+  readiness.loadEventMs = loadEventMs;
+  const loadMs = readiness.elapsedMs;
   const challenge = docChallenge;
+  const consoleErrors = runtimeErrors.map(record => ({record,text:runtimeErrorLine(record),raw:record.message,url:record.source?.url || ''}));
 
-  return { page, mainStatus, mainUrl, loadMs, consoleErrors, failed, responses, challenge, challengedSubs };
+  return { page, mainStatus, mainUrl, loadMs, consoleErrors, failed, responses, challenge, challengedSubs, readiness };
 }
 
 /** One GET from the standard-browser context. Resolves { status } or null when the request itself failed. */

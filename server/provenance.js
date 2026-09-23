@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 
 // Bump these when observation, score, or writer semantics change. This is an
 // implementation version, not a claim that a particular git build was deployed.
-export const SCANNER_VERSION = "sutros-evidence-2";
-export const SCORING_VERSION = "scripted-coverage-2";
-export const REPORTER_VERSION = "advice-only-2";
+export const SCANNER_VERSION = "sutros-evidence-3";
+export const SCORING_VERSION = "reviewed-coverage-3";
+export const REPORTER_VERSION = "advice-and-proof-review-3";
 const STATUSES = new Set(["completed", "skipped", "failed", "inconclusive"]);
 
 /** Capture a checker result without converting an exception into success. */

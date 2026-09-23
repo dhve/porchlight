@@ -4,7 +4,7 @@ import { chatJSON, llmEnabled } from "./llm.js";
 import { formatFeedbackGuidance } from './feedbackLessons.js';
 
 export async function writeReport({ target, facts, findings, passes, assessment, feedbackLessons = [] }) {
-  const base = { summary: templateSummary(findings, target, assessment), findings, passes };
+  const base = { summary: reportSummary(findings, target, assessment), findings, passes };
   if (!llmEnabled() || !findings.length) return { ...base, llm: false };
 
   try {
@@ -56,7 +56,7 @@ export async function writeReport({ target, facts, findings, passes, assessment,
   }
 }
 
-function templateSummary(findings, target, assessment) {
+export function reportSummary(findings, target, assessment) {
   if (assessment?.status === "incomplete") {
     return `The checkup of ${target} is incomplete and has no overall grade. ${assessment.reason || "Some required checks could not finish."} Any observations below apply only to the checks that returned evidence.`;
   }

@@ -105,11 +105,11 @@ const BY_ID = {
     confirm: "Open the page, press F12 (Cmd-Option-I on a Mac), open the Network tab, reload, and look for rows in red; or paste one of the listed addresses into the browser.",
   },
   "console-errors": {
-    why: "A browser error means a script on the page failed while running. Errors like 'x is not a function' or 'undefined' usually mean a library did not load or two scripts conflict, and whatever that script controls (a menu, a slider, a form) can silently stop working.",
+    why: "An exception or error message was recorded in this browser. Its source location can help a maintainer investigate, but the message alone does not prove a visitor action failed. Hydration errors may be followed by client rendering and recovery. No affected HTML element or original unminified source was established unless separately recorded in the evidence.",
     confirm: "Open the page, press F12 (or Cmd-Option-I on a Mac), and read the Console tab.",
   },
   "slow-load": {
-    why: "Load time is dominated by the size of images and scripts. Each extra second measurably increases visitor drop-off, especially on phones and slower connections.",
+    why: "This measures how long content took to become ready in the checker's browser. Network conditions, resources, and application work can affect it; this observation does not establish the cause or the load time for every visitor.",
     confirm: "Run the page through Google's free PageSpeed Insights; it lists the largest files.",
   },
   "not-mobile-friendly": {

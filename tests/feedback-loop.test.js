@@ -109,11 +109,13 @@ test('reader feedback and a wekup correction become guidance in the next signed 
   t.mock.method(globalThis, 'fetch', async (url, options) => {
     if (url !== 'https://api.openai.com/v1/chat/completions') return nativeFetch(url, options);
     const body = JSON.parse(options.body); modelInputs.push(body.messages);
-    const answer = body.messages[0].content.includes('planner for Sutros') ? { focus: 'Verify the new observations.', checks: [] } : { findings: [] };
+    const reviewing=body.messages[0].content.includes('final evidence review');
+    const answer = reviewing ? {reportSupported:true,decisions:JSON.parse(body.messages[1].content[0].text).findings.map(f=>({id:f.id,status:'supported',reasonCode:'observation-supported'}))}
+      : body.messages[0].content.includes('planner for Sutros') ? { focus: 'Verify the new observations.', checks: [] } : { findings: [] };
     return Response.json({ choices: [{ message: { content: JSON.stringify(answer) } }] });
   });
   const next = await runCheckup({ url: new URL('https://feedback.example/'), display: 'feedback.example' });
-  assert.equal(modelInputs.length, 2);
+  assert.equal(modelInputs.length, 3);
   for (const messages of modelInputs) {
     assert.match(JSON.stringify(messages), /wait for stylesheets/i);
     assert.match(JSON.stringify(messages), /may look fine on real devices/i);
@@ -121,7 +123,8 @@ test('reader feedback and a wekup correction become guidance in the next signed 
   }
   assert.ok(agentLessons.some(lesson => lesson.id === 'rendering-wait-for-styles'));
   assert.deepEqual(next.engine.feedbackLearning.lessons, agentLessons);
-  assert.deepEqual(next.engine.feedbackLearning.usedBy, ['planner', 'browsing-agent', 'report-writer']);
+  assert.deepEqual(next.engine.feedbackLearning.usedBy, ['planner', 'browsing-agent', 'report-writer', 'proof-reviewer']);
+  assert.equal(next.engine.proof.review.status,'completed');
   assert.equal(next.attestation.payload.engineDigest, sha256Hex(canonicalize(next.engine)));
   assert.equal(next.findings[0].severity, observation.severity);
   const [after] = await sql('SELECT report FROM reports WHERE id=$1', [original.id]);

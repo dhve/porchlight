@@ -38,6 +38,7 @@ import { isChallenge, CHALLENGE_REASON, headerValue } from "../lib/challenge.js"
 import { classifyStylesheetResponse, assessStyling, noteRefusal, statusWords } from "../lib/styling.js";
 import { resolveTarget } from "../safety.js";
 import { formatFeedbackGuidance } from '../feedbackLessons.js';
+import { waitForPageReady } from '../lib/pageReadiness.js';
 
 export const MOBILE_USER_AGENT =
   "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36";
@@ -49,6 +50,7 @@ const ACTION_TIMEOUT_MS = 10_000; // one browser action, including the short set
 const NAV_TIMEOUT_MS = 8_000;
 const CLICK_TIMEOUT_MS = 6_000;
 const OBSERVE_TIMEOUT_MS = 6_000; // reading the page and taking the screenshot, after the action
+const RENDER_WAIT_MS = 7_000; // extra time only while a visible loading screen remains
 const MODEL_MAX_TOKENS = 6_000;
 const MAX_NOTES = 6;
 const SHOT_KEYS = ["s7", "s8", "s9"];
@@ -185,6 +187,8 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session, model = 
     assessments: new Map(), // page url -> assessStyling result
     unreliablePages: new Set(), // pages whose appearance cannot be judged
     challengedPages: new Set(), // pages that were a bot check, not the site's page
+    pageLoads: new Map(), // preserve the initial load duration and any later limitation
+    lastReadiness: null,
   };
 
   const onSite = (u) => sameSite(u, siteHost);
@@ -406,12 +410,24 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session, model = 
 
   // ---- observation ----
   async function observe({ requested = null, status = null, warnings = [] } = {}) {
-    const url = page.url();
+    let url = page.url();
+    const readiness = state.lastReadiness && state.lastReadiness.page === url ? state.lastReadiness :
+      await waitForPageReady(page, {requestedUrl:requested || url,remainingMs:Math.max(0,remaining()-1500),isBlocked:()=>state.docChallenge});
+    state.lastReadiness = null;
+    url = page.url();
+    const previousLoad=state.pageLoads.get(stripHash(url));
+    if ((!previousLoad && state.pageLoads.size<MAX_VISITED) || (previousLoad?.status==='ready' &&
+      (readiness.status!=='ready' || readiness.elapsedMs>previousLoad.elapsedMs))) state.pageLoads.set(stripHash(url),readiness);
     const obsStart = Date.now();
     const obsLeft = () => Math.max(500, OBSERVE_TIMEOUT_MS - (Date.now() - obsStart));
     await settleStylesheets(obsLeft);
     const data = await withTimeout(page.evaluate(readPage, { maxControls: MAX_CONTROLS, textLimit: TEXT_LIMIT }), obsLeft()).catch(() => null);
     const styling = await judgeStyling(data, obsLeft);
+    if (readiness.status !== 'ready') {
+      styling.unreliable = true;
+      styling.loadingIncomplete = true;
+      styling.warnings.unshift(readiness.reason + ' Content and appearance claims from this loading screen cannot be confirmed. Move on to another page.');
+    }
     let st = status != null ? status : state.lastStatus;
     if (status == null && state.statusByUrl.has(url)) st = state.statusByUrl.get(url);
     const warn = [...warnings, ...state.pending.splice(0)];
@@ -475,6 +491,7 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session, model = 
       visitLog(pageUrl);
     }
     const obs = { url, title, status: st, view, text, controls, warnings: warn };
+    obs.load = readiness;
     obs.stylesheets = { linked: styling.linked, applied: styling.applied, failed: styling.failed };
     if (styling.unreliable || styling.challenged) obs.stylingUnreliable = true;
     return { obs, shot };
@@ -523,6 +540,8 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session, model = 
     const left = ACTION_TIMEOUT_MS - (Date.now() - startedAt) - 400;
     if (left > 200) await page.waitForLoadState("load", { timeout: Math.min(2500, left) }).catch(() => {});
     await sleep(400);
+    state.lastReadiness = await waitForPageReady(page, {requestedUrl:page.url(),navigationStartedAt:startedAt,
+      remainingMs:Math.max(0,remaining()-1500),isBlocked:()=>state.docChallenge});
   }
 
   // Chromium commits its own error page (chrome-error://) a moment after a navigation
@@ -580,6 +599,7 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session, model = 
   // ---- actions ----
   async function navigate(raw) {
     const startedAt = Date.now();
+    state.lastReadiness = null;
     const given = String(raw == null ? "" : raw).trim();
     if (!given) return refuse("open needs an address. Give a path like /contact or a full address on this site.");
     let target;
@@ -629,7 +649,10 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session, model = 
     if (await leaveErrorPage()) return refuseHere(`That page could not be shown (${failure || "the browser could not display it"}), so we went back.`);
     const wrong = await leaveWrongSite("That address");
     if (wrong) return wrong;
-    if (!timedOut) await settle(startedAt);
+    if (!timedOut) {
+      await settle(startedAt);
+      if (state.lastReadiness) state.lastReadiness.requestedUrl=target.href;
+    }
     const arrived = sameAddress(page.url(), target.href) || !timedOut;
     return await observe({ requested: arrived ? target.href : null, status: arrived ? status : null, warnings });
   }
@@ -757,6 +780,7 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session, model = 
       return { text: `${CHALLENGE_REASON} for ${where}, so what you saw there was the check, not the site's page. Nothing on it can be noted. Move on to another page.` };
     }
     const assessment = state.assessments.get(stripHash(where)) || null;
+    if (assessment?.loadingIncomplete) return {text:'That page was still loading after the bounded wait. A claim based on its loading screen was not recorded. Move on to another page.'};
     const refusal = noteRefusal(assessment, { title, what, category });
     if (refusal) return { text: refusal };
     // What our browser observed about the page's stylesheets is recorded with the note. It is
@@ -852,9 +876,8 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session, model = 
       return { text: "The arguments for that call were not valid JSON, so nothing happened." };
     }
     if (!args || typeof args !== "object") args = {};
-    // One browser action gets ACTION_TIMEOUT_MS; reading and picturing the page afterwards
-    // gets OBSERVE_TIMEOUT_MS more. A step can never take longer than the two together.
-    const guarded = (p) => withTimeout(p, ACTION_TIMEOUT_MS + OBSERVE_TIMEOUT_MS).catch((err) => ({
+    // Navigation, a conditional render wait, and the observation each have a bound.
+    const guarded = (p) => withTimeout(p, ACTION_TIMEOUT_MS + RENDER_WAIT_MS + OBSERVE_TIMEOUT_MS).catch((err) => ({
       text: /timed out/i.test(String(err && err.message)) ? "That action took too long and was stopped. Try something else." : `That action failed (${plainError(String((err && err.message) || err))}).`,
     }));
     switch (name) {
@@ -869,7 +892,7 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session, model = 
   }
 
   // ---- first look: the homepage ----
-  const first = await withTimeout(navigate(homepage), ACTION_TIMEOUT_MS + OBSERVE_TIMEOUT_MS).catch((err) => ({ text: String((err && err.message) || err) }));
+  const first = await withTimeout(navigate(homepage), ACTION_TIMEOUT_MS + RENDER_WAIT_MS + OBSERVE_TIMEOUT_MS).catch((err) => ({ text: String((err && err.message) || err) }));
   if (process.env.AGENT_DEBUG && first.obs) console.error(`agentBrowse homepage: ${JSON.stringify(first.obs).slice(0, 300)}`);
   if (state.limited) return { findings: [], passes: [], skipped: true, reason: "The site limited our checker" };
   if (state.docChallenge) {
@@ -1000,6 +1023,7 @@ async function explore({ ctx, facts, emit, homepage, siteHost, session, model = 
         .slice(0, MAX_VISITED)
         .map(([page, value]) => ({ page, linked: value.linked, applied: value.applied,
           failed: value.failed, reason: value.challenged || value.warnings[0] || renderReason })),
+      pageLoads: [...state.pageLoads.values()],
     },
   };
   } // exploreWith

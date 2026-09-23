@@ -13,7 +13,8 @@
 import { createClient } from "./lib/http.js";
 import { modelName, llmEnabled } from "./llm.js";
 import { planCheckup } from "./orchestrator.js";
-import { writeReport } from "./reporter.js";
+import { writeReport, reportSummary } from "./reporter.js";
+import { reviewProof } from './finalReview.js';
 import { scoreReport } from "./scoring.js";
 import { saveReport, newId } from "./db.js";
 import { signReport } from "./verify.js";
@@ -188,8 +189,7 @@ async function finish({ url, display, userId = null, facts, findings, passes, pl
     console.error("disputes lookup failed:", err.message);
   }
 
-  const assessment = assessmentFor(coverage, requiredChecks);
-  const { grade, gradeLabel, score, ringPercent, tally } = scoreReport(unique, assessment);
+  let assessment = assessmentFor(coverage, requiredChecks);
 
   // Pictures of the affected pages are taken while the write-up is produced; both are bounded.
   const canCaptureProof = facts?.reachable && !facts.challenged && coverage.find((c) => c.check === "recon")?.status === "completed";
@@ -203,9 +203,6 @@ async function finish({ url, display, userId = null, facts, findings, passes, pl
       facts: facts || {},
       findings: unique,
       passes: dedupe(passes),
-      grade,
-      gradeLabel,
-      tally,
       assessment,
       feedbackLessons: feedbackLearning.lessons,
     }),
@@ -219,6 +216,20 @@ async function finish({ url, display, userId = null, facts, findings, passes, pl
   }
 
   onEvent("step", { key: "report", status: "done" });
+  // The final reviewer sees the completed draft and the exact available proof,
+  // including the browsing agent's images. Its decisions are bound by the signature.
+  const {shots:agentShots,...agentMetadata} = agentInfo || {};
+  if (Array.isArray(agentShots) && agentShots.length) proof.shots = [...(proof.shots || []),...agentShots];
+  const artifacts = bindArtifactHashes(written.findings,proof.shots);
+  onEvent('step',{key:'review',status:'start'});
+  const reviewed = await reviewProof({target:display,summary:written.summary,findings:written.findings,
+    passes:written.passes,assessment,coverage,proof,agent:agentInfo?agentMetadata:null,feedbackLessons:feedbackLearning.lessons});
+  const reviewedCompletely = reviewed.review.status === 'completed';
+  coverage.push({check:'review',status:reviewedCompletely?'completed':'inconclusive',
+    ...(!reviewedCompletely?{reason:reviewed.review.summary}:{})});
+  assessment = assessmentFor(coverage,[...requiredChecks,'review']);
+  const {grade,gradeLabel,score,ringPercent,tally} = scoreReport(reviewed.findings,assessment,{coverage,review:reviewed.review});
+  onEvent('step',{key:'review',status:'done',detail:reviewed.review.summary});
 
   const report = {
     target: display,
@@ -231,8 +242,8 @@ async function finish({ url, display, userId = null, facts, findings, passes, pl
     tally,
     assessment,
     coverage,
-    summary: written.summary,
-    findings: written.findings,
+    summary: reportSummary(reviewed.findings,display,assessment),
+    findings: reviewed.findings,
     passes: written.passes,
     engine: {
       version: SCANNER_VERSION,
@@ -247,18 +258,15 @@ async function finish({ url, display, userId = null, facts, findings, passes, pl
       browser: browserInfo,
       throttled: Boolean(facts && (facts.throttled || facts.wasThrottled)),
       challenged: typeof facts?.challenged === "string" ? facts.challenged : null,
-      proof: { shots: (proof.shots || []).length, skipped: proof.skipped || null },
+      proof: { shots: (proof.shots || []).length, skipped: proof.skipped || null, artifacts, review:reviewed.review },
       feedbackLearning: { ...feedbackLearning, usedBy: feedbackLearning.lessons.length ?
-        [plan.llm && 'planner', agentInfo?.ran && 'browsing-agent', written.llm && 'report-writer'].filter(Boolean) : [] },
+        [plan.llm && 'planner', agentInfo?.ran && 'browsing-agent', written.llm && 'report-writer', reviewedCompletely && 'proof-reviewer'].filter(Boolean) : [] },
     },
     proofPromise: PROOF_PROMISE,
   };
   if (agentInfo) {
-    const { shots: agentShots, ...rest } = agentInfo;
-    report.agent = rest;
-    if (Array.isArray(agentShots) && agentShots.length) proof.shots = [...(proof.shots || []), ...agentShots];
+    report.agent = agentMetadata;
   }
-  report.engine.proof.artifacts = bindArtifactHashes(report.findings, proof.shots);
 
   // Identity, ownership, contact hints, and the signed attestation, then persist.
   report.id = newId();

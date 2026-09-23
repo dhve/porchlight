@@ -23,9 +23,11 @@ for (const status of [200, 403, 404, 503]) {
     });
     const result = await runCheckup({ url: new URL('http://fixture.test/'), display: 'fixture.test' });
     if (status === 200) {
-      assert.equal(result.assessment.status, 'complete');
-      assert.equal(result.grade, 'B');
-      assert.equal(result.score, 84);
+      assert.equal(result.assessment.status, 'incomplete');
+      assert.equal(result.grade, '?');
+      assert.equal(result.score, null);
+      assert.equal(result.engine.proof.review.status,'unavailable');
+      assert.equal(result.coverage.find(c=>c.check==='review').status,'inconclusive');
       assert.equal(result.coverage.find((c) => c.check === 'exposedFiles').status, 'completed');
       assert.equal(result.coverage.find((c) => c.check === 'browser').status, 'skipped');
       assert.equal(result.coverage.find((c) => c.check === 'agent').status, 'skipped');
@@ -53,7 +55,8 @@ test('real pipeline preserves a secondary recon challenge and skips all later wo
   assert.equal(report.score, null);
   assert.match(report.engine.challenged, /bot check/i);
   assert.match(report.coverage.find(c => c.check === 'recon').reason, /bot check/i);
-  assert.ok(report.coverage.filter(c => c.check !== 'recon').every(c => c.status === 'skipped'));
+  assert.ok(report.coverage.filter(c => !['recon','review'].includes(c.check)).every(c => c.status === 'skipped'));
+  assert.equal(report.engine.proof.review.status,'unavailable');
   assert.deepEqual(report.passes, []);
   assert.deepEqual(paths, ['/', '/robots.txt', '/first']);
 });

@@ -6,6 +6,17 @@ import assert from 'node:assert/strict';
 let scenario = 'recon-throws';
 let persisted;
 let browserRuns = 0;
+let reviewInput, signedReport, events;
+mock.module('../server/llm.js', {namedExports:{
+  llmEnabled:()=>scenario!=='review-unavailable',modelName:()=> 'fixture-model',
+  chatJSON:async options=>{
+    if (!options.system.includes('final evidence review')) return {findings:[]};
+    reviewInput=JSON.parse(options.user[0].text);
+    if(scenario==='review-failed') throw new Error('private provider failure');
+    return {reportSupported:true,decisions:reviewInput.findings.map(f=>({id:f.id,status:'supported',reasonCode:'observation-supported'}))};
+  },
+}});
+mock.module('../server/verify.js',{namedExports:{signReport:report=>{signedReport=structuredClone(report);return null;}}});
 const fixtureFinding = {
   id: 'mobile-observation', severity: 'minor', category: 'modernization',
   title: 'Measured mobile layout', meaning: 'The captured page has this measurement.',
@@ -69,8 +80,28 @@ const { runCheckup } = await import('../server/pipeline.js');
 async function scan(next) {
   scenario = next;
   browserRuns = 0;
-  return runCheckup({ url: new URL('https://fixture.test/'), display: 'fixture.test', userId: 'private-owner' });
+  reviewInput=null; signedReport=null;events=[];
+  return runCheckup({ url: new URL('https://fixture.test/'), display: 'fixture.test', userId: 'private-owner' },(type,data)=>events.push({type,...data}));
 }
+
+test('final review sees attached proof and completes before signing and report delivery',async()=>{
+  const report=await scan('complete');
+  assert.equal(reviewInput?.findings[0].evidence.shots[0].available,true);
+  assert.equal(report.engine.proof.review.status,'completed');
+  assert.equal(signedReport.engine.proof.review.status,'completed');
+  assert.equal(persisted.findings[0].proofReview.status,'supported');
+  const index=(type,key,status)=>events.findIndex(event=>event.type===type&&(!key||event.key===key)&&(!status||event.status===status));
+  assert.ok(index('step','review','start')>index('step','report','done'));
+  assert.ok(index('step','review','done')>index('step','review','start'));
+  assert.ok(index('report')>index('step','review','done'));
+});
+for(const next of ['review-failed','review-unavailable']) test(`${next} is delivered as incomplete without a verified finding or A+`,async()=>{
+  const report=await scan(next);
+  assert.equal(report.assessment.status,'incomplete');assert.equal(report.grade,'?');
+  assert.notEqual(report.engine.proof.review.status,'completed');
+  assert.equal(report.findings[0].proofReview.status,'needs-verification');
+  assert.doesNotMatch(JSON.stringify(report),/private provider failure/);
+});
 
 for (const next of ['recon-throws', 'unreachable', 'required-throws', 'required-inconclusive']) {
   test(`${next}: failed required coverage remains unrated and is persisted as incomplete`, async () => {

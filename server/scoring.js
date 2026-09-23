@@ -5,7 +5,7 @@
 
 const WEIGHT = { urgent: 34, serious: 16, watch: 5, minor: 0, good: 0 };
 
-export function scoreReport(findings, assessment = null) {
+export function scoreReport(findings, assessment = null, {coverage = [], review = null} = {}) {
   const tally = { urgent: 0, serious: 0, watch: 0, minor: 0, good: 0 };
   const scoredTally = { ...tally };
   let penalty = 0;
@@ -14,6 +14,7 @@ export function scoreReport(findings, assessment = null) {
     tally[f.severity]++;
     // Notes from the browsing agent are the model's judgment, so they are shown but never move the grade.
     if (f.source === "agent" || String(f.id || "").startsWith("agent-")) continue;
+    if (f.proofReview?.status === 'needs-verification') continue;
     scoredTally[f.severity]++;
     penalty += WEIGHT[f.severity] || 0;
   }
@@ -31,6 +32,12 @@ export function scoreReport(findings, assessment = null) {
   if (scoredTally.serious >= 1 && scoredTally.urgent === 0) score = Math.min(score, 84); // no better than B
 
   const { letter, label } = toGrade(score, scoredTally);
+  const allCompleted = coverage.length > 0 && coverage.every(entry => entry.status === 'completed') &&
+    ['recon','browser','agent'].every(check => coverage.some(entry => entry.check === check && entry.status === 'completed'));
+  const clean = !findings.some(f => !['minor','good'].includes(f.severity));
+  if (assessment?.status === 'complete' && review?.status === 'completed' && allCompleted && clean) {
+    return {grade:'A+',gradeLabel:'No actionable issues found',score,ringPercent:Math.round(score),tally};
+  }
   return { grade: letter, gradeLabel: label, score, ringPercent: Math.round(score), tally };
 }
 
