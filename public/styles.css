@@ -56,7 +56,9 @@ button{font-family:inherit;}
 .ai-advice{margin:12px 20px 18px;background:var(--ground);}
 .mn-item .ai-advice{margin:12px 0;}
 .retest-line.inconclusive{color:var(--ink-soft);}
-.feedback-progress{max-width:720px;margin:20px auto;color:var(--ink-soft);}
+.feedback-progress{max-width:720px;margin:20px auto;color:var(--ink-soft);text-align:center;}
+.feedback-progress p,.feedback-progress .fb-policy{text-align:center;}
+#learning .definition-guide{text-align:center;}
 .review-intro{max-width:750px;margin:18px 0;}
 .review-actions{display:flex;flex-wrap:wrap;gap:12px;margin:24px 0;}
 .review-actions p{width:100%;}
@@ -194,6 +196,9 @@ section.band.alt{background:var(--ground-2);}
 .house-glow{position:absolute; inset:-40px; background:radial-gradient(circle at 50% 30%, color-mix(in srgb,var(--glow) 40%,transparent), transparent 60%); filter:blur(20px); opacity:0; transition:opacity 1s; pointer-events:none;}
 .house.lit .house-glow{opacity:.5;}
 
+.run-progress{position:relative; height:10px; margin:0 6px 14px; border-radius:100px; background:var(--ground-2); border:1px solid var(--border); overflow:hidden;}
+.run-progress-bar{height:100%; width:0; border-radius:100px; background:linear-gradient(90deg,var(--glow),var(--brand)); transition:width .6s var(--step);}
+.run-progress.complete .run-progress-bar{background:var(--good);}
 .checklist{background:var(--surface); border:1px solid var(--border); border-radius:20px; padding:12px; box-shadow:0 24px 60px -30px rgb(var(--shadow)/.5); position:relative;}
 .check-row{display:flex; align-items:center; gap:15px; padding:17px 18px; border-radius:13px; transition:background .3s;}
 .check-row + .check-row{border-top:1px solid var(--border);}
@@ -330,6 +335,7 @@ footer .brand{font-size:17px; color:var(--ink-soft);}
 .helper-form-card > p{color:var(--ink-soft); font-size:15px; margin-bottom:18px;}
 .helper-form-card form{display:flex; flex-direction:column; gap:12px;}
 .hf-row{display:flex; gap:12px;}
+.hf-help{font-size:13.5px; color:var(--ink-soft); margin:-2px 0 0;}
 .helper-form-card input,.helper-form-card textarea{width:100%; background:var(--surface-2); border:1.5px solid var(--border-strong); border-radius:10px; padding:12px 14px; font-size:15px; color:var(--ink); outline:none; font-family:inherit;}
 .helper-form-card input:focus,.helper-form-card textarea:focus{border-color:var(--glow);}
 .helper-form-card textarea{min-height:70px; resize:vertical;}

@@ -8,15 +8,18 @@
   const LABELS = { supported: 'Supported in this check', 'not-reproduced': 'Not seen in this sample', inconclusive: 'Still needs verification', unsupported: 'Original claim lacks support' };
   const host = document.createElement('div');
   host.id = 'wekupWidget';
-  host.innerHTML = `<button type="button" class="wekup-launcher" aria-label="Talk to wekup" aria-haspopup="dialog" aria-expanded="false" aria-controls="wekupDialog"><span class="wekup-mark">${icon}</span><span>Talk to <b>wekup</b></span>${arrow}</button>
+  const glassIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 12h18M9 5v14"/></svg>';
+  const moveIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18M3 12h18M8 7l4-4 4 4M8 17l4 4 4-4M7 8l-4 4 4 4M17 8l4 4-4 4"/></svg>';
+  host.innerHTML = `<button type="button" class="wekup-launcher" aria-label="Talk to wekup" aria-haspopup="dialog" aria-expanded="false" aria-controls="wekupDialog"><span class="wekup-mark">${icon}</span><span class="wekup-launcher-text">Talk to <b>wekup</b></span>${arrow}</button>
     <dialog id="wekupDialog" class="wekup-dialog" aria-labelledby="wekupTitle">
-      <header class="wekup-header"><span class="wekup-mark">${icon}</span><div><h2 id="wekupTitle">wekup</h2><p>Sutros's AI website checkup</p></div><button type="button" class="wekup-close" aria-label="Close wekup">×</button></header>
+      <header class="wekup-header"><span class="wekup-mark">${icon}</span><div class="wekup-title"><h2 id="wekupTitle">wekup</h2><p>Sutros's AI website checkup</p></div><div class="wekup-window-controls"><button type="button" class="wekup-glass" aria-label="Make wekup see-through" aria-pressed="false" title="See-through window">${glassIcon}</button><button type="button" class="wekup-move" aria-label="Move wekup" title="Drag the header to move, or press the arrow keys here" aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight">${moveIcon}</button><button type="button" class="wekup-close" aria-label="Close wekup">×</button></div></header>
       <div class="wekup-context"><label for="wekupFinding">Discuss</label><select id="wekupFinding" aria-label="Finding to discuss"></select></div>
       <div class="wekup-body" tabindex="0"><div class="wekup-intro"></div><div class="wekup-messages" role="log" aria-label="Your conversation with wekup" aria-live="polite" aria-relevant="additions text"></div><div class="wekup-current"></div></div>
       <p class="wekup-status" role="status" hidden></p>
       <p class="wekup-error" role="alert" hidden></p>
       <div class="wekup-gate"></div>
       <form class="wekup-composer"><label class="wekup-sr" for="wekupMessage">Message wekup</label><div class="wekup-input-row"><textarea id="wekupMessage" maxlength="1600" rows="2" placeholder="Tell me what you see, or ask a question…"></textarea><button type="submit" class="wekup-send" aria-label="Send message"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5m-6 6 6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><p class="wekup-private">Private chat. AI replies may be wrong. Evidence checks and verification guidance are public. <a href="/privacy#wekup">How responses are used</a></p></form>
+      <button type="button" class="wekup-resize" aria-label="Resize wekup" title="Drag this corner to resize, or press the arrow keys here" aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M14 2 2 14M14 8l-6 6M14 13l-1 1"/></svg></button>
     </dialog>`;
   document.body.appendChild(host);
   const $ = selector => host.querySelector(selector);
@@ -74,7 +77,7 @@
     $('.wekup-current').innerHTML = state?.assessment ? `<div class="wekup-chat-assessment">${assessmentHtml(state.assessment)}</div>` : '';
     const status = $('.wekup-status');
     status.hidden = !busy();
-    status.textContent = busy() ? (state?.job?.stage || 'Sending your message…') : '';
+    status.textContent = busy() ? 'Thinking…' : '';
     if (state?.job?.status === 'failed') error(state.job.error || 'Wekup could not finish this check. You can send another message to try again.');
     $('.wekup-send').disabled = !eligible() || busy() || !input.value.trim();
     if (state?.assessment && context?.reportId === report?.id) rememberAssessment(state.assessment);
@@ -132,6 +135,7 @@
     returnFocus = trigger || document.activeElement || launcher;
     configureContext(findingId);
     if (!dialog.open) dialog.show();
+    refit(); // a placement chosen earlier is clamped to the viewport as it is now
     launcher.setAttribute('aria-expanded', 'true');
     if (eligible()) input.focus(); else $('.wekup-close').focus();
     loadConversation();
@@ -172,6 +176,69 @@
       if (e.status === 401 || e.status === 403) await S.refreshMe();
     }
   }
+  // ---- window: see-through, movable by its header, resizable, keyboard-operable ----
+  // A placement the reader chose is kept for the session and clamped to the viewport
+  // whenever it is applied; until then the stylesheet positions the window.
+  const MIN_W = 280, MIN_H = 300, STEP = 20, BIG_STEP = 60;
+  const header = $('.wekup-header'), resizeHandle = $('.wekup-resize'), moveButton = $('.wekup-move'), glassButton = $('.wekup-glass');
+  let frame = null;
+  const viewport = () => ({ w: window.innerWidth, h: window.innerHeight });
+  const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+  function applyFrame(next) {
+    const { w: vw, h: vh } = viewport();
+    const width = clamp(Math.round(next.w), Math.min(MIN_W, vw), vw);
+    const height = clamp(Math.round(next.h), Math.min(MIN_H, vh), vh);
+    frame = { w: width, h: height, x: clamp(Math.round(next.x), 0, vw - width), y: clamp(Math.round(next.y), 0, vh - height) };
+    Object.assign(dialog.style, { inset: `${frame.y}px auto auto ${frame.x}px`, width: frame.w + 'px', height: frame.h + 'px', maxWidth: 'none', maxHeight: 'none', minHeight: '0' });
+  }
+  const currentFrame = () => { const r = dialog.getBoundingClientRect(); return frame || { x: r.left, y: r.top, w: r.width, h: r.height }; };
+  function drag(target, onMove) {
+    let start = null;
+    const move = e => {
+      if (!start || e.pointerId !== start.id) return;
+      e.preventDefault();
+      onMove(e.clientX - start.x, e.clientY - start.y, start.frame);
+    };
+    const end = e => { if (start && e.pointerId === start.id) { start = null; try { target.releasePointerCapture(e.pointerId); } catch {} } };
+    target.addEventListener('pointerdown', e => {
+      // Controls inside the header keep their own behaviour; the handle is itself the control.
+      const control = e.target.closest('button, select, a, textarea, input');
+      if (e.button !== 0 || (control && control !== target)) return;
+      start = { id: e.pointerId, x: e.clientX, y: e.clientY, frame: currentFrame() };
+      try { target.setPointerCapture(e.pointerId); } catch {}
+      e.preventDefault();
+    });
+    target.addEventListener('pointermove', move);
+    target.addEventListener('pointerup', end);
+    target.addEventListener('pointercancel', end);
+  }
+  drag(header, (dx, dy, from) => applyFrame({ ...from, x: from.x + dx, y: from.y + dy }));
+  drag(resizeHandle, (dx, dy, from) => applyFrame({ ...from, w: from.w + dx, h: from.h + dy }));
+  const ARROWS = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+  moveButton.addEventListener('keydown', e => {
+    const d = ARROWS[e.key]; if (!d) return;
+    e.preventDefault(); const step = e.shiftKey ? BIG_STEP : STEP; const from = currentFrame();
+    applyFrame({ ...from, x: from.x + d[0] * step, y: from.y + d[1] * step });
+  });
+  resizeHandle.addEventListener('keydown', e => {
+    const d = ARROWS[e.key]; if (!d) return;
+    e.preventDefault(); const step = e.shiftKey ? BIG_STEP : STEP; const from = currentFrame();
+    applyFrame({ ...from, w: from.w + d[0] * step, h: from.h + d[1] * step });
+  });
+  const refit = () => { if (frame && dialog.open) applyFrame(frame); };
+  window.addEventListener('resize', refit);
+  window.visualViewport?.addEventListener('resize', refit);
+  const GLASS_KEY = 'sutros.wekup.seeThrough';
+  function setGlass(on) {
+    dialog.dataset.translucent = on ? 'true' : 'false';
+    glassButton.setAttribute('aria-pressed', on ? 'true' : 'false');
+    try { localStorage.setItem(GLASS_KEY, on ? '1' : '0'); } catch {}
+  }
+  let storedGlass = false;
+  try { storedGlass = localStorage.getItem(GLASS_KEY) === '1'; } catch {}
+  setGlass(storedGlass);
+  glassButton.addEventListener('click', () => setGlass(dialog.dataset.translucent !== 'true'));
+
   launcher.addEventListener('click', () => dialog.open ? close() : open('_report', launcher));
   $('.wekup-close').addEventListener('click', close);
   dialog.addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); close(); } });

@@ -18,6 +18,9 @@ const RING_CIRC = 2 * Math.PI * 66; // r=66 in the scorecard SVG
 let ringEl = null;
 let ringTarget = RING_CIRC;
 let currentReport = null;
+let liveStream = null; // the EventSource of a checkup in progress
+let reportFetch = null; // the AbortController of a saved report being fetched
+let sessionEpoch = 0; // bumped on every account change; late answers from an earlier epoch are dropped
 
 const SUN = '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>';
 const MOON = '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>';
@@ -52,15 +55,57 @@ function displayHost(input) {
 }
 
 /* ---------------- live checkup ---------------- */
+// The stages a checkup passes through, in order. Progress is stage-based: each finished
+// stage adds one share, a running stage adds half, and the bar only reaches 100% when the
+// report itself arrives, whatever the server reported for the stages.
+const STAGES = ["recon", "plan", "probe", "customer", "report", "review"];
+const STAGE_SHARE = Math.floor(96 / STAGES.length);
+// Every row's icon and caption as first rendered, so a new checkup starts from a clean list.
+const ROW_DEFAULTS = new Map($$("#checklist .check-row").map((row) => [row.dataset.key,
+  { icon: $("[data-icon]", row).innerHTML, sub: $("[data-sub]", row).textContent }]));
+
+function setProgress(pct) {
+  const bar = $("#runProgress");
+  if (!bar) return;
+  const value = Math.max(0, Math.min(100, Math.round(pct)));
+  bar.setAttribute("aria-valuenow", String(value));
+  bar.classList.toggle("complete", value >= 100);
+  const fill = $(".run-progress-bar", bar);
+  if (fill) fill.style.width = value + "%";
+}
+function stageProgress() {
+  let done = 0, active = false;
+  for (const key of STAGES) {
+    const row = $(`#checklist .check-row[data-key="${key}"]`);
+    if (!row) continue;
+    if (row.classList.contains("done")) done++;
+    else if (row.classList.contains("active")) active = true;
+  }
+  return Math.min(STAGE_SHARE * STAGES.length, done * STAGE_SHARE + (active ? Math.floor(STAGE_SHARE / 2) : 0));
+}
 function resetRun() {
   $$("#checklist .check-row").forEach((row) => {
     row.classList.remove("active", "done");
     $("[data-status]", row).textContent = "waiting";
+    const defaults = ROW_DEFAULTS.get(row.dataset.key);
+    if (defaults) { $("[data-icon]", row).innerHTML = defaults.icon; $("[data-sub]", row).textContent = defaults.sub; }
   });
+  setProgress(0);
   $("#runLog").innerHTML = "";
   $("#runCta").classList.remove("show");
   $("#house").classList.remove("lit");
   setAgentHint(false);
+}
+// The report is here: whatever the stages said, the checkup is complete.
+function completeRun() {
+  $$("#checklist .check-row").forEach((row) => {
+    if (row.classList.contains("done")) return;
+    row.classList.remove("active");
+    row.classList.add("done");
+    $("[data-status]", row).textContent = "done";
+    $("[data-icon]", row).innerHTML = ICON_CHECK;
+  });
+  setProgress(100);
 }
 
 // The quiet line under the live log. Shown only while a checkup is running.
@@ -88,6 +133,7 @@ function onStep(data) {
     icon.innerHTML = ICON_CHECK;
     if (data.detail && data.detail !== "skipped") $("[data-sub]", row).textContent = data.detail;
   }
+  setProgress(stageProgress());
 }
 
 function addLog({ mark, text }) {
@@ -115,13 +161,17 @@ function startLive(url) {
 
   let gotReport = false;
   const es = new EventSource(`/api/checkup/stream?url=${encodeURIComponent(url)}&consent=1`);
+  liveStream = es;
+  const epoch = sessionEpoch;
 
   es.addEventListener("step", (e) => onStep(JSON.parse(e.data)));
   es.addEventListener("log", (e) => addLog(JSON.parse(e.data)));
   es.addEventListener("report", (e) => {
+    if (epoch !== sessionEpoch) return; // the session changed while this checkup ran
     gotReport = true;
     currentReport = JSON.parse(e.data);
     renderReport(currentReport);
+    completeRun();
     if (currentReport.id) history.replaceState(null, "", "/r/" + currentReport.id);
     $("#runCta").classList.add("show");
     setAgentHint(false);
@@ -133,7 +183,7 @@ function startLive(url) {
     setAgentHint(false);
     if (!gotReport) onRunError(msg);
   });
-  es.addEventListener("done", () => { es.close(); setAgentHint(false); });
+  es.addEventListener("done", () => { es.close(); setAgentHint(false); if (liveStream === es) liveStream = null; });
   es.onerror = () => {
     es.close();
     setAgentHint(false);
@@ -142,7 +192,7 @@ function startLive(url) {
 }
 
 /* ---------------- report rendering ---------------- */
-const GRADE_COLOR = { A: "var(--good)", B: "var(--good)", C: "var(--watch)", D: "var(--serious)", F: "var(--urgent)" };
+const GRADE_COLOR = { "A+": "var(--good)", A: "var(--good)", B: "var(--good)", C: "var(--watch)", D: "var(--serious)", F: "var(--urgent)" };
 const SEV = {
   urgent: { label: "Urgent", icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 9v4M12 17h.01M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>' },
   serious: { label: "Serious", icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>' },
@@ -170,7 +220,7 @@ const SHOT_KEY_RE = /^s[1-9]$/;
 function renderReport(r) {
   if (window.Sutros) Sutros.report = r;
   const assessment = SutrosEvidence.assessment(r);
-  const color = assessment.incomplete ? 'var(--ink-soft)' : GRADE_COLOR[r.grade] || "var(--watch)";
+  const color = assessment.incomplete ? 'var(--ink-faint)' : GRADE_COLOR[r.grade] || "var(--watch)";
   ringTarget = RING_CIRC * (1 - (assessment.incomplete ? 0 : Math.max(0, Math.min(100, r.ringPercent || 0))) / 100);
   const findings = Array.isArray(r.findings) ? r.findings : [];
   const uncertain = findings.filter(f => SutrosEvidence.connectionLimitation(f));
@@ -767,14 +817,56 @@ $("#shareCopy").addEventListener("click", async () => {
 (function loadFromPath() {
   const m = location.pathname.match(/^\/r\/([A-Za-z0-9_-]{6,20})$/);
   if (!m) return;
-  fetch(`/api/reports/${m[1]}`)
+  const controller = new AbortController();
+  reportFetch = controller;
+  const epoch = sessionEpoch;
+  fetch(`/api/reports/${m[1]}`, { signal: controller.signal })
     .then((res) => (res.ok ? res.json() : Promise.reject(new Error("not found"))))
-    .then((report) => { currentReport = report; renderReport(report); go("report"); })
-    .catch(() => {
+    .then((report) => {
+      if (epoch !== sessionEpoch || controller.signal.aborted) return; // the account changed while this loaded
+      currentReport = report; renderReport(report); go("report");
+    })
+    .catch((err) => {
+      if (err && err.name === "AbortError") return;
+      if (epoch !== sessionEpoch) return;
       $("#formErr").textContent = "We couldn't find that saved report. It may have been removed.";
       $("#formErr").classList.add("show");
-    });
+    })
+    .finally(() => { if (reportFetch === controller) reportFetch = null; });
 })();
+
+/* ---------------- session changes ---------------- */
+// A saved report is private to its account unless it was published. When the signed-in
+// account changes (sign-out included), nothing from the earlier session may stay on screen:
+// the report, its findings, its address, its share link, a fetch still in flight, and a
+// checkup still streaming are all dropped. The fictional sample and published reports stay.
+function forgetReport() {
+  ++sessionEpoch;
+  if (reportFetch) { reportFetch.abort(); reportFetch = null; }
+  if (liveStream) { liveStream.close(); liveStream = null; resetRun(); setAgentHint(false); }
+  currentReport = null;
+  ringEl = null;
+  if (window.Sutros) Sutros.report = null;
+  for (const id of ["#scorecard", "#findingsRoot", "#reportExtras"]) { const el = $(id); if (el) el.innerHTML = ""; }
+  const share = $("#shareBox");
+  if (share) { share.classList.remove("show"); delete share.dataset.link; }
+  const link = $("#shareLink");
+  if (link) link.textContent = "";
+  const onPrivateScreen = ["screen-report", "screen-run"].some((id) => $("#" + id).classList.contains("is-active"));
+  if (onPrivateScreen) go("home");
+  else if (/^\/r\//.test(location.pathname)) history.replaceState(null, "", "/");
+}
+if (window.Sutros) {
+  let knownAccount;
+  Sutros.onUser((user) => {
+    const id = user ? user.id : null;
+    if (knownAccount === undefined) { knownAccount = id; return; }
+    if (id === knownAccount) return;
+    knownAccount = id;
+    const shown = currentReport && currentReport.id && currentReport.visibility !== "public";
+    if (shown || reportFetch || liveStream) forgetReport();
+  });
+}
 
 
 /* ---------------- nominate a business ---------------- */
@@ -832,7 +924,14 @@ function emailReport() {
 function sevWord(s) { return ({ urgent: "Urgent", serious: "Serious", watch: "Worth a look" }[s] || s); }
 
 /* ---------------- helper directory ---------------- */
-function openHelpers() { go("helpers"); loadHelpers(); }
+// The listing form is bound to the account signed in when it was opened, so a draft
+// written under one account can never be published under a replacement session.
+let helperFormAccount = null;
+function openHelpers() {
+  helperFormAccount = (window.Sutros && Sutros.user && Sutros.user.id) || null;
+  go("helpers");
+  loadHelpers();
+}
 
 async function loadHelpers() {
   const list = $("#helpersList");
@@ -871,11 +970,9 @@ async function submitHelper(e) {
   if (!payload.name || !payload.contact) { err.textContent = "Please include a name and a way to reach you."; err.classList.add("show"); return; }
   err.classList.remove("show");
   try {
-    const res = await fetch("/api/helpers", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Requested-With": "fetch" },
-      body: JSON.stringify(payload),
-    });
+    const headers = { "Content-Type": "application/json", "X-Requested-With": "fetch" };
+    if (helperFormAccount) headers["X-Sutros-Account"] = helperFormAccount;
+    const res = await fetch("/api/helpers", { method: "POST", headers, body: JSON.stringify(payload) });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Could not add you.");
     $("#helperForm").reset();

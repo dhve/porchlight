@@ -6,7 +6,8 @@ import { readFile } from 'node:fs/promises';
 import { chromium } from 'playwright';
 
 const publicRoot = new URL('../public/', import.meta.url);
-const report = { id: 'wekupreport', target: 'fixture.example', url: 'https://fixture.example/',
+// A published report: any reader may view it, while each account keeps its own conversation.
+const report = { id: 'wekupreport', target: 'fixture.example', url: 'https://fixture.example/', visibility: 'public',
   scannedAt: '2026-09-11T12:00:00.000Z', grade: 'C', score: 74, ringPercent: 74,
   gradeLabel: 'Worth a look', summary: 'An address returned an error.', tally: { watch: 1 }, passes: [],
   findings: [{ id: 'broken-links', severity: 'watch', title: 'A link returned an error',
@@ -58,7 +59,10 @@ async function pageFor(t, configure = async () => {}) {
 async function discuss(page) {
   await page.getByRole('button', { name: 'Discuss with wekup', exact: true }).click();
   const panel = page.getByRole('dialog', { name: 'wekup', exact: true });
-  await panel.waitFor(); return panel;
+  await panel.waitFor();
+  // Measurements must not catch the opening animation mid-flight.
+  await panel.evaluate(el => Promise.all(el.getAnimations().map(a => a.finished)).catch(() => {}));
+  return panel;
 }
 
 test('a private challenge updates the finding live, keeps the original and preserves the next draft', async t => {
@@ -81,7 +85,9 @@ test('a private challenge updates the finding live, keeps the original and prese
   const panel = await discuss(page);
   await panel.getByLabel('Message wekup').fill('This link works on my laptop. <img src=x onerror=alert(1)>');
   await panel.getByRole('button', { name: 'Send message', exact: true }).click();
-  await panel.getByText('Waiting to verify the evidence', { exact: true }).waitFor();
+  await panel.locator('.wekup-message.from-user').getByText('This link works on my laptop. <img src=x onerror=alert(1)>', { exact: true }).waitFor();
+  assert.equal(await panel.getByRole('status').filter({ hasText: 'Thinking…' }).isVisible(), true, 'a queued turn shows Thinking…');
+  assert.equal(await panel.getByText('Waiting to verify the evidence', { exact: true }).count(), 0, 'internal job stages are never shown');
   assert.equal(sent.findingId, 'broken-links');
   assert.match(sent.requestId, /^[0-9a-f-]{36}$/i);
   await panel.getByLabel('Message wekup').fill('Please also check the menu.');
@@ -197,7 +203,9 @@ test('retrying an uncertain submission after reopening uses the same request id'
   await discuss(page);
   assert.equal(await panel.getByLabel('Message wekup').inputValue(), 'It works for me.');
   await panel.getByRole('button', { name: 'Send message', exact: true }).click();
-  await panel.getByText('Request recovered', { exact: true }).waitFor();
+  await panel.locator('.wekup-message.from-user').getByText('It works for me.', { exact: true }).waitFor();
+  assert.equal(await panel.getByRole('status').filter({ hasText: 'Thinking…' }).isVisible(), true);
+  assert.equal(await panel.getByText('Request recovered', { exact: true }).count(), 0, 'internal job stages are never shown');
   assert.equal(requests.length, 2);
   assert.equal(requests[1].requestId, requests[0].requestId, 'an ambiguous network failure must not create duplicate verification work');
 });
@@ -301,3 +309,163 @@ test('a slow session check sends the clicked message and preserves edits made af
   assert.deepEqual(sent.map(r => r.message), ['The message I clicked Send on']);
   assert.equal(await panel.getByLabel('Message wekup').inputValue(), 'My next unsent draft');
 });
+
+// ---- window controls: transparency, moving, resizing, the launcher ----
+const inside = (box, width, height) => box.x >= 0 && box.y >= 0 && box.x + box.width <= width + 0.5 && box.y + box.height <= height + 0.5;
+async function dragBy(page, locator, dx, dy, pointerType = 'mouse') {
+  const box = await locator.boundingBox();
+  const from = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  if (pointerType === 'mouse') {
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(from.x + dx / 2, from.y + dy / 2, { steps: 4 });
+    await page.mouse.move(from.x + dx, from.y + dy, { steps: 4 });
+    await page.mouse.up();
+    return;
+  }
+  // A touch drag: the same pointer events a finger produces, delivered to the element.
+  const fire = (type, x, y) => locator.dispatchEvent(type, { pointerId: 7, pointerType: 'touch', isPrimary: true, clientX: x, clientY: y, button: 0, buttons: 1, bubbles: true, composed: true });
+  await fire('pointerdown', from.x, from.y);
+  await fire('pointermove', from.x + dx / 2, from.y + dy / 2);
+  await fire('pointermove', from.x + dx, from.y + dy);
+  await fire('pointerup', from.x + dx, from.y + dy);
+}
+
+test('the transparency toggle makes the window translucent while text and controls stay opaque', async t => {
+  const page = await pageFor(t);
+  await page.setViewportSize({ width: 1100, height: 800 });
+  const panel = await discuss(page);
+  const toggle = panel.getByRole('button', { name: 'Make wekup see-through', exact: true });
+  assert.equal(await toggle.getAttribute('aria-pressed'), 'false');
+  const alpha = async () => page.evaluate(() => { const m = getComputedStyle(document.getElementById('wekupDialog')).backgroundColor.match(/rgba?\(([^)]+)\)/); const parts = m[1].split(',').map(Number); return parts.length === 4 ? parts[3] : 1; });
+  assert.equal(await alpha(), 1);
+  await toggle.click();
+  assert.equal(await toggle.getAttribute('aria-pressed'), 'true');
+  assert.ok(await alpha() < 0.95 && await alpha() > 0.3, 'the background is translucent but not invisible');
+  const textAlpha = await page.evaluate(() => { const m = getComputedStyle(document.querySelector('#wekupDialog .wekup-intro h3')).color.match(/rgba?\(([^)]+)\)/); const parts = m[1].split(',').map(Number); return parts.length === 4 ? parts[3] : 1; });
+  assert.equal(textAlpha, 1, 'text keeps full opacity');
+  assert.equal(await panel.getByLabel('Message wekup').evaluate(el => getComputedStyle(el).opacity), '1');
+  await toggle.click();
+  assert.equal(await toggle.getAttribute('aria-pressed'), 'false');
+  assert.equal(await alpha(), 1);
+  await toggle.click();
+  await panel.getByRole('button', { name: 'Close wekup', exact: true }).click();
+  await discuss(page);
+  assert.equal(await toggle.getAttribute('aria-pressed'), 'true', 'the choice is kept for the next opening');
+});
+
+test('the window moves by its header with the mouse and stays inside the viewport', async t => {
+  const page = await pageFor(t);
+  await page.setViewportSize({ width: 1100, height: 800 });
+  const panel = await discuss(page);
+  const before = await panel.boundingBox();
+  await dragBy(page, panel.locator('.wekup-header h2'), -300, 40);
+  const after = await panel.boundingBox();
+  assert.ok(Math.abs((before.x - after.x) - 300) < 3 && Math.abs((after.y - before.y) - 40) < 3, `moved by the drag distance (${JSON.stringify({ before, after })})`);
+  await dragBy(page, panel.locator('.wekup-header h2'), -2000, -2000);
+  const clamped = await panel.boundingBox();
+  assert.ok(inside(clamped, 1100, 800), 'a drag past the edge keeps the window on screen');
+  assert.ok(clamped.x <= 1 && clamped.y <= 1, 'it settles at the top-left edge');
+  await dragBy(page, panel.locator('.wekup-header h2'), 5000, 5000);
+  const corner = await panel.boundingBox();
+  assert.ok(inside(corner, 1100, 800));
+  assert.ok(corner.x + corner.width >= 1099 && corner.y + corner.height >= 799, 'it settles at the bottom-right edge');
+  assert.equal(await panel.getByLabel('Message wekup').isVisible(), true);
+});
+
+test('the window resizes from its corner handle and honours minimum and viewport bounds', async t => {
+  const page = await pageFor(t);
+  await page.setViewportSize({ width: 1100, height: 800 });
+  const panel = await discuss(page);
+  const handle = panel.getByRole('button', { name: 'Resize wekup', exact: true });
+  const before = await panel.boundingBox();
+  await dragBy(page, handle, 120, 60);
+  const bigger = await panel.boundingBox();
+  assert.ok(bigger.width - before.width > 100 && bigger.height - before.height > 40, `grew with the drag (${JSON.stringify({ before, bigger })})`);
+  assert.ok(inside(bigger, 1100, 800));
+  await dragBy(page, handle, -2000, -2000);
+  const smallest = await panel.boundingBox();
+  assert.ok(smallest.width >= 280 && smallest.height >= 300, `never below the minimum size (${JSON.stringify(smallest)})`);
+  assert.equal(await panel.getByRole('button', { name: 'Close wekup', exact: true }).isVisible(), true);
+  assert.equal(await panel.getByRole('button', { name: 'Send message', exact: true }).isVisible(), true);
+  await dragBy(page, handle, 5000, 5000);
+  const largest = await panel.boundingBox();
+  assert.ok(inside(largest, 1100, 800), 'growing past the viewport is clamped');
+});
+
+test('the keyboard moves and resizes the window in steps and stays inside the viewport', async t => {
+  const page = await pageFor(t);
+  await page.setViewportSize({ width: 1100, height: 800 });
+  const panel = await discuss(page);
+  const move = panel.getByRole('button', { name: 'Move wekup', exact: true });
+  await move.focus();
+  const before = await panel.boundingBox();
+  await page.keyboard.press('ArrowLeft');
+  await page.keyboard.press('ArrowUp');
+  const after = await panel.boundingBox();
+  assert.ok(before.x - after.x >= 10 && before.y - after.y >= 10, 'arrow keys move the window');
+  for (let i = 0; i < 80; i++) await page.keyboard.press('Shift+ArrowLeft');
+  for (let i = 0; i < 80; i++) await page.keyboard.press('Shift+ArrowUp');
+  assert.ok(inside(await panel.boundingBox(), 1100, 800), 'keyboard movement is clamped');
+  const resize = panel.getByRole('button', { name: 'Resize wekup', exact: true });
+  await resize.focus();
+  const sized = await panel.boundingBox();
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('ArrowDown');
+  const grown = await panel.boundingBox();
+  assert.ok(grown.width - sized.width >= 10 && grown.height - sized.height >= 10, 'arrow keys resize the window');
+  for (let i = 0; i < 80; i++) await page.keyboard.press('Shift+ArrowLeft');
+  const shrunk = await panel.boundingBox();
+  assert.ok(shrunk.width >= 280, 'keyboard shrinking stops at the minimum');
+  assert.equal(await panel.getByLabel('Message wekup').isVisible(), true);
+  await page.keyboard.press('Escape');
+  assert.equal(await panel.isVisible(), false, 'Escape still closes from the window controls');
+});
+
+test('touch drags move the window and clamp on a small phone', async t => {
+  const page = await pageFor(t);
+  const panel = await discuss(page);
+  const before = await panel.boundingBox();
+  await dragBy(page, panel.locator('.wekup-header h2'), 0, -3000, 'touch');
+  const after = await panel.boundingBox();
+  assert.ok(after.y < before.y, 'a finger drag moved the window');
+  assert.ok(inside(after, 390, 844), 'the window stays inside the phone screen');
+  const send = await panel.getByRole('button', { name: 'Send message', exact: true }).boundingBox();
+  assert.ok(send.y + send.height <= 844 && send.y >= 0);
+  await panel.getByLabel('Message wekup').fill('A draft during the move');
+  assert.equal(await panel.getByLabel('Message wekup').inputValue(), 'A draft during the move');
+});
+
+test('a moved window is pulled back inside when the viewport shrinks to a short landscape screen', async t => {
+  const page = await pageFor(t);
+  await page.setViewportSize({ width: 1100, height: 800 });
+  const panel = await discuss(page);
+  await dragBy(page, panel.locator('.wekup-header h2'), 5000, 5000);
+  await page.setViewportSize({ width: 568, height: 320 });
+  await page.waitForFunction(() => { const b = document.getElementById('wekupDialog').getBoundingClientRect(); return b.right <= 568.5 && b.bottom <= 320.5 && b.left >= 0 && b.top >= 0; });
+  const close = await panel.getByRole('button', { name: 'Close wekup', exact: true }).boundingBox();
+  const send = await panel.getByRole('button', { name: 'Send message', exact: true }).boundingBox();
+  for (const [name, box] of [['close', close], ['send', send]]) assert.ok(box.y >= 0 && box.y + box.height <= 320, name + ' stays on screen');
+  // Closed, viewport changed again, reopened: the remembered placement is clamped on opening too.
+  await panel.getByRole('button', { name: 'Close wekup', exact: true }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await discuss(page);
+  assert.ok(inside(await panel.boundingBox(), 390, 844), 'a reopened window is inside the new viewport');
+  assert.equal(await panel.getByRole('button', { name: 'Send message', exact: true }).isVisible(), true);
+});
+
+test('the launcher is narrow and becomes icon-only with its name intact on a cramped screen', async t => {
+  const page = await pageFor(t);
+  await page.setViewportSize({ width: 1100, height: 800 });
+  const launcher = page.getByRole('button', { name: 'Talk to wekup', exact: true });
+  const wide = await launcher.boundingBox();
+  assert.ok(wide.width <= 160, `the launcher is narrow (${wide.width}px)`);
+  await page.setViewportSize({ width: 320, height: 568 });
+  const cramped = await launcher.boundingBox();
+  assert.ok(cramped.width <= 64, `icon-only on a cramped screen (${cramped.width}px)`);
+  assert.equal(await launcher.getAttribute('aria-label'), 'Talk to wekup');
+  assert.equal(await launcher.locator('.wekup-launcher-text').isVisible(), false);
+  await launcher.click();
+  await page.getByRole('dialog', { name: 'wekup', exact: true }).waitFor();
+});
+
