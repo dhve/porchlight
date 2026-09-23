@@ -125,7 +125,7 @@ export async function observeRecordedPage({ url: rawUrl, view = 'phone', siteHos
 }
 
 async function visit(context, { url, view, siteHost, pin, images, captureScreening, remaining, limits }) {
-  const state = { blocked: null, redirectTo: null, finalUrl: url.href, documentStatus: 0, documentHeaders: {}, stylesheets: new Map(), pending: [], pendingImages: new Set(), docChallenge: null, documents: 0, imageStatus: new Map(), redirectedCode: false,
+  const state = { blocked: null, redirectTo: null, finalUrl: url.href, documentStatus: 0, documentHeaders: {}, stylesheets: new Map(), pending: [], pendingImages: new Set(), screeningImageUrls: new Set(), docChallenge: null, documents: 0, imageStatus: new Map(), redirectedCode: false,
     requests: { count: 0, bytes: 0, aborted: 0, denied: 0, failed: 0 } };
   const wanted = new Set((Array.isArray(images) ? images : []).map((u) => parse(u)?.href).filter(Boolean));
   let inFlight = 0;
@@ -207,7 +207,12 @@ async function visit(context, { url, view, siteHost, pin, images, captureScreeni
   context.on('page', (p) => { if (p !== page) p.close().catch(() => {}); });
   // CSS backgrounds are image requests too, even though they are absent from
   // document.images. Include them in the bounded wait at every sampled viewport.
-  page.on('request', request => { if (captureScreening && request.resourceType() === 'image') state.pendingImages.add(request); });
+  page.on('request', request => {
+    if (captureScreening && request.resourceType() === 'image') {
+      state.pendingImages.add(request);
+      state.screeningImageUrls.add(request.url());
+    }
+  });
   page.on('requestfinished', request => state.pendingImages.delete(request));
   page.on('response', (res) => {
     let main = false, type = '';
@@ -231,9 +236,10 @@ async function visit(context, { url, view, siteHost, pin, images, captureScreeni
       return;
     }
     if (type === 'stylesheet') state.stylesheets.set(u, classifyStylesheetResponse({ url: u, status, contentType: headerValue(headers, 'content-type'), headers }));
-    if ((captureScreening || wanted.has(u)) && !state.imageStatus.has(u)) {
+    if ((captureScreening && type === 'image') || (wanted.has(u) && !state.imageStatus.has(u))) {
       const challenged = Boolean(isChallenge({ url: u, status, headers }));
-      state.imageStatus.set(u, { status, challenged, outcome: challenged ? 'unavailable' : status >= 200 && status < 400 ? 'loaded' : BROKEN_STATUSES.has(status) ? 'broken' : 'unavailable' });
+      const missing = captureScreening ? status === 404 || status === 410 : BROKEN_STATUSES.has(status);
+      state.imageStatus.set(u, { status, challenged, outcome: challenged ? 'unavailable' : status >= 200 && status < 400 ? 'loaded' : missing ? 'broken' : 'unavailable' });
     }
   });
   page.on('requestfailed', (req) => {
@@ -243,7 +249,7 @@ async function visit(context, { url, view, siteHost, pin, images, captureScreeni
     try { type = req.resourceType(); } catch {}
     const errorText = (req.failure() && req.failure().errorText) || '';
     if (type === 'stylesheet' && !state.stylesheets.has(u)) state.stylesheets.set(u, classifyStylesheetResponse({ url: u, status: 0, errorText: errorText || 'net::ERR_FAILED' }));
-    if ((captureScreening || wanted.has(u)) && !state.imageStatus.has(u)) state.imageStatus.set(u, { status: 0, challenged: false, outcome: 'unavailable' });
+    if ((captureScreening && type === 'image' && state.imageStatus.get(u)?.outcome !== 'broken') || (wanted.has(u) && !state.imageStatus.has(u))) state.imageStatus.set(u, { status: 0, challenged: false, outcome: 'unavailable' });
   });
 
   // Navigate hop by hop: the handler validates each document redirect and hands the
@@ -306,6 +312,7 @@ async function visit(context, { url, view, siteHost, pin, images, captureScreeni
           await withTimeout(page.evaluate(y => scrollTo(0, y), offset), 1000);
           await page.waitForTimeout(350);
           const visibleImages = await waitForVisibleImages(page, Math.min(7000, Math.max(0, remaining() - 1500)), () => state.pendingImages.size > 0);
+          if ([...state.screeningImageUrls].some(u => !['loaded', 'broken'].includes(state.imageStatus.get(u)?.outcome))) throw new Error('Image content could not be checked');
           if (!visibleImages || visibleImages.some(img => !img.decoded && state.imageStatus.get(img.url)?.outcome !== 'broken')) throw new Error('Visible images could not be read');
           if (state.documents !== documentNumber || state.documentStatus >= 400 || state.blocked || state.docChallenge) throw new Error('Document changed during capture');
           const bytes = await page.screenshot({ type: 'jpeg', quality: 65, fullPage: false, animations: 'disabled', timeout: Math.min(2000, Math.max(1, remaining() - 300)) });

@@ -15,6 +15,10 @@ test.before(async () => {
     if (req.url === '/loading') return res.end('<html><body><div role="progressbar">Loading</div></body></html>');
     if (req.url === '/slow-picture') return res.end('<html><body><h1>Picture coming</h1><img width="200" height="200" src="/picture.png"></body></html>');
     if (req.url === '/slow-background') return res.end('<html><body><h1>Picture coming</h1><div style="width:600px;height:600px;background-image:url(/picture.png)"></div></body></html>');
+    if (req.url === '/failed-background') return res.end('<html><body><h1>Public page</h1><div style="width:600px;height:600px;background-image:url(/failed.png)"></div></body></html>');
+    if (req.url === '/missing-background') return res.end('<html><body><h1>Public page</h1><div style="width:600px;height:600px;background-image:url(/missing.png)"></div></body></html>');
+    if (req.url === '/failed.png') return res.destroy();
+    if (req.url === '/missing.png') { res.statusCode = 404; return res.end('Not found'); }
     if (req.url === '/picture.png') return setTimeout(() => { res.setHeader('content-type','image/png'); res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN1sAAAAASUVORK5CYII=', 'base64')); }, 5000);
     if (req.url === '/navigation') return res.end('<html><body><h1>Starting page</h1><script>setTimeout(()=>location.href="/server-error",300)</script></body></html>');
     if (req.url === '/server-error') { res.statusCode = 500; return res.end('<html><body>Temporary server error</body></html>'); }
@@ -87,6 +91,17 @@ test('CSS background images must arrive before the sampled viewport is captured'
   const result = await observe('/slow-background', {captureScreening:true});
   assert.equal(result.screening.status, 'captured');
   assert.ok(Date.now()-started >= 4900, 'a CSS image is content too');
+});
+
+test('failed CSS background downloads leave screening unavailable', async () => {
+  const result = await observe('/failed-background', {captureScreening:true});
+  assert.equal(result.screening.status, 'unavailable');
+  assert.deepEqual(result.screening.images, []);
+});
+
+test('a confirmed missing CSS background can still be screened as a broken image', async () => {
+  const result = await observe('/missing-background', {captureScreening:true});
+  assert.equal(result.screening.status, 'captured');
 });
 
 test('script navigation to an error document is unavailable, not a captured success', async () => {
