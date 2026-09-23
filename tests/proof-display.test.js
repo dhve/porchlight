@@ -37,3 +37,8 @@ test('report proof markup escapes untrusted text and refuses unsafe links', () =
 test('A+ has its own bounded clean-check headline', () => {
   assert.equal(view.assessment({grade:'A+',score:100}).headline, 'No issues found in these checks');
 });
+test('a rejected report is explained as a withheld grade rather than a failed reviewer',()=>{
+  const html=view.reviewCard({engine:{proof:{review:{status:'incomplete',reason:'unsupported-report',summary:'The review found unsupported claims.',counts:{}}}}});
+  assert.match(html,/Final evidence review withheld the overall grade/);
+  assert.doesNotMatch(html,/could not finish/);
+});

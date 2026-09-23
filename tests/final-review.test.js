@@ -71,6 +71,30 @@ test('a missing report-level decision cannot complete even an empty review',asyn
   t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({choices:[{message:{content:'{"decisions":[]}'}}]})));
   assert.equal((await reviewProof(input([]))).review.status,'incomplete');
 });
+test('the final reviewer receives bounded recorded context without raw HTML or cookies',async t=>{
+  t.mock.method(globalThis,'fetch',async(_url,options)=>{
+    const payload=JSON.parse(JSON.parse(options.body).messages[1].content[0].text);
+    assert.equal(payload.context.homepage.status,200);
+    assert.equal(payload.context.headers['content-security-policy'],"default-src 'self'");
+    assert.equal(payload.context.viewport,'width=device-width');
+    assert.equal(payload.context.browser.pageLoads[0].elapsedMs,420);
+    assert.equal(payload.proof.captureScope,'pages named by findings');
+    assert.doesNotMatch(JSON.stringify(payload),/PRIVATE-COOKIE|PRIVATE-HTML|PRIVATE-EXTRA/);
+    return answer([]);
+  });
+  const result=await reviewProof({...input([]),facts:{finalUrl:new URL('https://fixture.test/'),statusCode:200,isHttps:true,html:'PRIVATE-HTML',
+    headers:new Headers({'content-security-policy':"default-src 'self'",'set-cookie':'PRIVATE-COOKIE'}),$:()=>({attr:()=> 'width=device-width'})},
+    browser:{ran:true,pageLoads:[{page:'https://fixture.test/',status:'ready',elapsedMs:420}],extra:'PRIVATE-EXTRA'}});
+  assert.equal(result.review.status,'completed');
+});
+test('an explicit report rejection stays unrated and is distinguished from a failed reviewer',async t=>{
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({choices:[{message:{content:'{"reportSupported":false,"decisions":[]}'}}]})));
+  const result=await reviewProof(input([]));
+  assert.equal(result.review.status,'incomplete');
+  assert.equal(result.review.reason,'unsupported-report');
+  assert.match(result.review.summary,/found claims.*evidence does not support/);
+  assert.doesNotMatch(result.review.summary,/did not complete|unavailable/);
+});
 test('a screenshot reference without bytes is reported as unavailable and cannot substitute for evidence',async t=>{
   const finding={id:'empty',severity:'watch',evidence:{shots:[{key:'s1'}]}};
   t.mock.method(globalThis,'fetch',async(_url,options)=>{

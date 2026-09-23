@@ -74,7 +74,7 @@ export async function runSecurity(ctx) {
       },
     });
   } else if (!missing.length && facts.isHttps) {
-    passes.push("The site keeps visitors on https and blocks other sites from framing its pages.");
+    passes.push("The HTTPS homepage response included Strict-Transport-Security and a framing-protection header.");
   }
 
   // ---- CSP quality ----
@@ -105,7 +105,7 @@ export async function runSecurity(ctx) {
         },
       });
     } else {
-      passes.push("You have a solid Content-Security-Policy.");
+      passes.push("The homepage Content-Security-Policy did not match the three weak patterns checked: 'unsafe-inline', 'unsafe-eval', and wildcard script/default sources.");
     }
   }
 

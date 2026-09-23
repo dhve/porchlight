@@ -71,7 +71,7 @@ export async function runModernization(ctx) {
       },
     });
   } else {
-    passes.push("Your site is set up to work properly on phones.");
+    passes.push("The homepage includes a viewport meta tag. This source check does not establish phone usability.");
   }
 
   if (signals.length >= 2) {

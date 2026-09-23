@@ -236,7 +236,7 @@ async function finish({ url, display, userId = null, facts, findings, passes, pl
   const artifacts = bindArtifactHashes(written.findings,proof.shots);
   onEvent('step',{key:'review',status:'start'});
   const reviewed = await reviewProof({target:display,summary:written.summary,findings:written.findings,
-    passes:written.passes,assessment,coverage,proof,agent:agentInfo?agentMetadata:null,feedbackLessons:feedbackLearning.lessons});
+    passes:written.passes,assessment,coverage,proof,agent:agentInfo?agentMetadata:null,feedbackLessons:feedbackLearning.lessons,facts,browser:browserInfo});
   const reviewedCompletely = reviewed.review.status === 'completed';
   coverage.push({check:'review',status:reviewedCompletely?'completed':'inconclusive',
     ...(!reviewedCompletely?{reason:reviewed.review.summary}:{})});

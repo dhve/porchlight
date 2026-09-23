@@ -1,4 +1,4 @@
-// Private, account-bound conversation and public reassessments beside signed evidence.
+// Private, account-bound conversation and reassessments that follow report access.
 (function () {
   const S = window.Sutros;
   if (!S) return;
@@ -18,7 +18,7 @@
       <p class="wekup-status" role="status" hidden></p>
       <p class="wekup-error" role="alert" hidden></p>
       <div class="wekup-gate"></div>
-      <form class="wekup-composer"><label class="wekup-sr" for="wekupMessage">Message wekup</label><div class="wekup-input-row"><textarea id="wekupMessage" maxlength="1600" rows="2" placeholder="Tell me what you see, or ask a question…"></textarea><button type="submit" class="wekup-send" aria-label="Send message"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5m-6 6 6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><p class="wekup-private">Private chat. AI replies may be wrong. Evidence checks and verification guidance are public. <a href="/privacy#wekup">How responses are used</a></p></form>
+      <form class="wekup-composer"><label class="wekup-sr" for="wekupMessage">Message wekup</label><div class="wekup-input-row"><textarea id="wekupMessage" maxlength="1600" rows="2" placeholder="Tell me what you see, or ask a question…"></textarea><button type="submit" class="wekup-send" aria-label="Send message"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5m-6 6 6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><p class="wekup-private">Private chat. AI replies may be wrong. Assessments follow the checkup's sharing settings. <a href="/privacy#wekup">How responses are used</a></p></form>
       <button type="button" class="wekup-resize" aria-label="Resize wekup" title="Drag this corner to resize, or press the arrow keys here" aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M14 2 2 14M14 8l-6 6M14 13l-1 1"/></svg></button>
     </dialog>`;
   document.body.appendChild(host);

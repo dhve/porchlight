@@ -70,7 +70,7 @@
     const review = report.engine?.proof?.review;
     const screening = report.engine?.proof?.contentScreening;
     if (!review && !screening) return '';
-    const label = review?.status === 'completed' ? 'Final evidence review completed' : 'Final evidence review could not finish';
+    const label = review?.status === 'completed' ? 'Final evidence review completed' : review?.reason === 'unsupported-report' ? 'Final evidence review withheld the overall grade' : 'Final evidence review could not finish';
     return `<details class="coverage-card final-proof-review"><summary>${label}</summary>${review ? `<p>${escape(review.summary)}</p><p>${count(review.counts?.supported)} supported observations; ${count(review.counts?.needsVerification)} need further verification.</p><p>This AI review checks the recorded evidence. It does not guarantee correctness or replace testing the website yourself.</p>` : ''}${screening ? `<p>${escape(screening.summary)} ${escape(screening.scope)}</p>` : ''}</details>`;
   }
   function findingReview(finding = {}) {

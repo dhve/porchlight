@@ -124,16 +124,16 @@ export async function runExposedFiles(ctx) {
     // cut short, say so instead of claiming the untested files are fine.
     if (throttle.stop) {
       if (tested > 0) {
-        passes.push(`We tested ${tested} of the ${TARGETS.length} common private files and none of them was exposed. The rest could not be tested because the site limited our checker.`);
+        passes.push(`No exposed-file pattern was detected in the responses from ${tested} of ${TARGETS.length} sampled known sensitive-file paths. The rest could not be tested because the site limited our checker.`);
       } else {
-        passes.push("The common private files could not be tested because the site limited our checker.");
+        passes.push("The sampled known sensitive-file paths could not be tested because the site limited our checker.");
       }
     } else if (failed > 0) {
       if (tested > 0) {
-        passes.push(`We tested ${tested} of the ${TARGETS.length} common private files and none of them was exposed. The rest did not answer.`);
+        passes.push(`No exposed-file pattern was detected in the responses from ${tested} of ${TARGETS.length} sampled known sensitive-file paths. The rest did not answer.`);
       }
     } else {
-      passes.push("None of the common private files were left exposed.");
+      passes.push(`No exposed-file pattern was detected in the responses from ${tested} of ${TARGETS.length} sampled known sensitive-file paths.`);
     }
     return { findings, passes };
   }
