@@ -65,7 +65,7 @@ function loadingState() {
     return { loading: true, reason: 'The visible page consists of a loading message.' };
   }
   const root = document.querySelector('#root, #app, #__next, [data-reactroot]');
-  if (root && !text && !root.querySelector('img, svg, canvas, video, iframe, input, button, a[href]') && !root.getBoundingClientRect().height) {
+  if (root && !text && !root.querySelector('img, svg, canvas, video, iframe, input, button, a[href]')) {
     return { loading: true, reason: 'The application root is still empty.' };
   }
   return { loading: false, reason: '' };

@@ -26,7 +26,7 @@ export function browserMode() {
 /**
  * @returns {Promise<{browser: import("playwright").Browser, mode: string, close: () => Promise<void>, session?: object}>}
  */
-export async function openBrowser({ purpose = "checkup" } = {}) {
+export async function openBrowser({ purpose = "checkup", localOnly = false } = {}) {
   let chromium;
   try {
     ({ chromium } = await import("playwright"));
@@ -36,7 +36,8 @@ export async function openBrowser({ purpose = "checkup" } = {}) {
     throw e;
   }
 
-  const mode = browserMode();
+  // Unscreened imagery must not enter a hosted browser's session recordings.
+  const mode = localOnly ? 'local' : browserMode();
   if (mode === "remote") {
     const ws = process.env.BROWSER_WS_ENDPOINT;
     const browser = process.env.BROWSER_CONNECT === "playwright"

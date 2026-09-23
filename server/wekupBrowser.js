@@ -104,7 +104,7 @@ export async function observeRecordedPage({ url: rawUrl, view = 'phone', siteHos
   };
   if (!target || !sameSite(target.hostname, siteHost) || !(await pin(target))) return { url, blocked: 'not-allowed' };
   let session = givenSession;
-  try { if (!session) session = await openBrowser({ purpose: 'wekup' }); } catch (err) { return { url, error: err?.code === 'NO_PLAYWRIGHT' ? 'browser-not-installed' : 'browser-unavailable' }; }
+  try { if (!session) session = await openBrowser({ purpose: captureScreening ? 'content-screening' : 'wekup', localOnly: captureScreening }); } catch (err) { return { url, error: err?.code === 'NO_PLAYWRIGHT' ? 'browser-not-installed' : 'browser-unavailable' }; }
   const phone = view !== 'desktop';
   let context;
   try {
@@ -125,7 +125,7 @@ export async function observeRecordedPage({ url: rawUrl, view = 'phone', siteHos
 }
 
 async function visit(context, { url, view, siteHost, pin, images, captureScreening, remaining, limits }) {
-  const state = { blocked: null, redirectTo: null, finalUrl: url.href, stylesheets: new Map(), pending: [], docChallenge: null, documents: 0, imageStatus: new Map(), redirectedCode: false,
+  const state = { blocked: null, redirectTo: null, finalUrl: url.href, documentStatus: 0, documentHeaders: {}, stylesheets: new Map(), pending: [], docChallenge: null, documents: 0, imageStatus: new Map(), redirectedCode: false,
     requests: { count: 0, bytes: 0, aborted: 0, denied: 0, failed: 0 } };
   const wanted = new Set((Array.isArray(images) ? images : []).map((u) => parse(u)?.href).filter(Boolean));
   let inFlight = 0;
@@ -213,7 +213,7 @@ async function visit(context, { url, view, siteHost, pin, images, captureScreeni
     const headers = res.headers();
     if (main) {
       // A refused navigation is answered 204 and leaves the page where it was.
-      if ((status < 300 || status >= 400) && status !== 204) state.finalUrl = u;
+      if ((status < 300 || status >= 400) && status !== 204) { state.finalUrl = u; state.documentStatus = status; state.documentHeaders = headers; }
       const thisDoc = ++state.documents;
       state.docChallenge = isChallenge({ url: u, status, headers }) || null;
       const ct = headerValue(headers, 'content-type');
@@ -227,7 +227,7 @@ async function visit(context, { url, view, siteHost, pin, images, captureScreeni
       return;
     }
     if (type === 'stylesheet') state.stylesheets.set(u, classifyStylesheetResponse({ url: u, status, contentType: headerValue(headers, 'content-type'), headers }));
-    if (wanted.has(u) && !state.imageStatus.has(u)) {
+    if ((captureScreening || wanted.has(u)) && !state.imageStatus.has(u)) {
       const challenged = Boolean(isChallenge({ url: u, status, headers }));
       state.imageStatus.set(u, { status, challenged, outcome: challenged ? 'unavailable' : status >= 200 && status < 400 ? 'loaded' : BROKEN_STATUSES.has(status) ? 'broken' : 'unavailable' });
     }
@@ -238,7 +238,7 @@ async function visit(context, { url, view, siteHost, pin, images, captureScreeni
     try { type = req.resourceType(); } catch {}
     const errorText = (req.failure() && req.failure().errorText) || '';
     if (type === 'stylesheet' && !state.stylesheets.has(u)) state.stylesheets.set(u, classifyStylesheetResponse({ url: u, status: 0, errorText: errorText || 'net::ERR_FAILED' }));
-    if (wanted.has(u) && !state.imageStatus.has(u)) state.imageStatus.set(u, { status: 0, challenged: false, outcome: 'unavailable' });
+    if ((captureScreening || wanted.has(u)) && !state.imageStatus.has(u)) state.imageStatus.set(u, { status: 0, challenged: false, outcome: 'unavailable' });
   });
 
   // Navigate hop by hop: the handler validates each document redirect and hands the
@@ -261,13 +261,13 @@ async function visit(context, { url, view, siteHost, pin, images, captureScreeni
     current = state.redirectTo;
   }
   if (!res) return { url: url.href, blocked: state.blocked || 'not-allowed' };
-  const status = res.status();
+  let status = res.status();
   state.finalUrl = page.url() || res.url() || state.finalUrl;
   await page.waitForTimeout(Math.max(0, Math.min(800, remaining() - 2500)));
   if (state.pending.length) await withTimeout(Promise.allSettled(state.pending.splice(0)), 1500).catch(() => {});
   const readiness = captureScreening ? await waitForPageReady(page, {
     budgetMs: 7000, remainingMs: Math.max(0, remaining() - 2000), requestedUrl: url.href, navigationStartedAt,
-    isBlocked: () => state.docChallenge || state.blocked || (status >= 400 ? 'The page did not answer successfully.' : null),
+    isBlocked: () => state.docChallenge || state.blocked || (state.documentStatus >= 400 ? 'The page did not answer successfully.' : null),
   }) : null;
   let counts = await withTimeout(page.evaluate(countStylesheetsInPage), 1500).catch(() => ({ linked: 0, applied: 0 }));
   const settle = Date.now() + Math.max(0, Math.min(1500, remaining() - 2000));
@@ -275,7 +275,8 @@ async function visit(context, { url, view, siteHost, pin, images, captureScreeni
     await page.waitForTimeout(250);
     counts = await withTimeout(page.evaluate(countStylesheetsInPage), 1000).catch(() => counts);
   }
-  const challenged = state.docChallenge || isChallenge({ url: state.finalUrl, status, headers: res.headers() }) || null;
+  status = state.documentStatus || status;
+  const challenged = state.docChallenge || isChallenge({ url: state.finalUrl, status, headers: state.documentHeaders }) || null;
   const failures = [...state.stylesheets.values()].filter((e) => e.outcome !== 'ok');
   const styling = assessStyling({ linked: counts.linked, applied: counts.applied, failures });
   // Measurements are taken against the configured screen: in phone emulation Chromium grows
@@ -291,6 +292,7 @@ async function visit(context, { url, view, siteHost, pin, images, captureScreeni
     if (read && status >= 200 && status < 400 && !challenged && !styling.unreliable && !state.redirectedCode && readiness?.status === 'ready') {
       try {
         const captured = [];
+        const documentNumber = state.documents;
         const height = await withTimeout(page.evaluate(() => Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight || 0)), 1000);
         const bottom = Math.max(0, Math.min(30_000, height - screen.height));
         const offsets = [...new Set([0, Math.round(bottom / 2), bottom])];
@@ -298,7 +300,11 @@ async function visit(context, { url, view, siteHost, pin, images, captureScreeni
           if (remaining() < 1200 || state.blocked || state.docChallenge) throw new Error('Content sampling interrupted');
           await withTimeout(page.evaluate(y => scrollTo(0, y), offset), 1000);
           await page.waitForTimeout(350);
+          const visibleImages = await waitForVisibleImages(page, Math.min(7000, Math.max(0, remaining() - 1500)));
+          if (!visibleImages || visibleImages.some(img => !img.decoded && state.imageStatus.get(img.url)?.outcome !== 'broken')) throw new Error('Visible images could not be read');
+          if (state.documents !== documentNumber || state.documentStatus >= 400 || state.blocked || state.docChallenge) throw new Error('Document changed during capture');
           const bytes = await page.screenshot({ type: 'jpeg', quality: 65, fullPage: false, animations: 'disabled', timeout: Math.min(2000, Math.max(1, remaining() - 300)) });
+          if (state.documents !== documentNumber || state.blocked || state.docChallenge) throw new Error('Document changed during capture');
           if (!bytes.length || bytes.length > 1_450_000) throw new Error('Image sample exceeds its limit');
           captured.push(`data:image/jpeg;base64,${bytes.toString('base64')}`);
         }
@@ -307,7 +313,7 @@ async function visit(context, { url, view, siteHost, pin, images, captureScreeni
     }
   }
   return {
-    url: url.href, finalUrl: state.finalUrl, status, view,
+    url: url.href, finalUrl: state.finalUrl, status: state.documentStatus || status, view,
     challenged: challenged ? String(challenged.reason || 'A bot check answered instead of the page') : null,
     render: { reliable: !styling.unreliable && !state.redirectedCode, linked: counts.linked, applied: counts.applied,
       reason: state.redirectedCode ? 'A stylesheet or script redirected; its relative resource addresses could not be verified by this check.' : styling.reason || '' },
@@ -321,6 +327,21 @@ async function visit(context, { url, view, siteHost, pin, images, captureScreeni
     requests: { ...state.requests },
     ...(screening ? { screening } : {}),
   };
+}
+
+async function waitForVisibleImages(page, budgetMs) {
+  const deadline = Date.now() + budgetMs;
+  do {
+    const images = await withTimeout(page.evaluate(() => [...document.images].filter(img => {
+      const rect = img.getBoundingClientRect(), style = getComputedStyle(img);
+      return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0 && rect.top < innerHeight && rect.left < innerWidth && style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
+    }).slice(0, 200).map(img => ({ url: img.currentSrc || img.src, complete: img.complete, decoded: img.naturalWidth > 0 }))), Math.max(1, Math.min(1000, deadline - Date.now())));
+    if (images.every(img => img.complete)) return images;
+    const left = deadline - Date.now();
+    if (left <= 0) break;
+    await page.waitForTimeout(Math.min(150, left));
+  } while (Date.now() < deadline);
+  return null;
 }
 
 // Runs inside the page.
