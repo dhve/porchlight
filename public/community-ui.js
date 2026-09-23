@@ -680,6 +680,8 @@ a.back-btn{text-decoration:none}
   }
 
   /* ================= VERIFY ================= */
+  let verifyRequest = 0;
+  let verifyAccount = S.user?.id || null;
   async function browserVerify(d) {
     if (!d.signature) return "nosig";
     if (!d.publicKeySpkiBase64 || !d.canonical) return "nokey";
@@ -694,13 +696,17 @@ a.back-btn{text-decoration:none}
   }
 
   function renderVerify(id) {
+    const request = ++verifyRequest;
+    const account = S.user?.id || null;
+    const current = () => request === verifyRequest && account === (S.user?.id || null)
+      && isActive(verifyScreen) && location.pathname.replace(/\/$/, '') === '/verify/' + id;
     verifyScreen.innerHTML = shell(`
       <div class="report-top">${backLink("/", "Home")}<span class="eyebrow" style="margin:0;">Verify a checkup</span></div>
       <p class="cu-empty">Checking this report...</p>`);
     S.showScreen("screen-verify");
-    S.api("/api/verify/" + encodeURIComponent(id))
+    S.api("/api/verify/" + encodeURIComponent(id), { expectedAccount: account })
       .then(async (d) => {
-        if (!isActive(verifyScreen) || !location.pathname.startsWith("/verify/" + id)) return;
+        if (!current()) return;
         const rep = d.report || {};
         const payload = d.payload || {};
         const valid = Boolean(d.valid);
@@ -753,7 +759,7 @@ a.back-btn{text-decoration:none}
         `);
         const line = $("#cuBrowserCheck", verifyScreen);
         const result = await browserVerify(d);
-        if (!line || !isActive(verifyScreen)) return;
+        if (!current() || !line?.isConnected) return;
         if (result === "ok") {
           line.textContent = valid
             ? "Verified in your browser. Your browser checked the signature itself using the published public key."
@@ -771,6 +777,7 @@ a.back-btn{text-decoration:none}
         }
       })
       .catch((err) => {
+        if (!current()) return;
         verifyScreen.innerHTML = shell(`
           <div class="report-top">${backLink("/", "Home")}<span class="eyebrow" style="margin:0;">Verify a checkup</span></div>
           <p class="cu-empty">${esc(err.status === 404 ? "We couldn't find a report with that id." : err.message || "We couldn't check that report right now.")}</p>`);
@@ -944,6 +951,14 @@ a.back-btn{text-decoration:none}
   /* ---------------- react to sign in / sign out ---------------- */
   let reportPermissionsRequest = 0;
   S.onUser(() => {
+    const account = S.user?.id || null;
+    if (account !== verifyAccount) {
+      verifyAccount = account;
+      verifyRequest++;
+      verifyScreen.replaceChildren();
+      const path = isActive(verifyScreen) && location.pathname.match(/^\/verify\/([A-Za-z0-9_-]+)\/?$/);
+      if (path) renderVerify(path[1]);
+    }
     const request = ++reportPermissionsRequest;
     const reportScreen = document.getElementById("screen-report");
     if (lastReport && reportScreen && isActive(reportScreen)) {

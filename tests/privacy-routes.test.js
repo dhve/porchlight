@@ -127,6 +127,13 @@ test("public routes preserve private ownership in a disposable local database", 
     return { status: response.status, cache: response.headers.get("cache-control"), body: stream || !response.headers.get('content-type')?.includes('application/json') ? await response.text() : await response.json() };
   }
 
+  async function captureBrowserResponse(route) {
+    const url = new URL(route.request().url());
+    assert.equal(url.origin, base, 'Browser race fixtures only read the disposable local server');
+    const response = await nativeFetch(url, { headers: await route.request().allHeaders() });
+    return { status: response.status, headers: Object.fromEntries(response.headers), body: await response.text() };
+  }
+
   await t.test("accounts are required for scans and rechecks before target network work", async () => {
     const before = targetLookups;
     assert.equal((await request('/api/config')).body.requireAccount,true);
@@ -504,6 +511,123 @@ test("public routes preserve private ownership in a disposable local database", 
       await page.goto(base + "/r/report1234");
       await page.locator("#cuPostPanel").waitFor();
       assert.equal(await page.locator("#cuPostForm").count(), 0, "Another account cannot post an owned report");
+    } finally { await browser.close(); }
+  });
+
+  await t.test('hidden account content and delayed own-list responses are cleared when the account changes', async () => {
+    await db.saveReport({ ...stored, id: 'accountrace', target: 'private-account-race.example', url: 'https://private-account-race.example/' });
+    await db.sql("INSERT INTO helpers (id,name,contact,user_id) VALUES ('racehelper','Account race helper',$1,$2)", [people[0].email, people[0].id]);
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    try {
+      for (const change of ['signout', 'replacement']) {
+        const cookie = 'account_race_' + change + '_session_fixture';
+        await db.sql("INSERT INTO sessions (id,user_id,expires_at) VALUES ($1,$2,now()+interval '1 day')", [cookie, people[0].id]);
+        const context = await browser.newContext();
+        let release;
+        try {
+          await context.route('**/*', route => new URL(route.request().url()).origin === base ? route.continue() : route.abort());
+          await context.addCookies([{ name: 'sutros_session', value: cookie, url: base }]);
+          const page = await context.newPage();
+          const held = [];
+          let ready;
+          const pending = new Promise(resolve => { ready = resolve; });
+          const released = new Promise(resolve => { release = resolve; });
+          await page.route(url => url.origin === base && url.searchParams.get('mine') === '1', async route => {
+            const response = await captureBrowserResponse(route);
+            held.push(new URL(route.request().url()).pathname);
+            if (held.length === 3) ready();
+            await released;
+            await route.fulfill(response).catch(() => {});
+          });
+          await page.goto(base + '/account');
+          await pending;
+          assert.deepEqual(held.sort(), ['/api/bulletin','/api/helpers','/api/reports']);
+          await page.locator('#auAccountWrap a[data-link]').first().click();
+          await page.waitForURL(base + '/');
+          if (change === 'signout') {
+            await page.locator('#auUserBtn').click();
+            await page.locator('#auSignOut').click();
+            await page.waitForFunction(() => window.Sutros.user === null);
+          } else {
+            await context.addCookies([{ name: 'sutros_session', value: people[1].cookie, url: base }]);
+            await page.evaluate(() => window.Sutros.refreshMe());
+          }
+          release();
+          await page.waitForLoadState('networkidle');
+          assert.doesNotMatch(await page.locator('body').textContent(), /private-account-race\.example/, change + ': an old response must not restore private history');
+          assert.equal(await page.locator('#auAccountWrap').innerHTML(), '', change + ': account details must be removed even while hidden');
+          if (change === 'replacement') {
+            await page.evaluate(() => window.Sutros.navigate('/account'));
+            await page.locator('#auAccountWrap .au-who .e').waitFor();
+            assert.equal(await page.locator('#auAccountWrap .au-who .e').textContent(), people[1].email);
+          }
+        } finally { release?.(); await context.close(); await db.sql('DELETE FROM sessions WHERE id=$1', [cookie]); }
+      }
+    } finally { await browser.close(); await db.sql("DELETE FROM helpers WHERE id='racehelper'"); }
+  });
+
+  await t.test('a delayed private verification response cannot render under a replacement account', async () => {
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    let release;
+    try {
+      const context = await browser.newContext();
+      await context.route('**/*', route => new URL(route.request().url()).origin === base ? route.continue() : route.abort());
+      await context.addCookies([{ name: 'sutros_session', value: people[0].cookie, url: base }]);
+      const page = await context.newPage();
+      let ready;
+      const pending = new Promise(resolve => { ready = resolve; });
+      const released = new Promise(resolve => { release = resolve; });
+      let first = true;
+      await page.route('**/api/verify/private123', async route => {
+        if (!first) return route.continue();
+        first = false;
+        const response = await captureBrowserResponse(route);
+        ready();
+        await released;
+        await route.fulfill(response).catch(() => {});
+      });
+      await page.goto(base + '/verify/private123');
+      await pending;
+      await context.addCookies([{ name: 'sutros_session', value: people[1].cookie, url: base }]);
+      await page.evaluate(() => window.Sutros.refreshMe());
+      release();
+      await page.waitForLoadState('networkidle');
+      assert.doesNotMatch(await page.locator('#screen-verify').textContent(), /private\.example/);
+      assert.equal((await request('/api/verify/private123', { viewer: people[1] })).status, 404);
+    } finally { release?.(); await browser.close(); }
+  });
+
+  await t.test('hidden private verification data and pending browser signature results are cleared on sign-out', async () => {
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    try {
+      const context = await browser.newContext();
+      await context.route('**/*', route => new URL(route.request().url()).origin === base ? route.continue() : route.abort());
+      await context.addCookies([{ name: 'sutros_session', value: people[0].cookie, url: base }]);
+      await context.addInitScript(() => {
+        Object.defineProperty(crypto.subtle, 'importKey', { value: async () => ({}) });
+        Object.defineProperty(crypto.subtle, 'verify', { value: () => new Promise(resolve => { window.releaseBrowserVerify = resolve; }) });
+      });
+      const page = await context.newPage();
+      await page.route('**/api/verify/private123', async route => {
+        const response = await captureBrowserResponse(route);
+        const data = JSON.parse(response.body);
+        await route.fulfill({ ...response, body: JSON.stringify({ ...data, signature: 'AA==', publicKeySpkiBase64: 'AA==', canonical: data.canonical || 'fixture' }) });
+      });
+      await page.goto(base + '/verify/private123');
+      await page.waitForFunction(() => typeof window.releaseBrowserVerify === 'function');
+      assert.match(await page.locator('#screen-verify').textContent(), /private\.example/);
+      await page.evaluate(() => { window.oldBrowserCheck = document.getElementById('cuBrowserCheck'); });
+      await page.locator('#screen-verify a[data-spa]').first().click();
+      await page.waitForURL(base + '/');
+      await context.clearCookies();
+      await page.evaluate(() => window.Sutros.refreshMe());
+      await page.evaluate(() => window.releaseBrowserVerify(true));
+      await page.waitForLoadState('networkidle');
+      assert.equal(await page.locator('#screen-verify').innerHTML(), '');
+      assert.equal(await page.evaluate(() => window.oldBrowserCheck.textContent), 'Checking the signature in your browser too...');
     } finally { await browser.close(); }
   });
 

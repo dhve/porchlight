@@ -601,6 +601,21 @@
 
   /* ---------------- account ---------------- */
   let accountRenderedFor = null;
+  let observedAccount = S.user?.id || null;
+  const accountLoads = new Map();
+  function clearAccount() {
+    accountRenderedFor = null;
+    accountLoads.clear();
+    $('#auAccountWrap')?.replaceChildren();
+  }
+  function beginAccountLoad(kind, box) {
+    const account = S.user?.id;
+    if (!box || !account || accountRenderedFor !== account) return null;
+    const token = {};
+    accountLoads.set(kind, token);
+    const active = () => box.isConnected && account === S.user?.id && accountRenderedFor === account;
+    return { account, active, current: () => active() && accountLoads.get(kind) === token };
+  }
   S.route(/^\/account\/?$/, (_m, q) => {
     if (!S.requireLogin("/account" + (q.get("tab") ? "?tab=" + encodeURIComponent(q.get("tab")) : ""))) return;
     renderAccount(S.user);
@@ -611,6 +626,7 @@
   });
 
   function renderAccount(user) {
+    accountLoads.clear();
     accountRenderedFor = user.id;
     const wrap = $("#auAccountWrap");
     const providers = Array.isArray(user.providers) ? user.providers : [];
@@ -749,11 +765,12 @@
 
   async function loadCheckups() {
     const box = $("#auCheckups");
-    if (!box) return;
+    const load = beginAccountLoad('checkups', box);
+    if (!load) return;
     try {
-      const data = await S.api("/api/reports?mine=1&limit=50");
+      const data = await S.api("/api/reports?mine=1&limit=50", { expectedAccount: load.account });
       const rows = (data && data.reports) || [];
-      if (!box.isConnected) return;
+      if (!load.current()) return;
       if (!rows.length) {
         box.innerHTML = `<div class="au-empty">You haven't run a checkup yet. <a href="/" data-link>Check a website</a> and it will show up here.</div>`;
         return;
@@ -769,17 +786,18 @@
         </a>`;
       }).join("");
     } catch (e2) {
-      if (box.isConnected) box.innerHTML = `<div class="au-empty">${esc(e2.message || "We couldn't load your checkups just now.")}</div>`;
+      if (load.current()) box.innerHTML = `<div class="au-empty">${esc(e2.message || "We couldn't load your checkups just now.")}</div>`;
     }
   }
 
   async function loadCommunityPosts(page = 1, append = false) {
     const box = $('#auCommunityPosts');
-    const account = S.user?.id;
-    if (!box || !account) return;
+    const load = beginAccountLoad('posts', box);
+    if (!load) return;
+    const account = load.account;
     try {
-      const data = await S.api('/api/bulletin?mine=1&page=' + page);
-      if (!box.isConnected || account !== S.user?.id) return;
+      const data = await S.api('/api/bulletin?mine=1&page=' + page, { expectedAccount: account });
+      if (!load.current()) return;
       const rows = data.posts || [];
       if (!append) box.innerHTML = '';
       box.querySelector('[data-more-posts]')?.remove();
@@ -791,33 +809,35 @@
       </div>`).join(''));
       if (data.hasMore) {
         box.insertAdjacentHTML('beforeend', '<button type="button" class="btn btn-ghost btn-sm" data-more-posts>Load more posts</button>');
-        box.querySelector('[data-more-posts]').addEventListener('click', () => loadCommunityPosts(page + 1, true));
+        box.querySelector('[data-more-posts]').addEventListener('click', () => { if (load.active()) loadCommunityPosts(page + 1, true); });
       }
       box.querySelectorAll('[data-remove-post]').forEach(button => {
         if (button.dataset.bound) return;
         button.dataset.bound = '1';
         button.addEventListener('click', async () => {
+          if (!load.active()) return;
           button.disabled = true;
           try {
             await S.api('/api/bulletin/' + encodeURIComponent(button.dataset.removePost), { method: 'DELETE', expectedAccount: account });
-            if (account !== S.user?.id) return;
+            if (!load.active()) return;
             button.closest('[data-post-row]').remove();
             if (!box.querySelector('[data-post-row]')) loadCommunityPosts();
             loadCheckups();
             S.toast('Post removed. The report is private again.');
-          } catch (err) { button.disabled = false; S.toast(err.message || 'Could not remove that post.'); }
+          } catch (err) { if (load.active()) { button.disabled = false; S.toast(err.message || 'Could not remove that post.'); } }
         });
       });
-    } catch (err) { if (box.isConnected && account === S.user?.id) box.textContent = err.message || 'Could not load your posts.'; }
+    } catch (err) { if (load.current()) box.textContent = err.message || 'Could not load your posts.'; }
   }
 
   async function loadHelperListings(page = 1, append = false) {
     const box = $('#auHelperListings');
-    const account = S.user?.id;
-    if (!box || !account) return;
+    const load = beginAccountLoad('helpers', box);
+    if (!load) return;
+    const account = load.account;
     try {
-      const data = await S.api('/api/helpers?mine=1&page=' + page);
-      if (!box.isConnected || account !== S.user?.id) return;
+      const data = await S.api('/api/helpers?mine=1&page=' + page, { expectedAccount: account });
+      if (!load.current()) return;
       const rows = data.helpers || [];
       if (!append) box.innerHTML = '';
       box.querySelector('[data-more-helpers]')?.remove();
@@ -828,22 +848,23 @@
       </div>`).join(''));
       if (data.hasMore) {
         box.insertAdjacentHTML('beforeend', '<button type="button" class="btn btn-ghost btn-sm" data-more-helpers>Load more listings</button>');
-        box.querySelector('[data-more-helpers]').addEventListener('click', () => loadHelperListings(page + 1, true));
+        box.querySelector('[data-more-helpers]').addEventListener('click', () => { if (load.active()) loadHelperListings(page + 1, true); });
       }
       box.querySelectorAll('[data-remove-helper]').forEach(button => {
         if (button.dataset.bound) return;
         button.dataset.bound = '1';
         button.addEventListener('click', async () => {
+          if (!load.active()) return;
           button.disabled = true;
           try {
             await S.api('/api/helpers/' + encodeURIComponent(button.dataset.removeHelper), { method: 'DELETE', expectedAccount: account });
-            if (account !== S.user?.id) return;
+            if (!load.active()) return;
             await loadHelperListings();
             S.toast('Helper listing removed.');
-          } catch (err) { button.disabled = false; S.toast(err.message || 'Could not remove that listing.'); }
+          } catch (err) { if (load.active()) { button.disabled = false; S.toast(err.message || 'Could not remove that listing.'); } }
         });
       });
-    } catch (err) { if (box.isConnected && account === S.user?.id) box.textContent = err.message || 'Could not load your helper listings.'; }
+    } catch (err) { if (load.current()) box.textContent = err.message || 'Could not load your helper listings.'; }
   }
 
   /* ---------------- auth error ---------------- */
@@ -859,6 +880,11 @@
   // falls back to the home screen on its own when nobody has registered it.
   renderSlot(S.user);
   S.onUser((user) => {
+    const account = user?.id || null;
+    if (account !== observedAccount) {
+      observedAccount = account;
+      clearAccount();
+    }
     renderSlot(user);
     renderBanner(user);
     const acct = document.getElementById("screen-account");
