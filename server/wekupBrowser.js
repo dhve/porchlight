@@ -125,7 +125,7 @@ export async function observeRecordedPage({ url: rawUrl, view = 'phone', siteHos
 }
 
 async function visit(context, { url, view, siteHost, pin, images, captureScreening, remaining, limits }) {
-  const state = { blocked: null, redirectTo: null, finalUrl: url.href, documentStatus: 0, documentHeaders: {}, stylesheets: new Map(), pending: [], docChallenge: null, documents: 0, imageStatus: new Map(), redirectedCode: false,
+  const state = { blocked: null, redirectTo: null, finalUrl: url.href, documentStatus: 0, documentHeaders: {}, stylesheets: new Map(), pending: [], pendingImages: new Set(), docChallenge: null, documents: 0, imageStatus: new Map(), redirectedCode: false,
     requests: { count: 0, bytes: 0, aborted: 0, denied: 0, failed: 0 } };
   const wanted = new Set((Array.isArray(images) ? images : []).map((u) => parse(u)?.href).filter(Boolean));
   let inFlight = 0;
@@ -205,6 +205,10 @@ async function visit(context, { url, view, siteHost, pin, images, captureScreeni
   page.on('dialog', (d) => d.dismiss().catch(() => {}));
   page.on('download', (d) => d.cancel().catch(() => {}));
   context.on('page', (p) => { if (p !== page) p.close().catch(() => {}); });
+  // CSS backgrounds are image requests too, even though they are absent from
+  // document.images. Include them in the bounded wait at every sampled viewport.
+  page.on('request', request => { if (captureScreening && request.resourceType() === 'image') state.pendingImages.add(request); });
+  page.on('requestfinished', request => state.pendingImages.delete(request));
   page.on('response', (res) => {
     let main = false, type = '';
     try { const rq = res.request(); main = rq.isNavigationRequest() && !rq.frame().parentFrame(); type = rq.resourceType(); } catch {}
@@ -233,6 +237,7 @@ async function visit(context, { url, view, siteHost, pin, images, captureScreeni
     }
   });
   page.on('requestfailed', (req) => {
+    state.pendingImages.delete(req);
     const u = req.url();
     let type = '';
     try { type = req.resourceType(); } catch {}
@@ -300,7 +305,7 @@ async function visit(context, { url, view, siteHost, pin, images, captureScreeni
           if (remaining() < 1200 || state.blocked || state.docChallenge) throw new Error('Content sampling interrupted');
           await withTimeout(page.evaluate(y => scrollTo(0, y), offset), 1000);
           await page.waitForTimeout(350);
-          const visibleImages = await waitForVisibleImages(page, Math.min(7000, Math.max(0, remaining() - 1500)));
+          const visibleImages = await waitForVisibleImages(page, Math.min(7000, Math.max(0, remaining() - 1500)), () => state.pendingImages.size > 0);
           if (!visibleImages || visibleImages.some(img => !img.decoded && state.imageStatus.get(img.url)?.outcome !== 'broken')) throw new Error('Visible images could not be read');
           if (state.documents !== documentNumber || state.documentStatus >= 400 || state.blocked || state.docChallenge) throw new Error('Document changed during capture');
           const bytes = await page.screenshot({ type: 'jpeg', quality: 65, fullPage: false, animations: 'disabled', timeout: Math.min(2000, Math.max(1, remaining() - 300)) });
@@ -329,14 +334,14 @@ async function visit(context, { url, view, siteHost, pin, images, captureScreeni
   };
 }
 
-async function waitForVisibleImages(page, budgetMs) {
+async function waitForVisibleImages(page, budgetMs, hasPendingImages = () => false) {
   const deadline = Date.now() + budgetMs;
   do {
     const images = await withTimeout(page.evaluate(() => [...document.images].filter(img => {
       const rect = img.getBoundingClientRect(), style = getComputedStyle(img);
       return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0 && rect.top < innerHeight && rect.left < innerWidth && style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
     }).slice(0, 200).map(img => ({ url: img.currentSrc || img.src, complete: img.complete, decoded: img.naturalWidth > 0 }))), Math.max(1, Math.min(1000, deadline - Date.now())));
-    if (images.every(img => img.complete)) return images;
+    if (images.every(img => img.complete) && !hasPendingImages()) return images;
     const left = deadline - Date.now();
     if (left <= 0) break;
     await page.waitForTimeout(Math.min(150, left));

@@ -15,6 +15,7 @@ import { modelName, llmEnabled } from "./llm.js";
 import { planCheckup } from "./orchestrator.js";
 import { writeReport, reportSummary } from "./reporter.js";
 import { reviewProof } from './finalReview.js';
+import { screenWebsiteContent } from './contentScreening.js';
 import { scoreReport } from "./scoring.js";
 import { saveReport, newId } from "./db.js";
 import { signReport } from "./verify.js";
@@ -98,6 +99,18 @@ export async function runCheckup({ url, display, userId = null }, onEvent = () =
     return finish({ url, display, userId, facts: ctx.facts, findings, passes, plan: { focus: "The homepage check did not complete.", llm: false }, checksRun, coverage, requiredChecks, browserInfo, onEvent, client, feedbackLearning });
   }
 
+  // Screen before deeper checks or any proof/report storage. Failure to inspect is
+  // a temporary error, never a claim that the site contains prohibited content.
+  onEvent('step', {key:'content',status:'start'});
+  const contentScreening = await screenWebsiteContent({url:ctx.facts.finalUrl || url});
+  if (contentScreening.status !== 'allowed') {
+    const code = contentScreening.status === 'denied' ? 'sexual-content' : 'content-screening-unavailable';
+    throw Object.assign(new Error(code), {code});
+  }
+  coverage.push({check:'content',status:'completed'});
+  checksRun.push('content');requiredChecks.push('content');
+  onEvent('step', {key:'content',status:'done',detail:contentScreening.summary});
+
   // ---- Step 2: plan (orchestrator) ----
   onEvent("step", { key: "plan", status: "start" });
   const plan = await safe(() => planCheckup(recon.facts, ctx.feedbackLessons), { focus: "Running a full checkup.", checks: [], llm: false });
@@ -121,7 +134,7 @@ export async function runCheckup({ url, display, userId = null }, onEvent = () =
   agentInfo = extra.agent || null;
 
   // ---- Step 5: report ----
-  return finish({ url, display, userId, facts: recon.facts, findings, passes, plan, checksRun, coverage, requiredChecks, browserInfo, agentInfo, onEvent, client, feedbackLearning });
+  return finish({ url, display, userId, facts: recon.facts, findings, passes, plan, checksRun, coverage, requiredChecks, browserInfo, agentInfo, onEvent, client, feedbackLearning, contentScreening });
 }
 
 async function runStep(onEvent, key, ids, ctx, findings, passes, checksRun, coverage, browserInfo, extra = {}) {
@@ -161,7 +174,7 @@ async function runStep(onEvent, key, ids, ctx, findings, passes, checksRun, cove
   onEvent("step", { key, status: "done" });
 }
 
-async function finish({ url, display, userId = null, facts, findings, passes, plan, checksRun, coverage, requiredChecks, browserInfo, agentInfo = null, onEvent, client = null, feedbackLearning }) {
+async function finish({ url, display, userId = null, facts, findings, passes, plan, checksRun, coverage, requiredChecks, browserInfo, agentInfo = null, onEvent, client = null, feedbackLearning, contentScreening = null }) {
   onEvent("step", { key: "report", status: "start" });
 
   // De-duplicate by id, then sort most severe first.
@@ -258,7 +271,7 @@ async function finish({ url, display, userId = null, facts, findings, passes, pl
       browser: browserInfo,
       throttled: Boolean(facts && (facts.throttled || facts.wasThrottled)),
       challenged: typeof facts?.challenged === "string" ? facts.challenged : null,
-      proof: { shots: (proof.shots || []).length, skipped: proof.skipped || null, artifacts, review:reviewed.review },
+      proof: { shots: (proof.shots || []).length, skipped: proof.skipped || null, artifacts, review:reviewed.review, ...(contentScreening ? {contentScreening} : {}) },
       feedbackLearning: { ...feedbackLearning, usedBy: feedbackLearning.lessons.length ?
         [plan.llm && 'planner', agentInfo?.ran && 'browsing-agent', written.llm && 'report-writer', reviewedCompletely && 'proof-reviewer'].filter(Boolean) : [] },
     },

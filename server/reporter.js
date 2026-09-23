@@ -65,5 +65,5 @@ export function reportSummary(findings, target, assessment) {
   const intro = scripted.length
     ? `The completed scripted checks for ${target} recorded ${scripted.length} finding${scripted.length === 1 ? "" : "s"}.`
     : `The completed scripted checks for ${target} recorded no findings.`;
-  return `${intro} Review the coverage and evidence below; these checks do not establish that every part of the site is safe or working.${agents ? ` The browsing agent added ${agents} observation${agents === 1 ? "" : "s"} that do not affect the grade.` : ""}`;
+  return `${intro} Review the coverage and evidence below; these checks do not establish that every part of the site is safe or working.${agents ? ` The browsing agent added ${agents} observation${agents === 1 ? "" : "s"} that add no numeric penalties. Non-minor observations prevent an A+.` : ""}`;
 }

@@ -14,6 +14,7 @@ test.before(async () => {
     if (req.url === '/challenge') { res.setHeader('cf-mitigated', 'challenge'); return res.end('<html><title>Just a moment...</title><body>Checking your browser before accessing the site.</body></html>'); }
     if (req.url === '/loading') return res.end('<html><body><div role="progressbar">Loading</div></body></html>');
     if (req.url === '/slow-picture') return res.end('<html><body><h1>Picture coming</h1><img width="200" height="200" src="/picture.png"></body></html>');
+    if (req.url === '/slow-background') return res.end('<html><body><h1>Picture coming</h1><div style="width:600px;height:600px;background-image:url(/picture.png)"></div></body></html>');
     if (req.url === '/picture.png') return setTimeout(() => { res.setHeader('content-type','image/png'); res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN1sAAAAASUVORK5CYII=', 'base64')); }, 5000);
     if (req.url === '/navigation') return res.end('<html><body><h1>Starting page</h1><script>setTimeout(()=>location.href="/server-error",300)</script></body></html>');
     if (req.url === '/server-error') { res.statusCode = 500; return res.end('<html><body>Temporary server error</body></html>'); }
@@ -79,6 +80,13 @@ test('a visible image must arrive before its page view is considered captured', 
   const result = await observe('/slow-picture', {captureScreening:true});
   assert.equal(result.screening.status, 'captured');
   assert.ok(Date.now()-started >= 4900, 'wait for the actual visible image, not its empty placeholder');
+});
+
+test('CSS background images must arrive before the sampled viewport is captured', async () => {
+  const started = Date.now();
+  const result = await observe('/slow-background', {captureScreening:true});
+  assert.equal(result.screening.status, 'captured');
+  assert.ok(Date.now()-started >= 4900, 'a CSS image is content too');
 });
 
 test('script navigation to an error document is unavailable, not a captured success', async () => {

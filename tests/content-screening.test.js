@@ -1,5 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { publicCheckupError } from '../server/checkupError.js';
+
+test('public scan errors distinguish positive sexual detection from temporary inability to inspect', () => {
+  const denied = publicCheckupError({code:'sexual-content',message:'PRIVATE provider response'});
+  assert.equal(denied.status,422);
+  assert.match(denied.message,/NSFW sexual imagery was detected/);
+  const unavailable = publicCheckupError({code:'content-screening-unavailable',message:'PRIVATE provider response'});
+  assert.equal(unavailable.status,503);
+  assert.match(unavailable.message,/does not mean/);
+  assert.doesNotMatch(JSON.stringify([denied,unavailable,publicCheckupError(new Error('PRIVATE'))]),/PRIVATE/);
+});
 
 const pixel = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN1sAAAAASUVORK5CYII=';
 const observation = () => ({ status: 200, url: 'https://fixture.test/', finalUrl: 'https://fixture.test/', text: 'Fixture page',

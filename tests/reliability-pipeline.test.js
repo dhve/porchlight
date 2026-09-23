@@ -7,6 +7,13 @@ let scenario = 'recon-throws';
 let persisted;
 let browserRuns = 0;
 let reviewInput, signedReport, events;
+let screeningCalls = 0, planned = 0, captured = 0;
+mock.module('../server/contentScreening.js',{namedExports:{screenWebsiteContent:async()=>{
+  screeningCalls++;
+  if(scenario==='sexual-content')return {status:'denied',code:'sexual-content',summary:'blocked fixture'};
+  if(scenario==='content-screening-unavailable')return {status:'unavailable',code:'content-screening-unavailable',summary:'unavailable fixture'};
+  return {status:'allowed',sampledImages:1,summary:'No sexual images flagged in a fixture sample.',scope:'Sample only.'};
+}}});
 mock.module('../server/llm.js', {namedExports:{
   llmEnabled:()=>scenario!=='review-unavailable',modelName:()=> 'fixture-model',
   chatJSON:async options=>{
@@ -33,10 +40,10 @@ mock.module('../server/feedback.js', { namedExports: { disputesForHost: async ()
 mock.module('../server/feedbackAuto.js', { namedExports: { lessonsFor: async () => [] } });
 mock.module('../server/lib/http.js', { namedExports: { createClient: () => ({}) } });
 mock.module('../server/orchestrator.js', { namedExports: {
-  planCheckup: async () => ({ focus: 'Fixture checklist', checks: [{ id: 'security' }, { id: 'browser' }], llm: false }),
+  planCheckup: async () => { planned++;return { focus: 'Fixture checklist', checks: [{ id: 'security' }, { id: 'browser' }], llm: false }; },
 } });
 mock.module('../server/proof.js', { namedExports: {
-  captureProof: async () => ({ shots: [{ key: 's1', bytes: Buffer.from('fixture picture'), mime: 'image/jpeg' }], skipped: null }),
+  captureProof: async () => {captured++;return { shots: [{ key: 's1', bytes: Buffer.from('fixture picture'), mime: 'image/jpeg' }], skipped: null };},
   saveShots: async () => 1,
 } });
 mock.module('../server/checks/recon.js', { namedExports: { runRecon: async () => {
@@ -80,9 +87,22 @@ const { runCheckup } = await import('../server/pipeline.js');
 async function scan(next) {
   scenario = next;
   browserRuns = 0;
+  screeningCalls=0;planned=0;captured=0;persisted=null;
   reviewInput=null; signedReport=null;events=[];
   return runCheckup({ url: new URL('https://fixture.test/'), display: 'fixture.test', userId: 'private-owner' },(type,data)=>events.push({type,...data}));
 }
+
+for(const next of ['sexual-content','content-screening-unavailable'])test(`${next}: screening stops deep checks, proof persistence and report delivery`,async()=>{
+  await assert.rejects(scan(next),error=>error.code===next);
+  assert.equal(screeningCalls,1);assert.equal(planned,0);assert.equal(browserRuns,0);assert.equal(captured,0);assert.equal(persisted,null);
+  assert.equal(events.some(event=>event.type==='report'),false);
+});
+test('allowed screening metadata is signed and kept separate from a guarantee about unseen pages',async()=>{
+  const report=await scan('complete');
+  assert.equal(report.engine.proof.contentScreening.status,'allowed');
+  assert.equal(signedReport.engine.proof.contentScreening.scope,'Sample only.');
+  assert.equal(screeningCalls,1);
+});
 
 test('final review sees attached proof and completes before signing and report delivery',async()=>{
   const report=await scan('complete');

@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 delete process.env.DATABASE_URL;
 delete process.env.OPENAI_API_KEY;
 delete process.env.SIGNING_PRIVATE_KEY;
+mock.module('../server/contentScreening.js',{namedExports:{screenWebsiteContent:async()=>({status:'allowed',scope:'Synthetic image classifier fixture.'})}});
 mock.module('../server/lib/browserConnect.js', { namedExports: {
   openBrowser: async () => { throw Object.assign(new Error('Fixture browser unavailable'), { code: 'NO_PLAYWRIGHT' }); },
   browserMode: () => 'local',

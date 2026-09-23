@@ -11,6 +11,7 @@ import { canonicalize, sha256Hex } from '../server/signing.js';
 // Keep storage, feedback routes, worker, planner, writer, signing, and pipeline real.
 // Website checks use controlled observations; model traffic stops at its HTTP boundary.
 let agentLessons;
+mock.module('../server/contentScreening.js',{namedExports:{screenWebsiteContent:async()=>({status:'allowed',scope:'Synthetic image classifier fixture.'})}});
 const observation = { id: 'measured-header', severity: 'watch', title: 'Measured header observation', evidence: { lines: ['Fixture header measurement'] } };
 mock.module('../server/proof.js', { namedExports: { captureProof: async () => ({ shots: [] }), saveShots: async () => 0 } });
 mock.module('../server/checks/recon.js', { namedExports: { runRecon: async () => ({

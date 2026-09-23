@@ -21,6 +21,7 @@ loadEnv(path.join(ROOT, ".env"));
 const { normalizePublicUrl, resolveTarget } = await import("./safety.js");
 const { publicReport } = await import("./publicReport.js");
 const { runCheckup } = await import("./pipeline.js");
+const { publicCheckupError } = await import('./checkupError.js');
 const { llmEnabled, modelName } = await import("./llm.js");
 const { initDb, dbEnabled, getReport, listReports, saveNomination, addHelper, listHelpers, sql } = await import("./db.js");
 const { setupRouter } = await import("./setup.js");
@@ -166,8 +167,9 @@ app.get("/api/checkup/stream", requireVerified, async (req, res) => {
       if (!closed) send(event, data);
     });
   } catch (err) {
-    if (!closed) send("error", { message: "Something went wrong during the checkup. Please try again." });
-    console.error("checkup error:", err);
+    const failure = publicCheckupError(err);
+    if (!closed) send("error", { message: failure.message, code: failure.code });
+    if (!failure.code) console.error("checkup error:", err);
   }
   res.end();
 });
@@ -187,8 +189,9 @@ app.post("/api/checkup", requireVerified, async (req, res) => {
     const report = await runCheckup(target, () => {});
     res.json(publicReport(report, req.user));
   } catch (err) {
-    console.error("checkup error:", err);
-    res.status(500).json({ error: "Something went wrong during the checkup. Please try again." });
+    const failure = publicCheckupError(err);
+    if (!failure.code) console.error("checkup error:", err);
+    res.status(failure.status).json({ error: failure.message, code: failure.code });
   }
 });
 
