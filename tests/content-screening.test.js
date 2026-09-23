@@ -89,6 +89,28 @@ test('a sexual image flag reaches the contextual decision step',async()=>{
   const result=await moderateCapturedImages([pixel],{apiKey:'fixture-only',fetchImpl:async()=>response({flagged:true,categories:{sexual:true},category_applied_input_types:{sexual:['image']}})});
   assert.equal(result.sexualImage,true);
 });
+test('each page image uses its own moderation request under one shared deadline',async()=>{
+  const { moderateCapturedImages }=await import('../server/contentScreening.js');
+  const signals=[];
+  let requests=0;
+  const result=await moderateCapturedImages([pixel,pixel,pixel],{apiKey:'fixture-only',fetchImpl:async(_url,options)=>{
+    const number=++requests;
+    assert.equal(JSON.parse(options.body).input.length,1,'the live moderation API accepts one image per request');
+    signals.push(options.signal);
+    return response({categories:{sexual:number===3},category_applied_input_types:{sexual:['image']}});
+  }});
+  assert.equal(requests,3);
+  assert.equal(new Set(signals).size,1,'all image requests share a deadline');
+  assert.equal(result.sexualImage,true,'a later positive sample is retained');
+});
+test('one unavailable image classification cannot become an allowed multi-image sample',async()=>{
+  const { moderateCapturedImages }=await import('../server/contentScreening.js');
+  let requests=0;
+  await assert.rejects(moderateCapturedImages([pixel,pixel],{apiKey:'fixture-only',fetchImpl:async()=>{
+    if (++requests===2) return new Response('{}',{status:503});
+    return response({categories:{sexual:false}});
+  }}));
+});
 test('arbitrary external image addresses are never sent to the provider',async()=>{
   const { moderateCapturedImages }=await import('../server/contentScreening.js');
   let sent=false;

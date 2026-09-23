@@ -20,25 +20,36 @@ function checkedImages(images) {
 export async function moderateCapturedImages(images, { apiKey = process.env.OPENAI_API_KEY, fetchImpl = fetch, timeoutMs = 15_000 } = {}) {
   checkedImages(images);
   if (!apiKey) throw new Error('Content screening is unavailable.');
-  const response = await fetchImpl('https://api.openai.com/v1/moderations', {
-    method: 'POST', signal: AbortSignal.timeout(Math.max(1, Math.min(15_000, timeoutMs))),
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ model: 'omni-moderation-latest', input: images.map(url => ({ type: 'image_url', image_url: { url } })) }),
-  });
-  if (!response.ok) throw new Error('The image classifier did not finish.');
-  const data = await response.json();
-  const results = data?.results;
-  if (!Array.isArray(results) || !results.length || results.some(r => typeof r?.categories?.sexual !== 'boolean')) {
-    throw new Error('The image classifier returned an incomplete decision.');
+  // Send each image separately because the provider rejected combined images.
+  // Keep the small set parallel under one deadline and require every result.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1, Math.min(15_000, timeoutMs)));
+  try {
+    const decisions = await Promise.all(images.map(async url => {
+      const response = await fetchImpl('https://api.openai.com/v1/moderations', {
+        method: 'POST', signal: controller.signal,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ model: 'omni-moderation-latest', input: [{ type: 'image_url', image_url: { url } }] }),
+      });
+      if (!response.ok) throw new Error('The image classifier did not finish.');
+      const data = await response.json();
+      const results = data?.results;
+      if (!Array.isArray(results) || !results.length || results.some(r => typeof r?.categories?.sexual !== 'boolean')) {
+        throw new Error('The image classifier returned an incomplete decision.');
+      }
+      return results.some(r => {
+        if (!r.categories.sexual) return false;
+        if (!Array.isArray(r.category_applied_input_types?.sexual) || !r.category_applied_input_types.sexual.includes('image')) {
+          throw new Error('The sexual classification is not backed by an image input.');
+        }
+        return true;
+      });
+    }));
+    return { sexualImage: decisions.some(Boolean) };
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
   }
-  const sexualImage = results.some(r => {
-    if (!r.categories.sexual) return false;
-    if (!Array.isArray(r.category_applied_input_types?.sexual) || !r.category_applied_input_types.sexual.includes('image')) {
-      throw new Error('The sexual classification is not backed by an image input.');
-    }
-    return true;
-  });
-  return { sexualImage };
 }
 
 /** A second, contextual view avoids rejecting news or education merely for sensitive subject matter. */
