@@ -469,3 +469,109 @@ test('the launcher is narrow and becomes icon-only with its name intact on a cra
   await page.getByRole('dialog', { name: 'wekup', exact: true }).waitFor();
 });
 
+// ---- the on-screen keyboard: a visual viewport smaller than the layout viewport ----
+// Chromium keeps the layout viewport at the full height while the keyboard is up; only
+// window.visualViewport shrinks. The window must fit inside that visible area.
+const mockVisualViewport = page => page.addInitScript(() => {
+  const target = new EventTarget();
+  const vv = { width: 390, height: 844, offsetLeft: 0, offsetTop: 0, pageLeft: 0, pageTop: 0, scale: 1,
+    addEventListener: (...a) => target.addEventListener(...a), removeEventListener: (...a) => target.removeEventListener(...a), dispatchEvent: e => target.dispatchEvent(e) };
+  Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true });
+  window.__keyboard = (height, top = 0) => { vv.height = height; vv.offsetTop = top; vv.dispatchEvent(new Event('resize')); };
+});
+const withinVisual = async (page, panel, top, height) => {
+  await page.waitForFunction(([top, height]) => { const b = document.getElementById('wekupDialog').getBoundingClientRect(); return b.top >= top - 0.5 && b.bottom <= top + height + 0.5 && b.left >= -0.5 && b.right <= 390.5; }, [top, height]);
+  for (const name of ['Close wekup', 'Send message']) {
+    const box = await panel.getByRole('button', { name, exact: true }).boundingBox();
+    assert.ok(box.y >= top - 0.5 && box.y + box.height <= top + height + 0.5, name + ' is inside the visible area');
+  }
+};
+
+test('an on-screen keyboard shrinks the window into the visible area, and moves stay inside it', async t => {
+  const page = await pageFor(t, mockVisualViewport);
+  const panel = await discuss(page);
+  const full = await panel.boundingBox();
+  assert.ok(full.y + full.height > 400, 'before the keyboard the window uses the tall screen');
+  await page.evaluate(() => window.__keyboard(400));
+  await withinVisual(page, panel, 0, 400);
+  await panel.getByRole('button', { name: 'Move wekup', exact: true }).focus();
+  for (let i = 0; i < 30; i++) await page.keyboard.press('Shift+ArrowDown');
+  await withinVisual(page, panel, 0, 400);
+  await dragBy(page, panel.locator('.wekup-header h2'), 0, 3000, 'touch');
+  await withinVisual(page, panel, 0, 400);
+  await panel.getByRole('button', { name: 'Resize wekup', exact: true }).focus();
+  for (let i = 0; i < 30; i++) await page.keyboard.press('Shift+ArrowDown');
+  await withinVisual(page, panel, 0, 400);
+  await panel.getByLabel('Message wekup').fill('Typed while the keyboard is up');
+  assert.equal(await panel.getByLabel('Message wekup').inputValue(), 'Typed while the keyboard is up');
+  await page.evaluate(() => window.__keyboard(844));
+  await withinVisual(page, panel, 0, 844);
+});
+
+test('a window opened while the keyboard is already up fits, follows a scrolled visual viewport, and grows back later', async t => {
+  const page = await pageFor(t, mockVisualViewport);
+  await page.evaluate(() => window.__keyboard(400));
+  const panel = await discuss(page);
+  await withinVisual(page, panel, 0, 400);
+  await page.evaluate(() => window.__keyboard(400, 200));
+  await withinVisual(page, panel, 200, 400);
+  await page.evaluate(() => window.__keyboard(844, 0));
+  await withinVisual(page, panel, 0, 844);
+  await page.waitForFunction(() => document.getElementById('wekupDialog').getBoundingClientRect().bottom > 400);
+  assert.equal(await panel.getByLabel('Message wekup').isVisible(), true);
+});
+
+// ---- a cleared report leaves nothing behind in the chat ----
+test('the report-cleared event empties the finding list, conversation, drafts, and caches but keeps window preferences', async t => {
+  let viewer = { id: 'reader1', emailVerified: true };
+  const privateReport = { ...report, id: 'privatereport', visibility: 'private', summary: 'PRIVATE_SUMMARY',
+    findings: [{ ...report.findings[0], id: 'private-link', title: 'PRIVATE_FINDING title', meaning: 'PRIVATE_MEANING' }] };
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  page.setDefaultTimeout(4000); t.after(() => page.close());
+  await page.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
+  await page.route(origin + '/api/me', route => route.fulfill({ json: { user: viewer } }));
+  await page.route(origin + '/api/reports/privatereport', route => route.fulfill({ json: privateReport }));
+  await page.route(origin + '/api/reports/privatereport/assessments', route => route.fulfill({ json: { assessments: { 'private-link': { ...assessment, findingId: 'private-link', summary: 'PRIVATE_ASSESSMENT summary' } } } }));
+  await page.route(origin + '/api/reports/privatereport/wekup*', route => route.fulfill({ json: { conversationId: 'c1', reportId: 'privatereport', findingId: 'private-link', revision: 2,
+    messages: [{ id: 'm1', role: 'assistant', text: 'PRIVATE_CONVERSATION reply' }], job: null, assessment: null } }));
+  await page.goto(origin + '/r/privatereport');
+  await page.locator('#screen-report.is-active').waitFor();
+  await page.locator('.wekup-assessment[data-finding="private-link"]').getByText('PRIVATE_ASSESSMENT summary', { exact: true }).waitFor();
+  const panel = await discuss(page);
+  await panel.getByText('PRIVATE_CONVERSATION reply', { exact: true }).waitFor();
+  assert.ok((await page.locator('#wekupFinding option').allTextContents()).some(text => text.includes('PRIVATE_FINDING')));
+  await panel.getByLabel('Message wekup').fill('PRIVATE_DRAFT text');
+  await panel.getByRole('button', { name: 'Make wekup see-through', exact: true }).click();
+  await dragBy(page, panel.locator('.wekup-header h2'), 0, -120);
+  const placed = await panel.boundingBox();
+
+  // Sign-out: app.js clears its report and goes home, then announces the clearing.
+  viewer = null;
+  await page.evaluate(async () => { await window.Sutros.refreshMe(); window.Sutros.report = null; document.dispatchEvent(new Event('sutros:report-cleared')); });
+  await page.locator('#screen-home.is-active').waitFor();
+  assert.equal(await panel.isVisible(), false);
+  assert.equal(await page.locator('#wekupFinding option').count(), 0, 'no finding options remain');
+  assert.equal((await page.locator('#wekupWidget').innerHTML()).includes('PRIVATE_'), false, 'nothing private remains in the widget markup');
+  assert.equal(await page.getByText('PRIVATE_', { exact: false }).count(), 0);
+
+  // Reopening shows the generic introduction, in the same place and still see-through.
+  await page.getByRole('button', { name: 'Talk to wekup', exact: true }).click();
+  await panel.waitFor();
+  await panel.evaluate(el => Promise.all(el.getAnimations().map(a => a.finished)).catch(() => {}));
+  assert.equal((await panel.innerHTML()).includes('PRIVATE_'), false);
+  assert.equal(await panel.getByRole('button', { name: 'Make wekup see-through', exact: true }).getAttribute('aria-pressed'), 'true');
+  const reopened = await panel.boundingBox();
+  assert.ok(Math.abs(reopened.x - placed.x) < 1.5 && Math.abs(reopened.y - placed.y) < 1.5, 'the chosen placement is kept');
+  await panel.getByRole('button', { name: 'Close wekup', exact: true }).click();
+
+  // A later report starts fresh: only its own findings, no draft, no earlier messages.
+  viewer = { id: 'reader1', emailVerified: true };
+  await page.evaluate(() => window.Sutros.refreshMe());
+  await page.evaluate(r => { window.renderReport(r); window.go('report'); }, report);
+  await discuss(page);
+  assert.deepEqual(await page.locator('#wekupFinding option').allTextContents(), ['Whole checkup', 'A link returned an error']);
+  assert.equal(await panel.getByLabel('Message wekup').inputValue(), '');
+  assert.equal(await panel.getByText('PRIVATE_', { exact: false }).count(), 0);
+  assert.equal(await page.getByText('PRIVATE_', { exact: false }).count(), 0);
+});
+

@@ -177,21 +177,36 @@
     }
   }
   // ---- window: see-through, movable by its header, resizable, keyboard-operable ----
-  // A placement the reader chose is kept for the session and clamped to the viewport
-  // whenever it is applied; until then the stylesheet positions the window.
+  // A placement the reader chose is kept for the session and clamped to the visible
+  // area whenever it is applied; until then the stylesheet positions the window. The
+  // visible area is the visual viewport: on a phone with the keyboard up, or when
+  // zoomed in, it is smaller than the layout viewport that fixed positioning uses,
+  // and it can be offset from it. A stylesheet-placed window that falls outside that
+  // area is fitted into it temporarily and returns to the stylesheet afterwards.
   const MIN_W = 280, MIN_H = 300, STEP = 20, BIG_STEP = 60;
   const header = $('.wekup-header'), resizeHandle = $('.wekup-resize'), moveButton = $('.wekup-move'), glassButton = $('.wekup-glass');
-  let frame = null;
-  const viewport = () => ({ w: window.innerWidth, h: window.innerHeight });
-  const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
-  function applyFrame(next) {
-    const { w: vw, h: vh } = viewport();
-    const width = clamp(Math.round(next.w), Math.min(MIN_W, vw), vw);
-    const height = clamp(Math.round(next.h), Math.min(MIN_H, vh), vh);
-    frame = { w: width, h: height, x: clamp(Math.round(next.x), 0, vw - width), y: clamp(Math.round(next.y), 0, vh - height) };
-    Object.assign(dialog.style, { inset: `${frame.y}px auto auto ${frame.x}px`, width: frame.w + 'px', height: frame.h + 'px', maxWidth: 'none', maxHeight: 'none', minHeight: '0' });
+  let frame = null, fitted = null;
+  const layout = () => ({ w: window.innerWidth, h: window.innerHeight });
+  function viewport() {
+    const vv = window.visualViewport;
+    if (!vv || !(vv.width > 0) || !(vv.height > 0)) return { x: 0, y: 0, ...layout() };
+    return { x: Math.max(0, vv.offsetLeft || 0), y: Math.max(0, vv.offsetTop || 0), w: vv.width, h: vv.height };
   }
-  const currentFrame = () => { const r = dialog.getBoundingClientRect(); return frame || { x: r.left, y: r.top, w: r.width, h: r.height }; };
+  const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+  function applyFrame(next, chosen = true) {
+    const v = viewport();
+    const width = clamp(Math.round(next.w), Math.min(MIN_W, v.w), v.w);
+    const height = clamp(Math.round(next.h), Math.min(MIN_H, v.h), v.h);
+    const f = { w: width, h: height, x: clamp(Math.round(next.x), v.x, v.x + v.w - width), y: clamp(Math.round(next.y), v.y, v.y + v.h - height) };
+    if (chosen) { frame = f; fitted = null; } else fitted = f;
+    Object.assign(dialog.style, { inset: `${f.y}px auto auto ${f.x}px`, width: f.w + 'px', height: f.h + 'px', maxWidth: 'none', maxHeight: 'none', minHeight: '0' });
+  }
+  const rectFrame = () => { const r = dialog.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; };
+  const currentFrame = () => frame || fitted || rectFrame();
+  function clearFit() {
+    fitted = null;
+    for (const prop of ['inset', 'width', 'height', 'maxWidth', 'maxHeight', 'minHeight']) dialog.style[prop] = '';
+  }
   function drag(target, onMove) {
     let start = null;
     const move = e => {
@@ -225,9 +240,19 @@
     e.preventDefault(); const step = e.shiftKey ? BIG_STEP : STEP; const from = currentFrame();
     applyFrame({ ...from, w: from.w + d[0] * step, h: from.h + d[1] * step });
   });
-  const refit = () => { if (frame && dialog.open) applyFrame(frame); };
+  function refit() {
+    if (!dialog.open) return;
+    if (frame) { applyFrame(frame); return; }
+    const v = viewport(), l = layout();
+    const shrunk = v.w < l.w - 1 || v.h < l.h - 1 || v.x > 0 || v.y > 0;
+    if (!shrunk) { if (fitted) clearFit(); return; }
+    const r = rectFrame();
+    const outside = r.x < v.x - 0.5 || r.y < v.y - 0.5 || r.x + r.w > v.x + v.w + 0.5 || r.y + r.h > v.y + v.h + 0.5;
+    if (outside || fitted) applyFrame(fitted || r, false);
+  }
   window.addEventListener('resize', refit);
   window.visualViewport?.addEventListener('resize', refit);
+  window.visualViewport?.addEventListener('scroll', refit);
   const GLASS_KEY = 'sutros.wekup.seeThrough';
   function setGlass(on) {
     dialog.dataset.translucent = on ? 'true' : 'false';
@@ -288,6 +313,20 @@
     }
     accountVerified = Boolean(user?.emailVerified);
     if (dialog.open) { const fid = select.value; configureContext(fid); loadConversation(); }
+  });
+  // The session changed and app.js dropped the report. Nothing of it may stay here:
+  // not the finding list, the conversation, drafts, or assessment caches. The window's
+  // placement and see-through choice are the reader's preferences and are kept.
+  document.addEventListener('sutros:report-cleared', () => {
+    ++token; ++requestSequence; ++reportVersion; stopPoll();
+    report = null; context = null; state = null; retry = null; posting = false; renderedMessages = '';
+    assessments.clear(); drafts.clear(); pendingRequests.clear();
+    input.value = ''; messages.innerHTML = ''; select.innerHTML = '';
+    for (const part of ['.wekup-current', '.wekup-intro', '.wekup-gate']) $(part).innerHTML = '';
+    $('.wekup-context').hidden = true; $('.wekup-gate').hidden = true; error();
+    document.querySelectorAll('.wekup-report-tools, .wekup-finding-tools').forEach(el => el.remove());
+    dialog.dataset.mode = 'intro';
+    if (dialog.open) close();
   });
   document.addEventListener('sutros:screen', e => {
     if (e.detail.id !== 'screen-report' && dialog.open) close();
