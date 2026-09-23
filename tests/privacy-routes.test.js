@@ -65,6 +65,7 @@ test("public routes preserve private ownership in a disposable local database", 
   t.mock.method(globalThis, "fetch", async (input, options) => {
     const url = new URL(input);
     if (url.hostname.endsWith(".example") && url.pathname === "/robots.txt") return new Response("", { headers: { "content-type": "text/plain" } });
+    if (url.hostname.endsWith(".example")) return new Response("<!doctype html><html><title>Fixture</title><body>A working website for the local test.</body></html>", { headers: { "content-type": "text/html" } });
     if (url.hostname !== "127.0.0.1") throw new Error("Unexpected external fetch in a privacy test");
     return nativeFetch(input, options);
   });
@@ -82,6 +83,7 @@ test("public routes preserve private ownership in a disposable local database", 
   await import("../server/index.js");
   if (!server.listening) await once(server, "listening");
   const base = `http://127.0.0.1:${server.address().port}`;
+  process.env.APP_URL = base;
   const db = await import("../server/db.js");
   const people = [
     { id: "owner12345", email: "private@example.test", name: "Private Person", role: "user", cookie: "owner_session_fixture_1234567890" },
@@ -95,17 +97,20 @@ test("public routes preserve private ownership in a disposable local database", 
   const stored = { ...reportFixture(), score: 40, grade: "D" };
   await db.saveReport(stored);
   await db.saveReport({ ...stored, id: "anon123456", userId: null, target: "anonymous.example", url: "https://anonymous.example/" });
+  await db.saveReport({ ...stored, id: "private123", target: "private.example", url: "https://private.example/" });
   await db.sql("UPDATE reports SET created_at = now() - interval '2 days'");
   await db.sql("INSERT INTO bulletin_posts (id, report_id, user_id, note) VALUES ('post123456','report1234','owner12345','Public request for help')");
   await db.sql("INSERT INTO bulletin_offers (id, post_id, user_id, message, contact) VALUES ('offer12345','post123456','other12345','A public offer to help with this site.','public-contact@example.test')");
+  await db.sql("INSERT INTO report_shots (report_id,key,mime,bytes) VALUES ('private123','s1','image/jpeg',$1)", [Buffer.from('private screenshot fixture')]);
+  await db.sql("INSERT INTO helpers (id,name,contact) VALUES ('legacyhelp','Legacy helper','legacy@example.test')");
 
-  async function request(route, { viewer = null, method = "GET", body, stream = false } = {}) {
+  async function request(route, { viewer = null, method = "GET", body, stream = false, expectedAccount } = {}) {
     const response = await fetch(base + route, {
       method, headers: { "X-Requested-With": "fetch", ...(viewer ? { Cookie: `sutros_session=${viewer.cookie}` } : {}),
-        ...(body ? { "Content-Type": "application/json" } : {}), ...(stream ? { Accept: "text/event-stream" } : {}) },
+        ...(body ? { "Content-Type": "application/json" } : {}), ...(stream ? { Accept: "text/event-stream" } : {}), ...(expectedAccount ? { 'X-Sutros-Account': expectedAccount } : {}) },
       body: body ? JSON.stringify(body) : undefined,
     });
-    return { status: response.status, cache: response.headers.get("cache-control"), body: stream ? await response.text() : await response.json() };
+    return { status: response.status, cache: response.headers.get("cache-control"), body: stream || !response.headers.get('content-type')?.includes('application/json') ? await response.text() : await response.json() };
   }
 
   await t.test("accounts are required for scans and rechecks before target network work", async () => {
@@ -136,16 +141,126 @@ test("public routes preserve private ownership in a disposable local database", 
     for (const viewer of [null, people[0], people[1]]) {
       for (const route of ["/api/reports/report1234", "/api/reports?limit=5", "/api/checks?host=fixture.example"]) {
         const reply = await request(route, { viewer });
-        assert.equal(reply.status, 200);
+        assert.equal(reply.status, !viewer && route !== '/api/reports/report1234' ? 401 : 200);
         assertNoPrivateIdentity(assert, reply.body);
         assert.match(reply.cache, /private.*no-store/);
       }
     }
     const detail = (await request("/api/reports/report1234", { viewer: people[0] })).body;
-    assert.equal(detail.canPostToBulletin, true);
+    assert.equal(detail.canPostToBulletin, false);
+    assert.equal(detail.visibility, 'public');
+    assert.equal(detail.bulletinPostId, 'post123456');
     assert.deepEqual(detail.findings[0].evidence, stored.findings[0].evidence);
     assert.deepEqual(detail.attestation, stored.attestation);
     assert.equal((await db.getReport("report1234")).userId, "owner12345", "Internal ownership remains available");
+  });
+
+  await t.test('private reports deny all derived endpoints to other accounts and anonymous readers', async () => {
+    const routes = ['/api/reports/private123', '/api/verify/private123', '/badge/private123.svg',
+      '/api/reports/private123/shots/s1', '/api/reports/private123/feedback', '/api/reports/private123/assessments'];
+    for (const route of routes) {
+      for (const viewer of [null, people[1]]) assert.equal((await request(route, { viewer })).status, 404, route);
+      for (const viewer of [people[0], people[2]]) assert.equal((await request(route, { viewer })).status, 200, route);
+    }
+    for (const suffix of ['feedback', 'retest', 'wekup']) {
+      const denied = await request('/api/reports/private123/' + suffix, { viewer: people[1], method: 'POST', body: { findingId: 'links-broken', verdict: 'wrong', message: 'Explain the private finding', requestId: 'private-attempt' } });
+      assert.equal(denied.status, 404, suffix);
+    }
+    assert.equal((await request('/api/reports/private123/wekup?findingId=_report', { viewer: people[1] })).status, 404);
+    const own = await request('/api/reports/private123', { viewer: people[0] });
+    assert.equal(own.body.visibility, 'private');
+    assert.equal(own.body.bulletinPostId, null);
+    assert.equal(own.body.canPostToBulletin, true);
+    assertNoPrivateIdentity(assert, own.body);
+  });
+
+  await t.test('account history and cooldown never disclose another account private scan', async () => {
+    for (const path of ['/api/reports', '/api/reports?mine=1', '/api/reports?host=private.example', '/api/checks?host=private.example']) {
+      const other = await request(path, { viewer: people[1] });
+      assert.deepEqual(other.body.reports, [], path);
+    }
+    await db.sql("UPDATE reports SET created_at=now() WHERE id='private123'");
+    const other = await request('/api/checkup', { viewer: people[1], method: 'POST', body: { url: 'https://private.example/' } });
+    assert.equal(other.status, 200, 'Another account private history must not disclose an id or prevent this account check');
+    const own = await request('/api/checkup', { viewer: people[0], method: 'POST', body: { url: 'https://private.example/' } });
+    assert.equal(own.status, 429);
+    assert.equal(own.body.latestReportId, 'private123');
+    await db.sql("UPDATE reports SET created_at=now() - interval '2 days' WHERE id='private123'");
+  });
+
+  await t.test('publishing is explicit and deleting a post revokes report access while retaining rate history', async () => {
+    assert.equal((await request('/api/bulletin', { viewer: people[1], method: 'POST', body: { reportId: 'private123' } })).status, 403);
+    const created = await request('/api/bulletin', { viewer: people[0], method: 'POST', body: { reportId: 'private123', note: 'I would like help with this website.' } });
+    assert.equal(created.status, 201);
+    const id = created.body.post.id;
+    assert.equal(created.body.post.canDelete, true);
+    assert.equal((await request('/api/reports/private123')).body.visibility, 'public');
+    assert.equal((await request('/api/bulletin?mine=1', { viewer: people[0] })).body.posts.some(p => p.id === id), true);
+    assert.equal((await request('/api/bulletin/' + id, { viewer: people[1], method: 'DELETE' })).status, 403);
+    assert.equal((await request('/api/bulletin/' + id, { viewer: people[0], method: 'DELETE' })).status, 200);
+    assert.equal((await request('/api/bulletin/' + id)).status, 404);
+    assert.equal((await request('/api/reports/private123')).status, 404);
+    assert.equal((await request('/api/reports/private123', { viewer: people[0] })).body.visibility, 'private');
+    const [retained] = await db.sql('SELECT deleted_at FROM bulletin_posts WHERE id=$1', [id]);
+    assert.ok(retained.deleted_at, 'The creation row remains for rate accounting');
+    const republished = await request('/api/bulletin', { viewer: people[0], method: 'POST', body: { reportId: 'private123' } });
+    assert.equal(republished.status, 201, 'A withdrawn report can be explicitly posted again');
+    assert.notEqual(republished.body.post.id, id, 'New publication has separate rate accounting');
+    await request('/api/bulletin/' + republished.body.post.id, { viewer: people[0], method: 'DELETE' });
+  });
+
+  await t.test('helper listings need confirmed ownership and can be deleted only by their owner or admin', async () => {
+    const body = { name: 'Verified helper', contact: people[0].email, area: 'Local', blurb: 'I can help with website fixes.' };
+    assert.equal((await request('/api/helpers', { method: 'POST', body })).status, 401);
+    await db.sql('UPDATE users SET email_verified=false WHERE id=$1', [people[0].id]);
+    assert.equal((await request('/api/helpers', { viewer: people[0], method: 'POST', body })).status, 403);
+    await db.sql('UPDATE users SET email_verified=true WHERE id=$1', [people[0].id]);
+    assert.equal((await request('/api/helpers', { viewer: people[0], method: 'POST', body: { ...body, contact: 'someone-else@example.test' } })).status, 400);
+    const created = await request('/api/helpers', { viewer: people[0], method: 'POST', body });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.helper.canDelete, true);
+    assert.equal(Object.hasOwn(created.body.helper, 'user_id'), false);
+    const id = created.body.helper.id;
+    const listed = (await request('/api/helpers')).body.helpers;
+    assert.equal(listed.some(h => h.id === 'legacyhelp'), false, 'Unowned legacy rows are retained but never published');
+    assert.equal(listed.find(h => h.id === id).canDelete, false);
+    assert.equal((await request('/api/helpers?mine=1', { viewer: people[0] })).body.helpers.some(h => h.id === id), true);
+    assert.equal((await request('/api/helpers/' + id, { viewer: people[1], method: 'DELETE' })).status, 403);
+    assert.equal((await request('/api/helpers/' + id, { viewer: people[0], method: 'DELETE' })).status, 200);
+    assert.equal((await request('/api/helpers')).body.helpers.some(h => h.id === id), false);
+    assert.ok((await db.sql('SELECT deleted_at FROM helpers WHERE id=$1', [id]))[0].deleted_at);
+  });
+
+  await t.test('a community draft from a previous sign-in cannot be published under the replacement account', async () => {
+    const response = await request('/api/helpers', { viewer: people[1], expectedAccount: people[0].id, method: 'POST', body: { name: 'Previous account draft', contact: people[1].email } });
+    assert.equal(response.status, 401);
+    assert.equal(response.body.code, 'account-changed');
+    assert.equal((await db.sql("SELECT id FROM helpers WHERE name='Previous account draft'")).length, 0);
+  });
+
+  await t.test('community creation refuses unsafe website links and unconfirmed contact email', async () => {
+    for (const contact of ['https://127.0.0.1/', 'https://fixture.example:444/', 'https://user:password@fixture.example/']) {
+      const reply = await request('/api/helpers', { viewer: people[0], method: 'POST', body: { name: 'Helper', contact } });
+      assert.equal(reply.status, 400, contact);
+    }
+    const offer = await request('/api/bulletin/post123456/offers', { viewer: people[0], method: 'POST', body: { message: 'I can help with the site navigation.', contact: people[1].email } });
+    assert.equal(offer.status, 400);
+    await db.saveReport({ ...stored, id: 'unsafe1234', url: 'http://127.0.0.1/', target: 'unsafe.example' });
+    assert.equal((await request('/api/bulletin', { viewer: people[0], method: 'POST', body: { reportId: 'unsafe1234' } })).status, 400);
+  });
+
+  await t.test('badge grade, color, and ring match the report including A+', async () => {
+    for (const [grade, ringPercent, color, dash] of [['A+', 100, '#15803D', '0'], ['C', 68, '#CFA23A', '32'], ['D', 40, '#DC2626', '60'], ['F', 12, '#991B1B', '88']]) {
+      const id = 'badge' + grade.replace('+', 'plus') + '123';
+      await db.saveReport({ ...stored, id, target: id.toLowerCase() + '.example', grade, score: ringPercent, ringPercent, attestation: null });
+      const badge = await request('/badge/' + id + '.svg', { viewer: people[0] });
+      assert.equal(badge.status, 200);
+      assert.match(badge.body, new RegExp('grade ' + grade.replace('+', '\\+')));
+      assert.match(badge.body, new RegExp('stroke="' + color + '"'));
+      assert.match(badge.body, /pathLength="100"/);
+      assert.match(badge.body, new RegExp('stroke-dashoffset="' + dash + '"'));
+      assert.match(badge.cache, /private.*no-store/);
+    }
   });
 
   await t.test('wekup is mounted with verified sessions, private histories and automatic processing', async () => {
@@ -253,17 +368,16 @@ test("public routes preserve private ownership in a disposable local database", 
     assertNoPrivateIdentity(assert, changed.body);
   });
 
-  await t.test("an account may post an anonymous report without taking report ownership", async () => {
+  await t.test("an account cannot claim or publish an ownerless report", async () => {
     const reply = await request("/api/bulletin", { viewer: people[1], method: "POST", body: { reportId: "anon123456", note: "Public anonymous report discussion" } });
-    assert.equal(reply.status, 201);
-    assert.equal(reply.body.post.canManage, true);
+    assert.equal(reply.status, 403);
     assertNoPrivateIdentity(assert, reply.body);
     assert.equal((await db.getReport("anon123456")).userId, null);
   });
 
   await t.test("unrated results can be stored without manufacturing a numeric score", async () => {
     await assert.doesNotReject(db.saveReport({ ...stored, id: "unrated123", score: null, grade: "?" }));
-    const reply = await request("/api/reports/unrated123");
+    const reply = await request("/api/reports/unrated123", { viewer: people[0] });
     assert.equal(reply.body.score, null);
   });
 
@@ -299,5 +413,68 @@ test("public routes preserve private ownership in a disposable local database", 
       await page.locator("#cuPostPanel").waitFor();
       assert.equal(await page.locator("#cuPostForm").count(), 0, "Another account cannot post an owned report");
     } finally { await browser.close(); }
+  });
+
+  await t.test('account and bulletin controls remove owned community posts and helper listings', async () => {
+    const helper = await request('/api/helpers', { viewer: people[0], method: 'POST', body: { name: 'My helper entry', contact: people[0].email } });
+    assert.equal(helper.status, 201);
+    const extraPost = await request('/api/bulletin', { viewer: people[0], method: 'POST', body: { reportId: 'private123' } });
+    assert.equal(extraPost.status, 201);
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    try {
+      const context = await browser.newContext();
+      await context.route('**/*', route => new URL(route.request().url()).origin === base ? route.continue() : route.abort());
+      await context.addCookies([{ name: 'sutros_session', value: people[0].cookie, url: base }]);
+      const page = await context.newPage();
+      const recentRequests = [];
+      page.on('request', req => { if (req.url().includes('/api/reports?limit=8')) recentRequests.push(req.url()); });
+      await page.goto(base + '/');
+      await page.waitForLoadState('networkidle');
+      assert.equal(recentRequests.length, 0, 'The home page no longer requests public recent scans');
+      assert.equal(await page.getByText('Recent public checkups', { exact: true }).count(), 0);
+      await page.goto(base + '/account');
+      await page.locator('#auCheckups .au-row').first().waitFor();
+      assert.equal(await page.locator('#auCommunityPosts').count(), 1);
+      assert.equal(await page.locator('#auHelperListings').count(), 1);
+      const removeHelper = page.locator('[data-remove-helper="' + helper.body.helper.id + '"]');
+      await removeHelper.waitFor();
+      const removedReply = page.waitForResponse(response => response.url().endsWith('/api/helpers/' + helper.body.helper.id) && response.request().method() === 'DELETE');
+      await removeHelper.click();
+      const removed = await removedReply;
+      assert.equal(removed.status(), 200, await removed.text());
+      await removeHelper.waitFor({ state: 'detached' });
+      assert.equal((await request('/api/helpers')).body.helpers.some(h => h.id === helper.body.helper.id), false);
+      const removeOwnPost = page.locator('[data-remove-post="' + extraPost.body.post.id + '"]');
+      await removeOwnPost.click();
+      await removeOwnPost.waitFor({ state: 'detached' });
+      assert.equal((await request('/api/reports/private123')).status, 404);
+      await page.goto(base + '/b/post123456');
+      await page.locator('#cuStatusSelect').waitFor();
+      assert.equal(await page.locator('#cuDeletePost').count(), 1);
+      await page.locator('#cuDeletePost').click();
+      await page.waitForURL(base + '/bulletin');
+      assert.equal((await request('/api/reports/report1234')).status, 404);
+    } finally { await browser.close(); }
+  });
+
+  await t.test('older helper listings remain manageable through account pagination', async () => {
+    await db.sql("INSERT INTO helpers (id,name,contact,user_id,created_at) SELECT 'older' || lpad(n::text,5,'0'), 'Older helper ' || n, 'private@example.test', 'owner12345', now() - make_interval(days => n) FROM generate_series(1,52) n");
+    const first = (await request('/api/helpers?mine=1', { viewer: people[0] })).body;
+    const second = (await request('/api/helpers?mine=1&page=2', { viewer: people[0] })).body;
+    assert.equal(first.helpers.length, 50);
+    assert.equal(first.hasMore, true);
+    assert.equal(second.helpers.length, 2);
+    assert.equal(second.hasMore, false);
+    assert.equal(second.helpers.every(h => h.canDelete), true);
+    assert.equal(first.helpers.some(h => second.helpers.some(other => other.id === h.id)), false);
+  });
+
+  await t.test('schema migration can run again without republishing removed content or changing signed reports', async () => {
+    const before = await db.getReport('report1234');
+    await db.initDb();
+    assert.deepEqual((await db.getReport('report1234')).attestation, before.attestation);
+    assert.equal((await request('/api/reports/report1234')).status, 404);
+    assert.equal((await request('/api/helpers')).body.helpers.some(h => h.id === 'legacyhelp'), false);
   });
 });

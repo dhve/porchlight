@@ -16,6 +16,7 @@ import express from "express";
 import { sql, newId, dbEnabled } from "./db.js";
 import { requireAuth, requireVerified, csrfGuard } from "./auth.js";
 import { publicReport } from "./publicReport.js";
+import { validateCommunityContact, validateCommunityWebsite } from './communityValidation.js';
 
 export const bulletinRouter = express.Router();
 
@@ -66,7 +67,7 @@ async function selectPosts({ where = "", order = "p.created_at DESC, p.id", limi
   const sevIdx = all.length;
   const fields = POST_FIELDS.replace("$POSTFIELDS_SEV", `$${sevIdx}`) + (withReport ? ", r.report AS full_report" : "");
   let text = `SELECT ${fields} ${POST_FROM}`;
-  if (where) text += ` WHERE ${where}`;
+  text += ` WHERE p.deleted_at IS NULL${where ? ' AND (' + where + ')' : ''}`;
   text += ` ORDER BY ${order}`;
   if (limit != null) {
     all.push(limit);
@@ -117,10 +118,12 @@ function shapePost(row, viewer = null) {
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
     canManage: Boolean(viewer?.id && (row.user_id === viewer.id || isAdmin(viewer))),
+    canDelete: Boolean(viewer?.id && (row.user_id === viewer.id || isAdmin(viewer))),
     offersCount: Number(row.offers_count) || 0,
     report: publicReport({
       id: row.report_id,
       userId: row.report_user_id || null,
+      bulletinPostId: row.id,
       target: row.target,
       grade: row.grade,
       score: row.score == null ? null : Number(row.score),
@@ -224,19 +227,6 @@ function clean(v, max) {
   return String(v == null ? "" : v).trim().slice(0, max);
 }
 
-function isEmail(s) {
-  return /^[^\s@]{1,64}@[^\s@]+\.[^\s@]+$/.test(s);
-}
-
-function isHttpUrl(s) {
-  try {
-    const u = new URL(s);
-    return u.protocol === "http:" || u.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
 function pageNumber(v) {
   const n = parseInt(v, 10);
   if (!Number.isFinite(n) || n < 1) return 1;
@@ -313,10 +303,12 @@ bulletinRouter.get(
   guard(async (req, res) => {
     const sort = req.query.sort === "worst" ? "worst" : "new";
     const page = pageNumber(req.query.page);
+    const mine = req.query.mine === '1';
+    if (mine && !req.user) return res.status(401).json({ error: 'Please sign in.' });
     if (!dbEnabled()) return res.json({ posts: [], page, hasMore: false, sort, db: false });
 
     const order = sort === "worst" ? "r.score ASC, p.created_at DESC, p.id" : "p.created_at DESC, p.id";
-    const rows = await selectPosts({ order, limit: PAGE_SIZE + 1, offset: (page - 1) * PAGE_SIZE });
+    const rows = await selectPosts({ where: mine ? 'p.user_id=$1' : '', params: mine ? [req.user.id] : [], order, limit: PAGE_SIZE + 1, offset: (page - 1) * PAGE_SIZE });
     const hasMore = rows.length > PAGE_SIZE;
     res.json({ posts: rows.slice(0, PAGE_SIZE).map((row) => shapePost(row, req.user)), page, hasMore, sort, db: true });
   })
@@ -334,7 +326,7 @@ bulletinRouter.get(
 
     const post = shapePost(row, req.user);
     const report = row.full_report && typeof row.full_report === "object"
-      ? publicReport({ ...row.full_report, id: row.report_id, userId: row.report_user_id || null }, req.user) : null;
+      ? publicReport({ ...row.full_report, id: row.report_id, userId: row.report_user_id || null, bulletinPostId: row.id }, req.user) : null;
     const offerRows = await sql(
       `SELECT o.id, o.message, o.contact, o.created_at, o.user_id
          FROM bulletin_offers o
@@ -362,13 +354,13 @@ bulletinRouter.post(
     if (noteRaw.length > 500) return res.status(400).json({ error: "Please keep the note to 500 characters." });
     const note = noteRaw || null;
 
-    const reportRows = await sql(`SELECT id, user_id FROM reports WHERE id = $1`, [reportId]);
+    const reportRows = await sql(`SELECT id, user_id, url FROM reports WHERE id = $1`, [reportId]);
     if (!reportRows.length) return res.status(404).json({ error: "We couldn't find that checkup." });
-    if (reportRows[0].user_id && reportRows[0].user_id !== req.user.id && req.user.role !== "admin") {
+    if (!reportRows[0].user_id || (reportRows[0].user_id !== req.user.id && req.user.role !== "admin")) {
       return res.status(403).json({ error: "Only the account that ran this checkup can post it." });
     }
 
-    const existing = await sql(`SELECT id FROM bulletin_posts WHERE report_id = $1`, [reportId]);
+    const existing = await sql(`SELECT id FROM bulletin_posts WHERE report_id = $1 AND deleted_at IS NULL`, [reportId]);
     if (existing.length) {
       return res.status(409).json({ error: "This checkup is already on the bulletin.", postId: existing[0].id });
     }
@@ -383,17 +375,20 @@ bulletinRouter.post(
       )
     ) return;
 
+    const website = await validateCommunityWebsite(reportRows[0].url);
+    if (!website.ok) return res.status(400).json({ error: website.error });
+
     const id = newId();
     const inserted = await sql(
       `INSERT INTO bulletin_posts (id, report_id, user_id, note)
        VALUES ($1, $2, $3, $4)
-       ON CONFLICT (report_id) DO NOTHING
+       ON CONFLICT (report_id) WHERE deleted_at IS NULL DO NOTHING
        RETURNING id`,
       [id, reportId, req.user.id, note]
     );
     if (!inserted.length) {
       // Someone posted the same report a moment ago.
-      const again = await sql(`SELECT id FROM bulletin_posts WHERE report_id = $1`, [reportId]);
+      const again = await sql(`SELECT id FROM bulletin_posts WHERE report_id = $1 AND deleted_at IS NULL`, [reportId]);
       return res.status(409).json({ error: "This checkup is already on the bulletin.", postId: again[0] ? again[0].id : null });
     }
 
@@ -416,17 +411,29 @@ bulletinRouter.patch(
       return res.status(400).json({ error: "Status should be open, claimed, or resolved." });
     }
 
-    const rows = await sql(`SELECT id, user_id FROM bulletin_posts WHERE id = $1`, [id]);
+    const rows = await sql(`SELECT id, user_id FROM bulletin_posts WHERE id = $1 AND deleted_at IS NULL`, [id]);
     if (!rows.length) return res.status(404).json({ error: "We couldn't find that bulletin post." });
     if (rows[0].user_id !== req.user.id && !isAdmin(req.user)) {
       return res.status(403).json({ error: "Only the person who posted this can change its status." });
     }
 
-    await sql(`UPDATE bulletin_posts SET status = $2, updated_at = now() WHERE id = $1`, [id, status]);
+    await sql(`UPDATE bulletin_posts SET status = $2, updated_at = now() WHERE id = $1 AND deleted_at IS NULL`, [id, status]);
     const row = await loadPost(id);
     res.json({ post: shapePost(row, req.user) });
   })
 );
+
+// Withdrawing a post also makes its report private again. Keep its creation row
+// so deleting and reposting cannot reset the daily publishing limit.
+bulletinRouter.delete('/api/bulletin/:id', requireAuth, csrfGuard, needDb, guard(async (req, res) => {
+  const { id } = req.params;
+  if (!ID_RE.test(id)) return badId(res);
+  const [row] = await sql('SELECT user_id FROM bulletin_posts WHERE id=$1 AND deleted_at IS NULL', [id]);
+  if (!row) return res.status(404).json({ error: "We couldn't find that bulletin post." });
+  if (row.user_id !== req.user.id && !isAdmin(req.user)) return res.status(403).json({ error: 'Only the person who posted this can remove it.' });
+  await sql('UPDATE bulletin_posts SET deleted_at=now(), updated_at=now() WHERE id=$1 AND (user_id=$2 OR $3) AND deleted_at IS NULL', [id, req.user.id, isAdmin(req.user)]);
+  res.json({ ok: true });
+}));
 
 // Offer to help on a post.
 bulletinRouter.post(
@@ -445,11 +452,7 @@ bulletinRouter.post(
     if (message.length > 1500) return res.status(400).json({ error: "Please keep your message to 1500 characters." });
     if (!contact) return res.status(400).json({ error: "Please include a way to reach you: an email address or a link." });
     if (contact.length > 200) return res.status(400).json({ error: "Please keep your contact to 200 characters." });
-    if (!isEmail(contact) && !isHttpUrl(contact)) {
-      return res.status(400).json({ error: "Contact should be an email address or a link that starts with http." });
-    }
-
-    const posts = await sql(`SELECT id, user_id FROM bulletin_posts WHERE id = $1`, [id]);
+    const posts = await sql(`SELECT id, user_id FROM bulletin_posts WHERE id = $1 AND deleted_at IS NULL`, [id]);
     if (!posts.length) return res.status(404).json({ error: "We couldn't find that bulletin post." });
 
     // One offer per person per post. They can remove theirs and write a new one.
@@ -468,10 +471,13 @@ bulletinRouter.post(
       )
     ) return;
 
+    const checkedContact = await validateCommunityContact(contact, req.user);
+    if (!checkedContact.ok) return res.status(400).json({ error: checkedContact.error });
+
     const offerId = newId();
     await sql(
       `INSERT INTO bulletin_offers (id, post_id, user_id, message, contact) VALUES ($1, $2, $3, $4, $5)`,
-      [offerId, id, req.user.id, message, contact]
+      [offerId, id, req.user.id, message, checkedContact.value]
     );
     const rows = await sql(
       `SELECT o.id, o.message, o.contact, o.created_at, o.user_id
@@ -497,7 +503,7 @@ bulletinRouter.delete(
     const rows = await sql(
       `SELECT o.id, o.user_id, p.user_id AS post_user_id
          FROM bulletin_offers o JOIN bulletin_posts p ON p.id = o.post_id
-        WHERE o.id = $1 AND o.post_id = $2`,
+        WHERE o.id = $1 AND o.post_id = $2 AND p.deleted_at IS NULL`,
       [offerId, id]
     );
     if (!rows.length) return res.status(404).json({ error: "We couldn't find that offer." });

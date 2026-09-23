@@ -1,4 +1,4 @@
-// community-ui.js  Community bulletin, verify page, recent checkups, dedup prompt, and report extras.
+// community-ui.js  Community bulletin, verify page, private history prompt, and report extras.
 // Runs after core.js, app.js, and auth-ui.js. Everything it puts into innerHTML goes through esc().
 (function () {
   const S = window.Sutros;
@@ -54,11 +54,11 @@
   }
   function gradeLetter(g) {
     const l = String(g || "").toUpperCase();
-    return /^[A-F]$/.test(l) ? l : "?";
+    return /^(A\+|[A-DF])$/.test(l) ? l : "?";
   }
   function gradeChip(g, small) {
     const l = gradeLetter(g);
-    return `<span class="cu-grade cu-grade-${l}${small ? " sm" : ""}" aria-label="Grade ${esc(l)}">${esc(l)}</span>`;
+    return `<span class="cu-grade cu-grade-${l[0]}${small ? " sm" : ""}" aria-label="Grade ${esc(l)}">${esc(l)}</span>`;
   }
   const SEV_LABEL = { urgent: "Urgent", serious: "Serious", watch: "Worth a look", minor: "Minor", good: "All clear" };
   const SEV_ORDER = { urgent: 0, serious: 1, watch: 2, minor: 3, good: 4 };
@@ -253,11 +253,10 @@ a.back-btn{text-decoration:none}
   async function openReport(id) {
     const canRender = typeof window.renderReport === "function" && typeof window.go === "function";
     if (!canRender) { location.href = "/r/" + id; return; }
-    try {
-      if (typeof currentReport !== "undefined" && currentReport && currentReport.id === id) { go("report"); return; }
-    } catch {}
+    const account = S.user?.id || null;
     try {
       const report = await S.api("/api/reports/" + encodeURIComponent(id));
+      if (account !== (S.user?.id || null)) return;
       try { currentReport = report; } catch {}
       renderReport(report);
       go("report");
@@ -455,13 +454,13 @@ a.back-btn{text-decoration:none}
     if (post.status === "resolved") {
       return `<p class="cu-inline-msg" style="margin:0">This one is marked resolved, so it does not need more offers right now.</p>`;
     }
-    const contactDefault = S.user.contact && (safeEmail(S.user.contact) || safeUrl(S.user.contact)) ? S.user.contact : "";
+    const contactDefault = S.user.contact && (safeUrl(S.user.contact) || (safeEmail(S.user.contact) && S.user.contact.toLowerCase() === S.user.email.toLowerCase())) ? S.user.contact : "";
     return `<form class="cu-form" id="cuOfferForm" novalidate>
       <label class="field-label" for="cuOfferMsg">Your message</label>
       <textarea class="cu-textarea" id="cuOfferMsg" maxlength="1500" placeholder="Say what you can help with and roughly how. Keep it short and friendly." required></textarea>
       <label class="field-label" for="cuOfferContact">Public contact details</label>
       <input class="cu-input" id="cuOfferContact" type="text" maxlength="200" placeholder="Email or website link" value="${esc(contactDefault)}" required>
-      <p class="cu-hint">Your message and contact details will be public. Use an address or link you want to share with everyone.</p>
+      <p class="cu-hint">Posting makes your message and contact details public. Use the confirmed email on your account or a reachable website link.</p>
       <p class="err" id="cuOfferErr"></p>
       <div><button class="btn btn-primary" type="submit">Offer to help</button></div>
     </form>`;
@@ -474,7 +473,7 @@ a.back-btn{text-decoration:none}
       <select class="cu-select" id="cuStatusSelect">
         ${Object.keys(STATUS_LABEL).map((k) => `<option value="${esc(k)}"${k === s ? " selected" : ""}>${esc(STATUS_LABEL[k])}</option>`).join("")}
       </select>
-    </label>`;
+    </label>${post.canDelete ? `<button type="button" class="cu-link-btn" id="cuDeletePost">Remove post and make report private</button>` : ''}`;
   }
 
   function renderPost(id) {
@@ -581,16 +580,27 @@ a.back-btn{text-decoration:none}
 
   function wirePost() {
     const data = currentPost;
+    const account = S.user?.id;
     if (!data) return;
     const copyBtn = $("#cuIntroCopy", postScreen);
     if (copyBtn) copyBtn.addEventListener("click", () => copyText($("#cuIntro", postScreen).value, copyBtn, "Copied"));
     wireOfferForm();
     wireStatusControl();
     wireOfferRemoval();
+    const remove = $('#cuDeletePost', postScreen);
+    if (remove) remove.addEventListener('click', async () => {
+      remove.disabled = true;
+      try {
+        await S.api('/api/bulletin/' + encodeURIComponent(data.id), { method: 'DELETE', expectedAccount: account });
+        S.toast('Post removed. The report is private again.');
+        S.navigate('/bulletin');
+      } catch (err) { remove.disabled = false; S.toast(err.message || 'Could not remove this post.'); }
+    });
   }
 
   function wireOfferForm() {
     const data = currentPost;
+    const account = S.user?.id;
     const wrap = $("#cuOfferWrap", postScreen);
     if (!wrap || !data) return;
     const signin = $("[data-signin]", wrap);
@@ -611,7 +621,7 @@ a.back-btn{text-decoration:none}
       const btn = $("button[type=submit]", form);
       btn.disabled = true; btn.textContent = "Sending...";
       try {
-        const d = await S.api("/api/bulletin/" + encodeURIComponent(data.id) + "/offers", { method: "POST", body: { message, contact } });
+        const d = await S.api("/api/bulletin/" + encodeURIComponent(data.id) + "/offers", { method: "POST", body: { message, contact }, expectedAccount: account });
         if (d && d.offer) data.offers.push(d.offer);
         S.toast("Thanks. Your offer is posted.");
         drawPost();
@@ -770,38 +780,6 @@ a.back-btn{text-decoration:none}
       });
   }
 
-  /* ================= RECENT PUBLIC CHECKUPS (home) ================= */
-  function recentCard(r) {
-    return `<a class="cu-recent" href="/r/${esc(r.id)}" data-spa>
-      ${gradeChip(r.grade, true)}
-      <div class="rb">
-        <div class="t">${esc(r.target || "Unknown site")}</div>
-        <div class="m">${esc(ago(r.created_at || r.scannedAt))}</div>
-      </div>
-    </a>`;
-  }
-  async function renderRecent() {
-    const sec = document.getElementById("recentChecks");
-    if (!sec) return;
-    try {
-      const d = await S.api("/api/reports?limit=8");
-      const reports = Array.isArray(d.reports) ? d.reports.filter((r) => r && r.id) : [];
-      if (!reports.length) { sec.hidden = true; return; }
-      sec.innerHTML = `<div class="wrap cu">
-        <div class="sec-head">
-          <p class="eyebrow">Recent public checkups</p>
-          <h2>Checked lately</h2>
-          <p>Every checkup is public. Here are the latest ones from the community.</p>
-        </div>
-        <div class="cu-recent-grid">${reports.map(recentCard).join("")}</div>
-        <p class="cu-hint" style="text-align:center;margin-top:22px;">Know a site that needs a hand? <a href="/bulletin" data-spa>See the community bulletin</a></p>
-      </div>`;
-      sec.hidden = false;
-    } catch {
-      sec.hidden = true;
-    }
-  }
-
   /* ================= DEDUP PROMPT (before a checkup) ================= */
   let pendingDedup = null;
   function settleDedup(value) {
@@ -829,7 +807,7 @@ a.back-btn{text-decoration:none}
     return new Promise((resolve) => {
       pendingDedup = resolve;
       slot.innerHTML = `<div class="cu-dedup" role="status">
-        <div><b>${esc(host)}</b> has been checked ${esc(plural(count, "time", "times"))} already.
+        <div>You have checked <b>${esc(host)}</b> ${esc(plural(count, "time", "times"))}.
         ${fresh
           ? ` The latest checkup is only ${esc(plural(Math.max(1, Math.round(age / 60_000)), "minute", "minutes"))} old, so you can read it right now. A fresh one can run in about ${esc(plural(waitMin, "minute", "minutes"))}.`
           : " You can read the latest checkup or run a fresh one."}</div>
@@ -852,7 +830,6 @@ a.back-btn{text-decoration:none}
 
   /* ================= REPORT EXTRAS (bulletin post + badge) ================= */
   let lastReport = null;
-  const postedByReport = new Map(); // reportId -> post id
 
   function extractPostId(err) {
     const d = err && err.data;
@@ -861,7 +838,7 @@ a.back-btn{text-decoration:none}
   }
 
   function postPanelBody(report) {
-    const posted = postedByReport.get(report.id);
+    const posted = report.bulletinPostId;
     if (posted) {
       return `<p class="cu-inline-msg ok" style="margin-top:0;">This checkup is on the bulletin.</p>
         <div class="cu-actions"><a class="btn btn-ghost btn-sm" href="/b/${esc(posted)}" data-spa>See the post</a></div>`;
@@ -873,9 +850,10 @@ a.back-btn{text-decoration:none}
       return `<p class="cu-inline-msg" style="margin-top:0;">Please confirm your email first, then you can post. Check your inbox for the link from Sutros.</p>`;
     }
     if (!report.canPostToBulletin) {
-      return `<p class="cu-inline-msg" style="margin-top:0;">Only the account that ran this checkup can post it to the bulletin. You can still share the public report link.</p>`;
+      return `<p class="cu-inline-msg" style="margin-top:0;">Only the account that ran this checkup can post it to the bulletin.</p>`;
     }
     return `<form class="cu-form" id="cuPostForm" novalidate>
+      <p class="cu-hint">Your checkup is private. Posting it makes the report, evidence, pictures, and your note public so people can offer help. You can remove the post later.</p>
       <textarea class="cu-textarea" id="cuPostNote" maxlength="500" style="min-height:84px;" placeholder="Optional note, for example who runs this site or why it matters to you" aria-label="Note for the bulletin"></textarea>
       <p class="err" id="cuPostErr"></p>
       <div><button class="btn btn-primary btn-sm" type="submit">Post to the bulletin</button></div>
@@ -893,27 +871,28 @@ a.back-btn{text-decoration:none}
     root.innerHTML = `<div class="cu-extras cu">
       <div class="cu-panel" id="cuPostPanel">
         <p class="eyebrow">Community bulletin</p>
-        <h3>Post this checkup to the community bulletin</h3>
+        <h3>${report.visibility === 'public' ? 'Public request for help' : 'Private checkup'}</h3>
         <p>People who fix websites read the bulletin and offer to help. Your note, this report, and the public contact details found on the site will be visible to everyone. Your account identity stays private.</p>
         <div id="cuPostBody">${postPanelBody(report)}</div>
       </div>
       <div class="cu-panel">
         <p class="eyebrow">Show it off</p>
         <h3>Add the Checked by SUTROS badge</h3>
-        <p>The badge shows the grade and the date, and links to a page where anyone can confirm this checkup is genuine.</p>
+        <p>${report.visibility === 'public' ? 'The badge shows the grade and date. Its verification link checks the saved report signature.' : 'Only you can view this badge while the report is private. Post the checkup for public help before embedding or sharing it.'}</p>
         <a class="cu-badge-preview" href="/verify/${esc(id)}" data-spa><img alt="Checked by SUTROS" src="/badge/${esc(id)}.svg"></a>
-        <pre class="cu-code" id="cuBadgeCode">${esc(snippet)}</pre>
+        ${report.visibility === 'public' ? `<pre class="cu-code" id="cuBadgeCode">${esc(snippet)}</pre>` : ''}
         <div class="cu-actions">
-          <button type="button" class="btn btn-ghost btn-sm" id="cuBadgeCopy">Copy the code</button>
+          ${report.visibility === 'public' ? '<button type="button" class="btn btn-ghost btn-sm" id="cuBadgeCopy">Copy the code</button>' : ''}
           <a class="cu-link-btn" href="/verify/${esc(id)}" data-spa>See the verify page</a>
         </div>
       </div>
     </div>`;
-    $("#cuBadgeCopy", root).addEventListener("click", (e) => copyText(snippet, e.currentTarget, "Copied"));
+    $("#cuBadgeCopy", root)?.addEventListener("click", (e) => copyText(snippet, e.currentTarget, "Copied"));
     wirePostPanel(report);
   }
 
   function wirePostPanel(report) {
+    const account = S.user?.id;
     const body = document.getElementById("cuPostBody");
     if (!body) return;
     const signin = $("[data-signin]", body);
@@ -929,14 +908,14 @@ a.back-btn{text-decoration:none}
       const btn = $("button[type=submit]", form);
       btn.disabled = true; btn.textContent = "Posting...";
       try {
-        const d = await S.api("/api/bulletin", { method: "POST", body: note ? { reportId: report.id, note } : { reportId: report.id } });
+        const d = await S.api("/api/bulletin", { method: "POST", body: note ? { reportId: report.id, note } : { reportId: report.id }, expectedAccount: account });
         const postId = d && d.post && d.post.id;
-        if (postId) postedByReport.set(report.id, postId);
+        if (postId) Object.assign(report, { bulletinPostId: postId, visibility: 'public', canPostToBulletin: false });
         S.toast("Posted to the bulletin.");
-        renderExtras(report);
+        if (typeof window.renderReport === 'function') renderReport(report); else renderExtras(report);
       } catch (e2) {
         const existing = e2.status === 409 ? extractPostId(e2) : null;
-        if (existing) { postedByReport.set(report.id, existing); renderExtras(report); return; }
+        if (existing) { Object.assign(report, { bulletinPostId: existing, visibility: 'public', canPostToBulletin: false }); renderExtras(report); return; }
         if (e2.status === 401) {
           btn.disabled = false; btn.textContent = "Post to the bulletin";
           S.refreshMe().then(() => S.requireLogin("/r/" + report.id));
@@ -967,12 +946,19 @@ a.back-btn{text-decoration:none}
         if (request !== reportPermissionsRequest || lastReport?.id !== id || !isActive(reportScreen)) return;
         lastReport = report;
         renderExtras(report);
-      }).catch(() => {});
+      }).catch(() => {
+        if (request !== reportPermissionsRequest || lastReport?.id !== id || !isActive(reportScreen)) return;
+        lastReport = null;
+        try { currentReport = null; } catch {}
+        S.showScreen('screen-home');
+        reportScreen.querySelector('#reportBody')?.replaceChildren();
+        S.toast('Sign in to the account that ran this private checkup to read it.');
+      });
     }
     const postPath = isActive(postScreen) && location.pathname.match(/^\/b\/([A-Za-z0-9_-]+)\/?$/);
     if (postPath) renderPost(postPath[1]);
   });
 
   /* ---------------- boot ---------------- */
-  renderRecent();
+  document.getElementById('recentChecks')?.remove();
 })();

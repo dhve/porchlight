@@ -22,10 +22,12 @@ const { normalizePublicUrl, resolveTarget } = await import("./safety.js");
 const { publicReport } = await import("./publicReport.js");
 const { runCheckup } = await import("./pipeline.js");
 const { llmEnabled, modelName } = await import("./llm.js");
-const { initDb, dbEnabled, getReport, listReports, saveNomination, addHelper, listHelpers } = await import("./db.js");
+const { initDb, dbEnabled, getReport, listReports, saveNomination, addHelper, listHelpers, sql } = await import("./db.js");
 const { setupRouter } = await import("./setup.js");
 const { reportsForHost } = await import("./db.js");
-const { authRouter, attachUser, csrfGuard, requireVerified } = await import("./auth.js");
+const { authRouter, attachUser, csrfGuard, requireAuth, requireVerified } = await import("./auth.js");
+const { requireReportAccess } = await import('./reportAccess.js');
+const { validateCommunityContact } = await import('./communityValidation.js');
 const { oauthRouter } = await import("./oauth.js");
 const { verifyRouter } = await import("./verify.js");
 const { bulletinRouter } = await import("./bulletin.js");
@@ -45,23 +47,26 @@ app.use("/api", (_req, res, next) => { res.set("Cache-Control", "private, no-sto
 app.use(setupRouter(ROOT));
 app.use(attachUser);
 app.use(["/api", "/auth"], csrfGuard);
+// A draft belongs to the account under which it was composed, even if another
+// browser tab changes the session cookie before it is submitted.
+app.use('/api', (req, res, next) => {
+  const expectedAccount = req.get('X-Sutros-Account');
+  if (expectedAccount && expectedAccount !== req.user?.id) {
+    return res.status(401).json({ error: 'Your sign-in changed. Reload this page to continue.', code: 'account-changed' });
+  }
+  next();
+});
+// Gate every report-derived router before it can return evidence or start work.
+app.post('/api/reports/:id/retest', requireVerified);
+app.use('/api/reports/:id/wekup', requireVerified);
+app.use(['/api/reports/:id', '/api/verify/:id', '/badge/:id.svg'], requireReportAccess);
 app.use(authRouter);
 app.use(oauthRouter);
 app.use(verifyRouter);
 app.use(bulletinRouter);
-app.post('/api/reports/:id/retest', requireVerified);
 app.use(retestRouter);
 app.use(proofRouter);
 app.use(feedbackRouter);
-// Bind an open chat to the account it was composed under, even if another tab
-// changes the session cookie between the browser's session check and submission.
-app.use('/api/reports/:id/wekup', (req, res, next) => {
-  const expectedAccount = req.get('X-Sutros-Account');
-  if (expectedAccount && expectedAccount !== req.user?.id) {
-    return res.status(401).json({ error: 'Your sign-in changed. Reopen wekup to continue.', code: 'account-changed' });
-  }
-  next();
-});
 app.use(wekupRouter);
 
 const normHost = (h) => String(h || "").toLowerCase().replace(/^www\./, "");
@@ -105,7 +110,7 @@ async function checkupGate(req, host) {
   if (!r.ok) return { status: 429, error: "This account has reached its limit of 20 checkups in 24 hours. Please wait before trying again.", retryAfterMs: r.retryAfterMs };
   if (await optedOut(host)) return { status: 403, error: "This site's owner has asked not to be checked by Sutros." };
   try {
-    const latest = (await reportsForHost(host, 1))[0];
+    const latest = (await reportsForHost(host, 1, { userId: req.user.id }))[0];
     if (latest && Date.now() - new Date(latest.created_at).getTime() < 10 * 60_000) {
       return { status: 429, error: "This site was checked less than 10 minutes ago. Here is the latest report.", latestReportId: latest.id, retryAfterMs: 10 * 60_000 - (Date.now() - new Date(latest.created_at).getTime()) };
     }
@@ -188,23 +193,22 @@ app.post("/api/checkup", requireVerified, async (req, res) => {
 });
 
 // ---- saved reports (when a database is configured) ----
-app.get("/api/checks", async (req, res) => {
+app.get("/api/checks", requireAuth, async (req, res) => {
   const host = normHost(req.query.host);
   if (!host) return res.status(400).json({ error: "Missing host." });
   try {
-    const rows = await reportsForHost(host, 10);
-    res.json({ host, count: rows.length, reports: rows.map((r) => publicReport({ id: r.id, grade: r.grade, score: r.score, scannedAt: r.created_at, user_id: r.user_id }, req.user)) });
+    const rows = await reportsForHost(host, 10, { userId: req.user.id });
+    res.json({ host, count: rows.length, reports: rows.map((r) => publicReport({ ...r, scannedAt: r.created_at }, req.user)) });
   } catch (err) {
     console.error("checks:", err);
     res.status(500).json({ error: "Could not look up that site." });
   }
 });
 
-app.get("/api/reports", async (req, res) => {
+app.get("/api/reports", requireAuth, async (req, res) => {
   try {
-    const opts = {};
+    const opts = { userId: req.user.id };
     if (req.query.host) opts.host = normHost(req.query.host);
-    if (req.query.mine === "1") { if (!req.user) return res.status(401).json({ error: "Please sign in." }); opts.userId = req.user.id; }
     const rows = await listReports(parseInt(req.query.limit, 10) || 20, opts);
     res.json({ db: dbEnabled(), reports: rows.map((r) => publicReport(r, req.user)) });
   } catch (err) {
@@ -246,33 +250,52 @@ app.post("/api/nominate", async (req, res) => {
 });
 
 // ---- community helper directory ----
-app.get("/api/helpers", async (_req, res) => {
+function helperView(row, viewer) {
+  return { id: row.id, name: row.name, contact: row.contact, area: row.area, blurb: row.blurb, created_at: row.created_at,
+    canDelete: Boolean(viewer?.id && (row.user_id === viewer.id || viewer.role === 'admin')) };
+}
+app.get("/api/helpers", async (req, res) => {
+  if (req.query.mine === '1' && !req.user) return res.status(401).json({ error: 'Please sign in.' });
   try {
-    res.json({ db: dbEnabled(), helpers: await listHelpers(50) });
+    const page = Math.min(10000, Math.max(1, parseInt(req.query.page, 10) || 1));
+    const rows = await listHelpers(51, { userId: req.query.mine === '1' ? req.user.id : undefined, offset: (page - 1) * 50 });
+    res.json({ db: dbEnabled(), helpers: rows.slice(0, 50).map(row => helperView(row, req.user)), page, hasMore: rows.length > 50 });
   } catch (err) {
     console.error("list helpers:", err);
     res.status(500).json({ error: "Could not load the helper list." });
   }
 });
 
-app.post("/api/helpers", async (req, res) => {
+app.post("/api/helpers", requireVerified, async (req, res) => {
   if (!dbEnabled()) return res.status(503).json({ error: "The helper directory needs a database, which isn't configured here yet." });
   const name = clean(req.body?.name, 80);
   const contact = clean(req.body?.contact, 200);
   const area = clean(req.body?.area, 80);
   const blurb = clean(req.body?.blurb, 400);
   if (!name || !contact) return res.status(400).json({ error: "Please include at least a name and a way to reach you." });
-  // Basic contact sanity: an email or an http(s) link.
-  if (!/^\S+@\S+\.\S+$/.test(contact) && !/^https?:\/\//i.test(contact)) {
-    return res.status(400).json({ error: "Contact should be an email address or a link (starting with http)." });
-  }
   try {
-    const helper = await addHelper({ name, contact, area, blurb });
-    res.json({ ok: true, helper });
+    const checked = await validateCommunityContact(req.body?.contact, req.user);
+    if (!checked.ok) return res.status(400).json({ error: checked.error });
+    const [usage] = await sql("SELECT count(*)::int AS n FROM helpers WHERE user_id=$1 AND created_at > now() - interval '1 day'", [req.user.id]);
+    if (usage.n >= 10) return res.status(429).json({ error: 'You have added 10 helper listings today. Please try again tomorrow.' });
+    const helper = await addHelper({ name, contact: checked.value, area, blurb, userId: req.user.id });
+    res.status(201).json({ ok: true, helper: helperView(helper, req.user) });
   } catch (err) {
     console.error("add helper:", err);
     res.status(500).json({ error: "Could not add you to the directory." });
   }
+});
+
+app.delete('/api/helpers/:id', requireAuth, async (req, res) => {
+  if (!/^[A-Za-z0-9_-]{6,20}$/.test(req.params.id)) return res.status(400).json({ error: 'Bad helper id.' });
+  if (!dbEnabled()) return res.status(503).json({ error: 'The helper directory is unavailable.' });
+  try {
+    const [row] = await sql('SELECT user_id FROM helpers WHERE id=$1 AND deleted_at IS NULL', [req.params.id]);
+    if (!row) return res.status(404).json({ error: "We couldn't find that helper listing." });
+    if (row.user_id !== req.user.id && req.user.role !== 'admin') return res.status(403).json({ error: 'Only the person who created this listing can remove it.' });
+    await sql("UPDATE helpers SET deleted_at=now() WHERE id=$1 AND (user_id=$2 OR $3) AND deleted_at IS NULL", [req.params.id, req.user.id, req.user.role === 'admin']);
+    res.json({ ok: true });
+  } catch { res.status(500).json({ error: 'Could not remove that listing.' }); }
 });
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
@@ -300,7 +323,7 @@ app.listen(PORT, () => {
 
 /** Validate consent + URL + scope. Returns {ok, url, display} or {ok:false, error}. */
 async function prepare(rawUrl, consent) {
-  void consent; // accepted for compatibility; checkups are public and read-only, no ownership claim is required
+  void consent; // accepted for compatibility; scans are private until explicitly posted for help
   const norm = normalizePublicUrl(rawUrl);
   if (!norm.ok) return norm;
   const scope = await resolveTarget(norm.url);

@@ -38,7 +38,10 @@ export function publicReport(report, viewer = null) {
   }
   const knownOwner = Object.hasOwn(report, "userId") || Object.hasOwn(report, "user_id");
   const owner = Object.hasOwn(report, "userId") ? report.userId : report.user_id;
-  out.canPostToBulletin = Boolean(viewer?.id && viewer.emailVerified && knownOwner &&
-    (owner == null || owner === viewer.id || viewer.role === "admin"));
+  out.bulletinPostId = report.bulletinPostId || report.bulletin_post_id || null;
+  out.visibility = out.bulletinPostId ? 'public' : 'private';
+  out.canPostToBulletin = Boolean(viewer?.id && viewer.emailVerified && knownOwner && owner && !out.bulletinPostId &&
+    (owner === viewer.id || viewer.role === "admin"));
+  out.canDelete = false;
   return out;
 }

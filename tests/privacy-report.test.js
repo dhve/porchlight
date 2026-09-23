@@ -33,8 +33,14 @@ test("posting capability uses private ownership and verified account state", asy
   for (const [viewer, expected] of [[null, false], [owner, true], [other, false], [{ ...owner, emailVerified: false }, false], [{ ...other, role: "admin" }, true]]) {
     assert.equal(publicReport(report, viewer).canPostToBulletin, expected);
   }
-  assert.equal(publicReport({ ...report, userId: null }, other).canPostToBulletin, true);
+  assert.equal(publicReport({ ...report, userId: null }, other).canPostToBulletin, false);
   assert.equal(publicReport({ id: "report1234" }, other).canPostToBulletin, false, "Missing ownership must not imply an anonymous report");
+  assert.equal(publicReport(report, owner).visibility, "private");
+  assert.equal(publicReport(report, owner).bulletinPostId, null);
+  const published = publicReport({ ...report, bulletinPostId: "post123456" }, owner);
+  assert.equal(published.visibility, "public");
+  assert.equal(published.bulletinPostId, "post123456");
+  assert.equal(published.canPostToBulletin, false, "An active publication cannot be posted twice");
 });
 
 test("entry URL privacy rejects embedded credentials and queries before publication", () => {

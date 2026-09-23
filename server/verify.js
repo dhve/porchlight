@@ -2,7 +2,7 @@
 // The "Checked by SUTROS" attestation: signing a finished report, the public
 // key endpoint, the verify API, the badge image, and the verify page shell.
 //
-// Routes (all GET, all public, no state changes):
+// Routes (all GET; saved report routes use the access guard in index.js):
 //   /.well-known/sutros-signing-key.json  public key + key id
 //   /api/verify/:id                        recompute + check a saved report's signature
 //   /badge/:id.svg                         small SVG badge for a saved report
@@ -109,7 +109,7 @@ function esc(text) {
     .replace(/'/g, "&#39;");
 }
 
-const GRADE_COLORS = { A: "#15803D", B: "#15803D", C: "#B45309", D: "#DC2626", F: "#991B1B" };
+const GRADE_COLORS = { 'A+': "#15803D", A: "#15803D", B: "#15803D", C: "#CFA23A", D: "#DC2626", F: "#991B1B" };
 
 /** Decide what the verify API should say about a stored row. */
 function assess(row) {
@@ -222,15 +222,18 @@ function badgeFrame(label, markColor) {
 }
 
 /** The confirmed badge: grade letter in the grade color inside an outlined disc, plus the date. */
-function badgeSvg({ grade, date }) {
-  const letter = String(grade || "").trim().toUpperCase().slice(0, 1) || "?";
-  const color = GRADE_COLORS[letter] || "#6B7280";
+function badgeSvg({ grade, date, ringPercent }) {
+  const candidate = String(grade || '').trim().toUpperCase();
+  const letter = Object.hasOwn(GRADE_COLORS, candidate) ? candidate : '?';
+  const color = GRADE_COLORS[letter] || "#7A9187";
+  const percent = letter !== '?' && Number.isFinite(Number(ringPercent)) ? Math.max(0, Math.min(100, Number(ringPercent))) : 0;
   const label = `Checked by SUTROS, grade ${letter}${date ? ", " + date : ""}`;
   return (
-    badgeFrame(label, "#1E8C63") +
+    badgeFrame(label, color) +
     `<text x="40" y="31" ${BADGE_FONT} font-size="10" fill="#3F5A4F">${esc(date || "Signed report")}</text>` +
-    `<circle cx="206" cy="20" r="14" fill="none" stroke="${color}" stroke-width="1.5"/>` +
-    `<text x="206" y="25" ${BADGE_FONT} font-size="15" font-weight="700" fill="${color}" text-anchor="middle">${esc(letter)}</text>` +
+    `<circle cx="206" cy="20" r="14" fill="none" stroke="#DCEBE2" stroke-width="2"/>` +
+    `<circle cx="206" cy="20" r="14" fill="none" stroke="${color}" stroke-width="2" pathLength="100" stroke-dasharray="100" stroke-dashoffset="${100 - percent}" transform="rotate(-90 206 20)"/>` +
+    `<text x="206" y="25" ${BADGE_FONT} font-size="${letter === 'A+' ? 12 : 15}" font-weight="700" fill="${color}" text-anchor="middle">${esc(letter)}</text>` +
     `</svg>`
   );
 }
@@ -342,8 +345,9 @@ verifyRouter.get("/badge/:id.svg", async (req, res) => {
     // Render only what the signature covers. result.payload was rebuilt from
     // the stored report and just verified, so its values are the signed ones.
     const signed = result.payload || {};
-    res.setHeader("Cache-Control", "public, max-age=3600");
-    return res.send(badgeSvg({ grade: signed.grade, date: shortDate(signed.scannedAt) }));
+    res.setHeader("Cache-Control", "private, no-store");
+    return res.send(badgeSvg({ grade: signed.grade, date: shortDate(signed.scannedAt),
+      ringPercent: result.version === 2 ? reportOf(row).ringPercent : signed.score }));
   }
 
   if (result.signature || signingEnabled()) {
@@ -355,9 +359,10 @@ verifyRouter.get("/badge/:id.svg", async (req, res) => {
 
   // No signing key on this server and nothing to check: show the stored values as before.
   const report = reportOf(row);
-  res.setHeader("Cache-Control", "public, max-age=3600");
+  res.setHeader("Cache-Control", "private, no-store");
   res.send(badgeSvg({
     grade: report.grade || row.grade,
+    ringPercent: report.ringPercent ?? report.score ?? row.score,
     date: shortDate(report.scannedAt) || shortDate(row.created_at),
   }));
 });

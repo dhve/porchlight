@@ -1,6 +1,6 @@
 // db.js
 // Optional Postgres persistence. When DATABASE_URL is set:
-//  - every checkup is saved so the owner gets a shareable link (/r/<id>)
+//  - every checkup is saved for its owner at /r/<id>
 //  - business nominations are recorded
 //  - the community helper directory is stored
 // When it is not set, the app still runs, these features just say so.
@@ -129,6 +129,13 @@ export async function initDb() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS bulletin_offers_post_idx ON bulletin_offers (post_id, created_at)`);
+  // Keep withdrawn rows for creation limits, while allowing a later explicit post.
+  await pool.query(`ALTER TABLE bulletin_posts ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS bulletin_posts_active_report_idx ON bulletin_posts (report_id) WHERE deleted_at IS NULL`);
+  await pool.query(`ALTER TABLE bulletin_posts DROP CONSTRAINT IF EXISTS bulletin_posts_report_id_key`);
+  await pool.query(`ALTER TABLE helpers ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(id)`);
+  await pool.query(`ALTER TABLE helpers ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS helpers_user_idx ON helpers (user_id, created_at DESC)`);
   return true;
 }
 
@@ -160,29 +167,33 @@ export async function saveReport(report) {
 }
 
 /** Latest reports for a host (dedup prompt). */
-export async function reportsForHost(host, limit = 10) {
-  if (!pool) return [];
+export async function reportsForHost(host, limit = 10, { userId } = {}) {
+  if (!pool || !userId) return [];
   const { rows } = await pool.query(
-    `SELECT r.id, r.grade, r.score, r.created_at, r.user_id
+    `SELECT r.id, r.grade, r.score, r.created_at, r.user_id,
+       (SELECT p.id FROM bulletin_posts p WHERE p.report_id=r.id AND p.deleted_at IS NULL) AS bulletin_post_id
        FROM reports r
-      WHERE r.target_host = $1 ORDER BY r.created_at DESC LIMIT $2`,
-    [host, limit]);
+      WHERE r.target_host = $1 AND r.user_id = $3 ORDER BY r.created_at DESC LIMIT $2`,
+    [host, Math.max(1, Math.min(100, limit)), userId]);
   return rows;
 }
 export async function getReport(id) {
   if (!pool) return null;
-  const { rows } = await pool.query(`SELECT id, report, user_id FROM reports WHERE id = $1`, [id]);
+  const { rows } = await pool.query(`SELECT r.id, r.report, r.user_id,
+    (SELECT p.id FROM bulletin_posts p WHERE p.report_id=r.id AND p.deleted_at IS NULL) AS bulletin_post_id
+    FROM reports r WHERE r.id = $1`, [id]);
   if (!rows.length) return null;
-  return { ...rows[0].report, id: rows[0].id, userId: rows[0].user_id || null };
+  return { ...rows[0].report, id: rows[0].id, userId: rows[0].user_id || null, bulletinPostId: rows[0].bulletin_post_id || null };
 }
 export async function listReports(limit = 20, { host, userId } = {}) {
-  if (!pool) return [];
+  if (!pool || !userId) return [];
   const where = []; const params = [];
   if (host) { params.push(host); where.push(`r.target_host = $${params.length}`); }
   if (userId) { params.push(userId); where.push(`r.user_id = $${params.length}`); }
   params.push(Math.max(1, Math.min(100, limit)));
   const { rows } = await pool.query(
-    `SELECT r.id, r.target, r.grade, r.score, r.created_at, r.user_id
+    `SELECT r.id, r.target, r.grade, r.score, r.created_at, r.user_id,
+       (SELECT p.id FROM bulletin_posts p WHERE p.report_id=r.id AND p.deleted_at IS NULL) AS bulletin_post_id
        FROM reports r
        ${where.length ? "WHERE " + where.join(" AND ") : ""}
       ORDER BY r.created_at DESC LIMIT $${params.length}`, params);
@@ -198,20 +209,23 @@ export async function saveNomination(target, note) {
 }
 
 // ---- helpers directory ----
-export async function addHelper({ name, contact, area, blurb }) {
+export async function addHelper({ name, contact, area, blurb, userId }) {
   if (!pool) return null;
   const id = newId();
   await pool.query(
-    `INSERT INTO helpers (id, name, contact, area, blurb) VALUES ($1,$2,$3,$4,$5)`,
-    [id, name, contact, area || null, blurb || null]
+    `INSERT INTO helpers (id, name, contact, area, blurb, user_id) VALUES ($1,$2,$3,$4,$5,$6)`,
+    [id, name, contact, area || null, blurb || null, userId]
   );
-  return { id, name, contact, area, blurb };
+  return { id, name, contact, area, blurb, user_id: userId };
 }
-export async function listHelpers(limit = 50) {
+export async function listHelpers(limit = 50, { userId, offset = 0 } = {}) {
   if (!pool) return [];
   const { rows } = await pool.query(
-    `SELECT id, name, contact, area, blurb, created_at FROM helpers ORDER BY created_at DESC LIMIT $1`,
-    [Math.max(1, Math.min(100, limit))]
+    `SELECT h.id, h.name, h.contact, h.area, h.blurb, h.created_at, h.user_id
+       FROM helpers h JOIN users u ON u.id=h.user_id
+      WHERE h.deleted_at IS NULL AND ${userId ? 'h.user_id=$2' : 'u.email_verified=true'}
+      ORDER BY h.created_at DESC, h.id LIMIT $1 OFFSET $${userId ? 3 : 2}`,
+    [Math.max(1, Math.min(100, limit)), ...(userId ? [userId] : []), Math.max(0, Math.min(500000, Number(offset) || 0))]
   );
   return rows;
 }

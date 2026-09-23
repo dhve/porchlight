@@ -252,7 +252,7 @@
 <div class="screen" id="screen-auth">
   <section class="au-page"><div class="wrap"><div class="au-card au-narrow">
     <p class="eyebrow">Your account</p>
-    <p class="au-sub">An account is optional. It keeps your checkups together, lets you post to the bulletin, and helps keep out spam.</p>
+    <p class="au-sub">A confirmed account keeps your checkups private and lets you ask for help or join the helper directory.</p>
     <div class="au-tabs" role="tablist" id="auTabs">
       <button type="button" role="tab" data-tab="login" id="auTabLogin">Sign in</button>
       <button type="button" role="tab" data-tab="signup" id="auTabSignup">Create an account</button>
@@ -676,8 +676,18 @@
       </div>
       <div class="au-card" id="au-checkups">
         <h3>My checkups</h3>
-        <p class="au-sub">Every checkup you've run. All checkups are public, so these links can be shared.</p>
+        <p class="au-sub">Your checkups are private until you post one to the community bulletin for help.</p>
         <div class="au-list" id="auCheckups"><p class="au-fine">Loading your checkups...</p></div>
+      </div>
+      <div class="au-card">
+        <h3>My community posts</h3>
+        <p class="au-sub">Removing a post hides it and its offers, and makes the report private again.</p>
+        <div class="au-list" id="auCommunityPosts"><p class="au-fine">Loading your posts...</p></div>
+      </div>
+      <div class="au-card">
+        <h3>My helper listings</h3>
+        <p class="au-sub">You can remove the contact details you published in the helper directory.</p>
+        <div class="au-list" id="auHelperListings"><p class="au-fine">Loading your listings...</p></div>
       </div>`;
     bindAvatarFallback(wrap, user);
 
@@ -687,6 +697,8 @@
     const resend = $("#auResendAcct"); if (resend) resend.addEventListener("click", resendVerify);
     $("#auSignOutAcct").addEventListener("click", signOut);
     loadCheckups();
+    loadCommunityPosts();
+    loadHelperListings();
   }
 
   async function saveProfile(e) {
@@ -752,12 +764,86 @@
           <span class="sev-chip ${gradeClass(grade)}">${esc(grade)}</span>
           <span class="t">${esc(r.target || "")}</span>
           ${typeof r.score === "number" ? `<span class="s">${esc(r.score)} / 100</span>` : ""}
+          <span class="s">${r.visibility === 'public' ? 'Public help post' : 'Private'}</span>
           <span class="d">${esc(fmtDate(r.created_at))}</span>
         </a>`;
       }).join("");
     } catch (e2) {
       if (box.isConnected) box.innerHTML = `<div class="au-empty">${esc(e2.message || "We couldn't load your checkups just now.")}</div>`;
     }
+  }
+
+  async function loadCommunityPosts(page = 1, append = false) {
+    const box = $('#auCommunityPosts');
+    const account = S.user?.id;
+    if (!box || !account) return;
+    try {
+      const data = await S.api('/api/bulletin?mine=1&page=' + page);
+      if (!box.isConnected || account !== S.user?.id) return;
+      const rows = data.posts || [];
+      if (!append) box.innerHTML = '';
+      box.querySelector('[data-more-posts]')?.remove();
+      if (!rows.length && !append) box.innerHTML = '<p class="au-fine">You have no public help posts.</p>';
+      box.insertAdjacentHTML('beforeend', rows.map(post => `<div class="au-row" data-post-row="${esc(post.id)}">
+        <a class="t" href="/b/${esc(post.id)}">${esc(post.report?.target || 'Website help')}</a>
+        <span class="d">${esc(fmtDate(post.createdAt))}</span>
+        ${post.canDelete ? `<button type="button" class="btn btn-ghost btn-sm" data-remove-post="${esc(post.id)}">Remove</button>` : ''}
+      </div>`).join(''));
+      if (data.hasMore) {
+        box.insertAdjacentHTML('beforeend', '<button type="button" class="btn btn-ghost btn-sm" data-more-posts>Load more posts</button>');
+        box.querySelector('[data-more-posts]').addEventListener('click', () => loadCommunityPosts(page + 1, true));
+      }
+      box.querySelectorAll('[data-remove-post]').forEach(button => {
+        if (button.dataset.bound) return;
+        button.dataset.bound = '1';
+        button.addEventListener('click', async () => {
+          button.disabled = true;
+          try {
+            await S.api('/api/bulletin/' + encodeURIComponent(button.dataset.removePost), { method: 'DELETE', expectedAccount: account });
+            if (account !== S.user?.id) return;
+            button.closest('[data-post-row]').remove();
+            if (!box.querySelector('[data-post-row]')) loadCommunityPosts();
+            loadCheckups();
+            S.toast('Post removed. The report is private again.');
+          } catch (err) { button.disabled = false; S.toast(err.message || 'Could not remove that post.'); }
+        });
+      });
+    } catch (err) { if (box.isConnected && account === S.user?.id) box.textContent = err.message || 'Could not load your posts.'; }
+  }
+
+  async function loadHelperListings(page = 1, append = false) {
+    const box = $('#auHelperListings');
+    const account = S.user?.id;
+    if (!box || !account) return;
+    try {
+      const data = await S.api('/api/helpers?mine=1&page=' + page);
+      if (!box.isConnected || account !== S.user?.id) return;
+      const rows = data.helpers || [];
+      if (!append) box.innerHTML = '';
+      box.querySelector('[data-more-helpers]')?.remove();
+      if (!rows.length && !append) box.innerHTML = '<p class="au-fine">You have no helper listings.</p>';
+      box.insertAdjacentHTML('beforeend', rows.map(helper => `<div class="au-row" data-helper-row="${esc(helper.id)}">
+        <span class="t">${esc(helper.name)}</span>
+        ${helper.canDelete ? `<button type="button" class="btn btn-ghost btn-sm" data-remove-helper="${esc(helper.id)}">Remove</button>` : ''}
+      </div>`).join(''));
+      if (data.hasMore) {
+        box.insertAdjacentHTML('beforeend', '<button type="button" class="btn btn-ghost btn-sm" data-more-helpers>Load more listings</button>');
+        box.querySelector('[data-more-helpers]').addEventListener('click', () => loadHelperListings(page + 1, true));
+      }
+      box.querySelectorAll('[data-remove-helper]').forEach(button => {
+        if (button.dataset.bound) return;
+        button.dataset.bound = '1';
+        button.addEventListener('click', async () => {
+          button.disabled = true;
+          try {
+            await S.api('/api/helpers/' + encodeURIComponent(button.dataset.removeHelper), { method: 'DELETE', expectedAccount: account });
+            if (account !== S.user?.id) return;
+            await loadHelperListings();
+            S.toast('Helper listing removed.');
+          } catch (err) { button.disabled = false; S.toast(err.message || 'Could not remove that listing.'); }
+        });
+      });
+    } catch (err) { if (box.isConnected && account === S.user?.id) box.textContent = err.message || 'Could not load your helper listings.'; }
   }
 
   /* ---------------- auth error ---------------- */
@@ -769,7 +855,7 @@
   });
 
   /* ---------------- user changes ---------------- */
-  // The "/" route belongs to community-ui (it also refreshes the recent checkups). goTo()
+  // The "/" route belongs to community-ui. goTo()
   // falls back to the home screen on its own when nobody has registered it.
   renderSlot(S.user);
   S.onUser((user) => {
